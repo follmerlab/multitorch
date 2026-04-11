@@ -1,0 +1,997 @@
+ IRREP GROUND    0+  MULT 4   DIM 1
+ IRREP GROUND    1+  MULT 4   DIM 3
+ IRREP GROUND    2+  MULT 5   DIM 2
+ IRREP GROUND   ^1+  MULT 6   DIM 3
+ IRREP GROUND   ^0+  MULT 1   DIM 1
+ IRREP EXCITE    0-  MULT 2   DIM 1
+ IRREP EXCITE    1-  MULT 7   DIM 3
+ IRREP EXCITE    2-  MULT 5   DIM 2
+ IRREP EXCITE   ^1-  MULT 8   DIM 3
+ IRREP EXCITE   ^0-  MULT 3   DIM 1
+
+
+ REDUCEDMATRIX TRANSI     0+    1-    1-  0  MULTIPOLE  4 7
+  ADD      1   1 1   2 3  1.00000000
+  ADD     11   3 4   2 3  0.33333333
+  ADD     12   3 7   2 1  -0.33333333
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    0-  0  MULTIPOLE  4 2
+  ADD      2   1 1   1 1  1.00000000
+  ADD     10   2 2   1 1  0.33333333
+  ADD     12   3 2   2 1  0.33333333
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    1-  0  MULTIPOLE  4 7
+  ADD      3   1 1   1 3  -1.00000000
+  ADD      9   2 4   1 3  0.40089186
+  ADD     10   2 7   1 1  -0.45643546
+  ADD     11   3 4   2 3  0.45643546
+  ADD     12   3 7   2 1  -0.09128709
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    2-  0  MULTIPOLE  4 5
+  ADD      4   1 1   1 4  0.63245553
+  ADD      8   2 1   1 4  0.50709255
+  ADD     10   2 5   1 1  0.28171808
+  ADD     12   3 5   2 1  -0.39440532
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-   ^1-  0  MULTIPOLE  4 8
+  ADD      4   1 1   1 4  0.77459667
+  ADD      8   2 1   1 4  -0.41403934
+  ADD      9   2 5   1 3  -0.51754917
+  ADD     10   2 8   1 1  0.17251639
+  ADD     11   3 5   2 3  0.35355339
+  ADD     12   3 8   2 1  -0.24152295
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     2+    1-    1-  0  MULTIPOLE  5 7
+  ADD      5   1 1   3 3  0.63245553
+  ADD      7   1 4   3 3  0.50709255
+  ADD     11   4 4   2 3  0.28171808
+  ADD     12   4 7   2 1  0.39440532
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     2+    1-   ^1-  0  MULTIPOLE  5 8
+  ADD      6   1 1   3 4  -0.63245553
+  ADD      7   1 5   3 3  -0.37796447
+  ADD     11   4 5   2 3  0.37796447
+  ADD     12   4 8   2 1  -0.25819889
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-    1-  0  MULTIPOLE  6 7
+  ADD      5   1 1   3 3  0.77459667
+  ADD      7   1 4   3 3  -0.41403934
+  ADD      9   4 4   1 3  0.51754917
+  ADD     10   4 7   1 1  0.35355339
+  ADD     11   5 4   2 3  0.17251639
+  ADD     12   5 7   2 1  0.24152295
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-    2-  0  MULTIPOLE  6 5
+  ADD      6   1 1   3 4  -0.63245553
+  ADD      8   4 1   1 4  0.37796447
+  ADD     10   4 5   1 1  -0.37796447
+  ADD     12   5 5   2 1  -0.25819889
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-   ^1-  0  MULTIPOLE  6 8
+  ADD      6   1 1   3 4  -0.44721360
+  ADD      7   1 5   3 3  0.53452248
+  ADD      8   4 1   1 4  -0.53452248
+  ADD      9   4 5   1 3  0.13363062
+  ADD     10   4 8   1 1  -0.40089186
+  ADD     11   5 5   2 3  0.40089186
+  ADD     12   5 8   2 1  0.45643546
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-   ^0-  0  MULTIPOLE  6 3
+  ADD      7   1 1   3 3  0.37796447
+  ADD      9   4 1   1 3  0.37796447
+  ADD     11   5 1   2 3  -0.37796447
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^0+    1-   ^1-  0  MULTIPOLE  1 8
+  ADD      8   1 1   1 4  0.37796447
+  ADD      9   1 5   1 3  -0.37796447
+  ADD     10   1 8   1 1  -0.37796447
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  HAMILTONIAN  4 4
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  HAMILTONIAN  4 4
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  HAMILTONIAN  5 5
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  HAMILTONIAN  6 6
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  HAMILTONIAN  1 1
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  10DQ  4 4
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  10DQ  4 4
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  10DQ  5 5
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  10DQ  6 6
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  10DQ  1 1
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  HAMILTONIAN  2 2
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  HAMILTONIAN  7 7
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  HAMILTONIAN  5 5
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  HAMILTONIAN  8 8
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  HAMILTONIAN  3 3
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  10DQ  2 2
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  10DQ  7 7
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  10DQ  5 5
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  10DQ  8 8
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  10DQ  3 3
+  END 10DQ
+ IRREP GROUND    0+  MULT 5   DIM 1
+ IRREP GROUND    1+  MULT 13   DIM 3
+ IRREP GROUND    2+  MULT 8   DIM 2
+ IRREP GROUND   ^1+  MULT 12   DIM 3
+ IRREP GROUND   ^0+  MULT 4   DIM 1
+ IRREP EXCITE    0-  MULT 2   DIM 1
+ IRREP EXCITE    1-  MULT 7   DIM 3
+ IRREP EXCITE    2-  MULT 5   DIM 2
+ IRREP EXCITE   ^1-  MULT 8   DIM 3
+ IRREP EXCITE   ^0-  MULT 3   DIM 1
+
+
+ REDUCEDMATRIX TRANSI     0+    1-    1-  0  MULTIPOLE  5 7
+  ADD      1   1 1   2 3  1.00000000
+  ADD     11   3 4   3 3  0.33333333
+  ADD     12   3 7   3 1  -0.33333333
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    0-  0  MULTIPOLE  13  2
+  ADD      2    1  1    4  1  1.00000000
+  ADD     10    5  2    4  1  0.33333333
+  ADD     12    9  2    3  1  0.33333333
+  ADD     13   12  2    1  1  +0
+  ADD     13   13  2    1  1  0.33333333
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    1-  0  MULTIPOLE  13  7
+  ADD      3    1  1    4  3  -1.00000000
+  ADD      9    5  4    4  3  0.40089186
+  ADD     10    5  7    4  1  -0.45643546
+  ADD     11    9  4    3  3  0.45643546
+  ADD     12    9  7    3  1  -0.09128709
+  ADD     13   12  7    1  1  -0.00000000
+  ADD     13   13  7    1  1  0.36514837
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-    2-  0  MULTIPOLE  13  5
+  ADD      4    1  1    4  4  0.63245553
+  ADD      8    5  1    4  4  0.50709255
+  ADD     10    5  5    4  1  0.28171808
+  ADD     12    9  5    3  1  -0.39440532
+  ADD     13   12  5    1  1  0.27272727
+  ADD     13   13  5    1  1  0.14342012
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     1+    1-   ^1-  0  MULTIPOLE  13  8
+  ADD      4    1  1    4  4  0.77459667
+  ADD      8    5  1    4  4  -0.41403934
+  ADD      9    5  5    4  3  -0.51754917
+  ADD     10    5  8    4  1  0.17251639
+  ADD     11    9  5    3  3  0.35355339
+  ADD     12    9  8    3  1  -0.24152295
+  ADD     13   12  8    1  1  -0.44536177
+  ADD     13   13  8    1  1  0.08782653
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     2+    1-    1-  0  MULTIPOLE  8 7
+  ADD      5   1 1   4 3  0.63245553
+  ADD      7   1 4   4 3  0.50709255
+  ADD     11   5 4   3 3  0.28171808
+  ADD     12   5 7   3 1  0.39440532
+  ADD     13   8 7   1 1  0.23354968
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI     2+    1-   ^1-  0  MULTIPOLE  8 8
+  ADD      6   1 1   4 4  -0.63245553
+  ADD      7   1 5   4 3  -0.37796447
+  ADD     11   5 5   3 3  0.37796447
+  ADD     12   5 8   3 1  -0.25819889
+  ADD     13   8 8   1 1  0.35675303
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-    1-  0  MULTIPOLE  12  7
+  ADD      5    1  1    4  3  0.77459667
+  ADD      7    1  4    4  3  -0.41403934
+  ADD      9    5  4    4  3  0.51754917
+  ADD     10    5  7    4  1  0.35355339
+  ADD     11    9  4    3  3  0.17251639
+  ADD     12    9  7    3  1  0.24152295
+  ADD     13   12  7    1  1  0.38138504
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-    2-  0  MULTIPOLE  12  5
+  ADD      6    1  1    4  4  -0.63245553
+  ADD      8    5  1    4  4  0.37796447
+  ADD     10    5  5    4  1  -0.37796447
+  ADD     12    9  5    3  1  -0.25819889
+  ADD     13   12  5    1  1  0.35675303
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-   ^1-  0  MULTIPOLE  12  8
+  ADD      6    1  1    4  4  -0.44721360
+  ADD      7    1  5    4  3  0.53452248
+  ADD      8    5  1    4  4  -0.53452248
+  ADD      9    5  5    4  3  0.13363062
+  ADD     10    5  8    4  1  -0.40089186
+  ADD     11    9  5    3  3  0.40089186
+  ADD     12    9  8    3  1  0.45643546
+  ADD     13   12  8    1  1  0.00000000
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^1+    1-   ^0-  0  MULTIPOLE  12  3
+  ADD      7    1  1    4  3  0.37796447
+  ADD      9    5  1    4  3  0.37796447
+  ADD     11    9  1    3  3  -0.37796447
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX TRANSI    ^0+    1-   ^1-  0  MULTIPOLE  4 8
+  ADD      8   1 1   4 4  0.37796447
+  ADD      9   1 5   4 3  -0.37796447
+  ADD     10   1 8   4 1  -0.37796447
+  END MULTIPOLE
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  HAMILTONIAN  5 5
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  HAMILTONIAN  13 13
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  HAMILTONIAN  8 8
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  HAMILTONIAN  12 12
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  HAMILTONIAN  4 4
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  10DQ  5 5
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  10DQ  13 13
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  10DQ  8 8
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  10DQ  12 12
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  10DQ  4 4
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  HAMILTONIAN  2 2
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  HAMILTONIAN  7 7
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  HAMILTONIAN  5 5
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  HAMILTONIAN  8 8
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  HAMILTONIAN  3 3
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  10DQ  2 2
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  10DQ  7 7
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  10DQ  5 5
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  10DQ  8 8
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  10DQ  3 3
+  END 10DQ
+ IRREP GROUND    0+  MULT 4   DIM 1
+ IRREP GROUND    1+  MULT 4   DIM 3
+ IRREP GROUND    2+  MULT 5   DIM 2
+ IRREP GROUND   ^1+  MULT 6   DIM 3
+ IRREP GROUND   ^0+  MULT 1   DIM 1
+ IRREP EXCITE    0+  MULT 5   DIM 1
+ IRREP EXCITE    1+  MULT 13   DIM 3
+ IRREP EXCITE    2+  MULT 8   DIM 2
+ IRREP EXCITE   ^1+  MULT 12   DIM 3
+ IRREP EXCITE   ^0+  MULT 4   DIM 1
+
+
+ REDUCEDMATRIX TRANSI     0+    0+    0+  0  EGHYBR  4 5
+  ADD    115   1 1   2 2  0.89442719
+  ADD    119   3 3   2 3  0.29814240
+  ADD    138   1 3   2 3  1.09544511
+  ADD    151   3 1   2 2  1.09544511
+  ADD    155   3 3   2 3  0.52357031
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     1+    0+    1+  0  EGHYBR   4 13
+  ADD    116    1  1    1  4  0.89442719
+  ADD    118    2  5    1  4  0.58554004
+  ADD    119    3  9    2  3  0.51639778
+  ADD    139    1  5    1  4  1.09544512
+  ADD    140    1  9    1  3  1.09544511
+  ADD    141    1 12    1  1  +0
+  ADD    141    1 13    1  1  1.09544512
+  ADD    146    2  1    1  4  1.09544512
+  ADD    148    2  5    1  4  0.70064905
+  ADD    149    2  9    1  3  -0.61791438
+  ADD    150    2 12    1  1  0.92640848
+  ADD    150    2 13    1  1  0.21922826
+  ADD    152    3  1    2  4  -1.09544511
+  ADD    154    3  5    2  4  0.61791438
+  ADD    155    3  9    2  3  0.45342519
+  ADD    156    3 12    2  1  0.55584509
+  ADD    156    3 13    2  1  -0.51153261
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     2+    0+    2+  0  EGHYBR  5 8
+  ADD    117   1 1   3 4  0.56568542
+  ADD    119   4 5   2 3  0.42163702
+  ADD    142   1 1   3 4  0.84852814
+  ADD    144   1 5   3 3  0.93419873
+  ADD    145   1 8   3 1  0.57207755
+  ADD    153   4 1   2 4  0.93419873
+  ADD    155   4 5   2 3  0.10577718
+  ADD    156   4 8   2 1  -0.77730033
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^1+    0+   ^1+  0  EGHYBR   6 12
+  ADD    117    1  1    3  4  0.69282032
+  ADD    118    4  5    1  4  0.58554004
+  ADD    119    5  9    2  3  0.51639778
+  ADD    142    1  1    3  4  -0.69282032
+  ADD    143    1  5    3  4  1.09544512
+  ADD    144    1  9    3  3  0.57207755
+  ADD    145    1 12    3  1  0.93419873
+  ADD    147    4  1    1  4  -1.09544512
+  ADD    148    4  5    1  4  -0.23354968
+  ADD    149    4  9    1  3  -0.90453403
+  ADD    150    4 12    1  1  0.54194676
+  ADD    153    5  1    2  4  0.57207755
+  ADD    154    5  5    2  4  0.90453403
+  ADD    155    5  9    2  3  -0.84207536
+  ADD    156    5 12    2  1  -0.15866577
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^0+    0+   ^0+  0  EGHYBR  1 4
+  ADD    118   1 1   1 4  0.33806170
+  ADD    148   1 1   1 4  -0.80903983
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     0+    0+    0+  0  T2GHYBR  4 5
+  ADD    115   1 1   2 2  1.34164079
+  ADD    119   3 3   2 3  0.44721360
+  ADD    138   1 3   2 3  -1.09544511
+  ADD    151   3 1   2 2  -1.09544511
+  ADD    155   3 3   2 3  -0.52357031
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI     1+    0+    1+  0  T2GHYBR   4 13
+  ADD    116    1  1    1  4  1.34164079
+  ADD    118    2  5    1  4  0.87831007
+  ADD    119    3  9    2  3  0.77459667
+  ADD    139    1  5    1  4  -1.09544512
+  ADD    140    1  9    1  3  -1.09544511
+  ADD    141    1 12    1  1  +0
+  ADD    141    1 13    1  1  -1.09544512
+  ADD    146    2  1    1  4  -1.09544512
+  ADD    148    2  5    1  4  -0.70064905
+  ADD    149    2  9    1  3  0.61791438
+  ADD    150    2 12    1  1  -0.92640848
+  ADD    150    2 13    1  1  -0.21922826
+  ADD    152    3  1    2  4  1.09544511
+  ADD    154    3  5    2  4  -0.61791438
+  ADD    155    3  9    2  3  -0.45342519
+  ADD    156    3 12    2  1  -0.55584509
+  ADD    156    3 13    2  1  0.51153261
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI     2+    0+    2+  0  T2GHYBR  5 8
+  ADD    117   1 1   3 4  0.84852814
+  ADD    119   4 5   2 3  0.63245553
+  ADD    142   1 1   3 4  -0.84852814
+  ADD    144   1 5   3 3  -0.93419873
+  ADD    145   1 8   3 1  -0.57207755
+  ADD    153   4 1   2 4  -0.93419873
+  ADD    155   4 5   2 3  -0.10577718
+  ADD    156   4 8   2 1  0.77730033
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^1+    0+   ^1+  0  T2GHYBR   6 12
+  ADD    117    1  1    3  4  1.03923048
+  ADD    118    4  5    1  4  0.87831007
+  ADD    119    5  9    2  3  0.77459667
+  ADD    142    1  1    3  4  0.69282032
+  ADD    143    1  5    3  4  -1.09544512
+  ADD    144    1  9    3  3  -0.57207755
+  ADD    145    1 12    3  1  -0.93419873
+  ADD    147    4  1    1  4  1.09544512
+  ADD    148    4  5    1  4  0.23354968
+  ADD    149    4  9    1  3  0.90453403
+  ADD    150    4 12    1  1  -0.54194676
+  ADD    153    5  1    2  4  -0.57207755
+  ADD    154    5  5    2  4  -0.90453403
+  ADD    155    5  9    2  3  0.84207536
+  ADD    156    5 12    2  1  0.15866577
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^0+    0+   ^0+  0  T2GHYBR  1 4
+  ADD    118   1 1   1 4  0.50709255
+  ADD    148   1 1   1 4  0.80903983
+  END T2GHYBR
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  HAMILTONIAN  4 4
+  ADD    157   1 1   2 2  1.00000000
+  ADD    161   3 3   2 2  0.33333333
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  HAMILTONIAN  4 4
+  ADD    158   1 1   1 1  1.00000000
+  ADD    160   2 2   1 1  0.65465367
+  ADD    161   3 3   2 2  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  HAMILTONIAN  5 5
+  ADD    159   1 1   3 3  0.63245553
+  ADD    161   4 4   2 2  0.47140452
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  HAMILTONIAN  6 6
+  ADD    159   1 1   3 3  0.77459667
+  ADD    160   4 4   1 1  0.65465367
+  ADD    161   5 5   2 2  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  HAMILTONIAN  1 1
+  ADD    160   1 1   1 1  0.37796447
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     0+    0+    0+  0  10DQ  4 4
+  ADD     22   1 3   2 2  1.09544511
+  ADD     32   3 1   2 2  1.09544511
+  ADD     36   3 3   2 2  0.52357031
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     1+    0+    1+  0  10DQ  4 4
+  ADD     23   1 2   1 1  1.09544512
+  ADD     24   1 3   1 2  1.09544511
+  ADD     28   2 1   1 1  1.09544512
+  ADD     30   2 2   1 1  0.70064905
+  ADD     31   2 3   1 2  -0.61791438
+  ADD     33   3 1   2 1  -1.09544511
+  ADD     35   3 2   2 1  0.61791438
+  ADD     36   3 3   2 2  0.45342519
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     2+    0+    2+  0  10DQ  5 5
+  ADD     25   1 1   3 3  0.84852814
+  ADD     27   1 4   3 2  0.93419873
+  ADD     34   4 1   2 3  0.93419873
+  ADD     36   4 4   2 2  0.10577718
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^1+    0+   ^1+  0  10DQ  6 6
+  ADD     25   1 1   3 3  -0.69282032
+  ADD     26   1 4   3 1  1.09544512
+  ADD     27   1 5   3 2  0.57207755
+  ADD     29   4 1   1 3  -1.09544512
+  ADD     30   4 4   1 1  -0.23354968
+  ADD     31   4 5   1 2  -0.90453403
+  ADD     34   5 1   2 3  0.57207755
+  ADD     35   5 4   2 1  0.90453403
+  ADD     36   5 5   2 2  -0.84207536
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^0+    0+   ^0+  0  10DQ  1 1
+  ADD     30   1 1   1 1  -0.80903983
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     0+    0+    0+  0  HAMILTONIAN  5 5
+  ADD    162   1 1   2 2  1.00000000
+  ADD    166   3 3   3 3  0.33333333
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     1+    0+    1+  0  HAMILTONIAN  13 13
+  ADD    163    1  1    4  4  1.00000000
+  ADD    165    5  5    4  4  0.65465367
+  ADD    166    9  9    3  3  0.57735027
+  ADD    167   12 12    1  1  0.52223297
+  ADD    167   12 13    1  1  +0
+  ADD    167   13 12    1  1  +0
+  ADD    167   13 13    1  1  0.52223297
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     2+    0+    2+  0  HAMILTONIAN  8 8
+  ADD    164   1 1   4 4  0.63245553
+  ADD    166   5 5   3 3  0.47140452
+  ADD    167   8 8   1 1  0.42640143
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^1+    0+   ^1+  0  HAMILTONIAN  12 12
+  ADD    164    1  1    4  4  0.77459667
+  ADD    165    5  5    4  4  0.65465367
+  ADD    166    9  9    3  3  0.57735027
+  ADD    167   12 12    1  1  0.52223297
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^0+    0+   ^0+  0  HAMILTONIAN  4 4
+  ADD    165   1 1   4 4  0.37796447
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     0+    0+    0+  0  10DQ  5 5
+  ADD     76   1 3   2 3  1.09544511
+  ADD     89   3 1   3 2  1.09544511
+  ADD     93   3 3   3 3  0.52357031
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     1+    0+    1+  0  10DQ  13 13
+  ADD     77    1  5    4  4  1.09544512
+  ADD     78    1  9    4  3  1.09544511
+  ADD     79    1 12    4  1  +0
+  ADD     79    1 13    4  1  1.09544512
+  ADD     84    5  1    4  4  1.09544512
+  ADD     86    5  5    4  4  0.70064905
+  ADD     87    5  9    4  3  -0.61791438
+  ADD     88    5 12    4  1  0.92640848
+  ADD     88    5 13    4  1  0.21922826
+  ADD     90    9  1    3  4  -1.09544511
+  ADD     92    9  5    3  4  0.61791438
+  ADD     93    9  9    3  3  0.45342519
+  ADD     94    9 12    3  1  0.55584509
+  ADD     94    9 13    3  1  -0.51153261
+  ADD     95   12  1    1  4  +0
+  ADD     95   13  1    1  4  1.09544512
+  ADD     97   12  5    1  4  0.92640848
+  ADD     97   13  5    1  4  0.21922826
+  ADD     98   12  9    1  3  -0.55584509
+  ADD     98   13  9    1  3  0.51153261
+  ADD     99   12 12    1  1  -0.65435471
+  ADD     99   12 13    1  1  0.15800876
+  ADD     99   13 12    1  1  0.15800876
+  ADD     99   13 13    1  1  0.65435471
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     2+    0+    2+  0  10DQ  8 8
+  ADD     80   1 1   4 4  0.84852814
+  ADD     82   1 5   4 3  0.93419873
+  ADD     83   1 8   4 1  0.57207755
+  ADD     91   5 1   3 4  0.93419873
+  ADD     93   5 5   3 3  0.10577718
+  ADD     94   5 8   3 1  -0.77730033
+  ADD     96   8 1   1 4  -0.57207755
+  ADD     98   8 5   1 3  0.77730033
+  ADD     99   8 8   1 1  -0.41979016
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^1+    0+   ^1+  0  10DQ  12 12
+  ADD     80    1  1    4  4  -0.69282032
+  ADD     81    1  5    4  4  1.09544512
+  ADD     82    1  9    4  3  0.57207755
+  ADD     83    1 12    4  1  0.93419873
+  ADD     85    5  1    4  4  -1.09544512
+  ADD     86    5  5    4  4  -0.23354968
+  ADD     87    5  9    4  3  -0.90453403
+  ADD     88    5 12    4  1  0.54194676
+  ADD     91    9  1    3  4  0.57207755
+  ADD     92    9  5    3  4  0.90453403
+  ADD     93    9  9    3  3  -0.84207536
+  ADD     94    9 12    3  1  -0.15866577
+  ADD     96   12  1    1  4  -0.93419873
+  ADD     97   12  5    1  4  0.54194676
+  ADD     98   12  9    1  3  0.15866577
+  ADD     99   12 12    1  1  0.34275723
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^0+    0+   ^0+  0  10DQ  4 4
+  ADD     86   1 1   4 4  -0.80903983
+  END 10DQ
+ IRREP GROUND    0-  MULT 2   DIM 1
+ IRREP GROUND    1-  MULT 7   DIM 3
+ IRREP GROUND    2-  MULT 5   DIM 2
+ IRREP GROUND   ^1-  MULT 8   DIM 3
+ IRREP GROUND   ^0-  MULT 3   DIM 1
+ IRREP EXCITE    0-  MULT 2   DIM 1
+ IRREP EXCITE    1-  MULT 7   DIM 3
+ IRREP EXCITE    2-  MULT 5   DIM 2
+ IRREP EXCITE   ^1-  MULT 8   DIM 3
+ IRREP EXCITE   ^0-  MULT 3   DIM 1
+
+
+ REDUCEDMATRIX TRANSI     0-    0+    0-  0  EGHYBR  2 2
+  ADD     97   1 1   1 1  0.89442719
+  ADD    101   2 2   1 1  0.29814240
+  ADD    118   1 2   1 1  1.09544511
+  ADD    128   2 1   1 1  1.09544511
+  ADD    132   2 2   1 1  0.52357031
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     1-    0+    1-  0  EGHYBR  7 7
+  ADD     98   1 1   3 3  0.89442719
+  ADD    100   4 4   3 3  0.58554004
+  ADD    101   7 7   1 1  0.51639778
+  ADD    119   1 4   3 3  1.09544512
+  ADD    120   1 7   3 1  1.09544511
+  ADD    124   4 1   3 3  1.09544512
+  ADD    126   4 4   3 3  0.70064905
+  ADD    127   4 7   3 1  -0.61791438
+  ADD    129   7 1   1 3  -1.09544511
+  ADD    131   7 4   1 3  0.61791438
+  ADD    132   7 7   1 1  0.45342519
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     2-    0+    2-  0  EGHYBR  5 5
+  ADD     99   1 1   4 4  0.56568542
+  ADD    101   5 5   1 1  0.42163702
+  ADD    121   1 1   4 4  0.84852814
+  ADD    123   1 5   4 1  0.93419873
+  ADD    130   5 1   1 4  0.93419873
+  ADD    132   5 5   1 1  0.10577718
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^1-    0+   ^1-  0  EGHYBR  8 8
+  ADD     99   1 1   4 4  0.69282032
+  ADD    100   5 5   3 3  0.58554004
+  ADD    101   8 8   1 1  0.51639778
+  ADD    121   1 1   4 4  -0.69282032
+  ADD    122   1 5   4 3  1.09544512
+  ADD    123   1 8   4 1  0.57207755
+  ADD    125   5 1   3 4  -1.09544512
+  ADD    126   5 5   3 3  -0.23354968
+  ADD    127   5 8   3 1  -0.90453403
+  ADD    130   8 1   1 4  0.57207755
+  ADD    131   8 5   1 3  0.90453403
+  ADD    132   8 8   1 1  -0.84207536
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^0-    0+   ^0-  0  EGHYBR  3 3
+  ADD    100   1 1   3 3  0.33806170
+  ADD    126   1 1   3 3  -0.80903983
+  END EGHYBR
+
+
+ REDUCEDMATRIX TRANSI     0-    0+    0-  0  T2GHYBR  2 2
+  ADD     97   1 1   1 1  1.34164079
+  ADD    101   2 2   1 1  0.44721360
+  ADD    118   1 2   1 1  -1.09544511
+  ADD    128   2 1   1 1  -1.09544511
+  ADD    132   2 2   1 1  -0.52357031
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI     1-    0+    1-  0  T2GHYBR  7 7
+  ADD     98   1 1   3 3  1.34164079
+  ADD    100   4 4   3 3  0.87831007
+  ADD    101   7 7   1 1  0.77459667
+  ADD    119   1 4   3 3  -1.09544512
+  ADD    120   1 7   3 1  -1.09544511
+  ADD    124   4 1   3 3  -1.09544512
+  ADD    126   4 4   3 3  -0.70064905
+  ADD    127   4 7   3 1  0.61791438
+  ADD    129   7 1   1 3  1.09544511
+  ADD    131   7 4   1 3  -0.61791438
+  ADD    132   7 7   1 1  -0.45342519
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI     2-    0+    2-  0  T2GHYBR  5 5
+  ADD     99   1 1   4 4  0.84852814
+  ADD    101   5 5   1 1  0.63245553
+  ADD    121   1 1   4 4  -0.84852814
+  ADD    123   1 5   4 1  -0.93419873
+  ADD    130   5 1   1 4  -0.93419873
+  ADD    132   5 5   1 1  -0.10577718
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^1-    0+   ^1-  0  T2GHYBR  8 8
+  ADD     99   1 1   4 4  1.03923048
+  ADD    100   5 5   3 3  0.87831007
+  ADD    101   8 8   1 1  0.77459667
+  ADD    121   1 1   4 4  0.69282032
+  ADD    122   1 5   4 3  -1.09544512
+  ADD    123   1 8   4 1  -0.57207755
+  ADD    125   5 1   3 4  1.09544512
+  ADD    126   5 5   3 3  0.23354968
+  ADD    127   5 8   3 1  0.90453403
+  ADD    130   8 1   1 4  -0.57207755
+  ADD    131   8 5   1 3  -0.90453403
+  ADD    132   8 8   1 1  0.84207536
+  END T2GHYBR
+
+
+ REDUCEDMATRIX TRANSI    ^0-    0+   ^0-  0  T2GHYBR  3 3
+  ADD    100   1 1   3 3  0.50709255
+  ADD    126   1 1   3 3  0.80903983
+  END T2GHYBR
+
+
+ REDUCEDMATRIX GROUND     0-    0+    0-  0  HAMILTONIAN  2 2
+  ADD    133   1 1   1 1  1.00000000
+  ADD    137   2 2   1 1  0.33333333
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     1-    0+    1-  0  HAMILTONIAN  7 7
+  ADD    134   1 1   3 3  1.00000000
+  ADD    136   4 4   3 3  0.65465367
+  ADD    137   7 7   1 1  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     2-    0+    2-  0  HAMILTONIAN  5 5
+  ADD    135   1 1   4 4  0.63245553
+  ADD    137   5 5   1 1  0.47140452
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^1-    0+   ^1-  0  HAMILTONIAN  8 8
+  ADD    135   1 1   4 4  0.77459667
+  ADD    136   5 5   3 3  0.65465367
+  ADD    137   8 8   1 1  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND    ^0-    0+   ^0-  0  HAMILTONIAN  3 3
+  ADD    136   1 1   3 3  0.37796447
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX GROUND     0-    0+    0-  0  10DQ  2 2
+  ADD     22   1 2   1 1  1.09544511
+  ADD     32   2 1   1 1  1.09544511
+  ADD     36   2 2   1 1  0.52357031
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     1-    0+    1-  0  10DQ  7 7
+  ADD     23   1 4   3 3  1.09544512
+  ADD     24   1 7   3 1  1.09544511
+  ADD     28   4 1   3 3  1.09544512
+  ADD     30   4 4   3 3  0.70064905
+  ADD     31   4 7   3 1  -0.61791438
+  ADD     33   7 1   1 3  -1.09544511
+  ADD     35   7 4   1 3  0.61791438
+  ADD     36   7 7   1 1  0.45342519
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND     2-    0+    2-  0  10DQ  5 5
+  ADD     25   1 1   4 4  0.84852814
+  ADD     27   1 5   4 1  0.93419873
+  ADD     34   5 1   1 4  0.93419873
+  ADD     36   5 5   1 1  0.10577718
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^1-    0+   ^1-  0  10DQ  8 8
+  ADD     25   1 1   4 4  -0.69282032
+  ADD     26   1 5   4 3  1.09544512
+  ADD     27   1 8   4 1  0.57207755
+  ADD     29   5 1   3 4  -1.09544512
+  ADD     30   5 5   3 3  -0.23354968
+  ADD     31   5 8   3 1  -0.90453403
+  ADD     34   8 1   1 4  0.57207755
+  ADD     35   8 5   1 3  0.90453403
+  ADD     36   8 8   1 1  -0.84207536
+  END 10DQ
+
+
+ REDUCEDMATRIX GROUND    ^0-    0+   ^0-  0  10DQ  3 3
+  ADD     30   1 1   3 3  -0.80903983
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  HAMILTONIAN  2 2
+  ADD    138   1 1   1 1  1.00000000
+  ADD    142   2 2   1 1  0.33333333
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  HAMILTONIAN  7 7
+  ADD    139   1 1   3 3  1.00000000
+  ADD    141   4 4   3 3  0.65465367
+  ADD    142   7 7   1 1  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  HAMILTONIAN  5 5
+  ADD    140   1 1   4 4  0.63245553
+  ADD    142   5 5   1 1  0.47140452
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  HAMILTONIAN  8 8
+  ADD    140   1 1   4 4  0.77459667
+  ADD    141   5 5   3 3  0.65465367
+  ADD    142   8 8   1 1  0.57735027
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  HAMILTONIAN  3 3
+  ADD    141   1 1   3 3  0.37796447
+  END HAMILTONIAN
+
+
+ REDUCEDMATRIX EXCITE     0-    0+    0-  0  10DQ  2 2
+  ADD     70   1 2   1 1  1.09544511
+  ADD     80   2 1   1 1  1.09544511
+  ADD     84   2 2   1 1  0.52357031
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     1-    0+    1-  0  10DQ  7 7
+  ADD     71   1 4   3 3  1.09544512
+  ADD     72   1 7   3 1  1.09544511
+  ADD     76   4 1   3 3  1.09544512
+  ADD     78   4 4   3 3  0.70064905
+  ADD     79   4 7   3 1  -0.61791438
+  ADD     81   7 1   1 3  -1.09544511
+  ADD     83   7 4   1 3  0.61791438
+  ADD     84   7 7   1 1  0.45342519
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE     2-    0+    2-  0  10DQ  5 5
+  ADD     73   1 1   4 4  0.84852814
+  ADD     75   1 5   4 1  0.93419873
+  ADD     82   5 1   1 4  0.93419873
+  ADD     84   5 5   1 1  0.10577718
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^1-    0+   ^1-  0  10DQ  8 8
+  ADD     73   1 1   4 4  -0.69282032
+  ADD     74   1 5   4 3  1.09544512
+  ADD     75   1 8   4 1  0.57207755
+  ADD     77   5 1   3 4  -1.09544512
+  ADD     78   5 5   3 3  -0.23354968
+  ADD     79   5 8   3 1  -0.90453403
+  ADD     82   8 1   1 4  0.57207755
+  ADD     83   8 5   1 3  0.90453403
+  ADD     84   8 8   1 1  -0.84207536
+  END 10DQ
+
+
+ REDUCEDMATRIX EXCITE    ^0-    0+   ^0-  0  10DQ  3 3
+  ADD     78   1 1   3 3  -0.80903983
+  END 10DQ

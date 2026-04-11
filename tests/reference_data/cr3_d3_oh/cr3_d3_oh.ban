@@ -1,0 +1,22 @@
+ PRMULT 
+ erange 0.300 
+ NCONF 2 2 
+ N2 1
+ DEF EG1 = 0.000 UNITY 
+ DEF EF1 = 0.000 UNITY 
+ DEF EG2 = 4.500 UNITY 
+ DEF EF2 = -1.500 UNITY 
+ XMIX 2  2.200 1.100                 
+ 2   1 1 2   2 1 2 
+ XHAM 2 1.0 2.000 
+ 4   1 1   1 2   2 1   2 2
+ TRAN  2    1 1    2 2
+ TRIADS 
+   S0+    1-   S0-  0 
+   S0+    1-   S1-  0 
+   S1+    1-   S0-  0 
+   S1+    1-   S1-  0 
+   S1+    1-   S1-  1 
+   S1+    1-  ^S0-  0 
+  ^S0+    1-   S1-  0 
+  ^S0+    1-  ^S0-  0 

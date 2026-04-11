@@ -1,0 +1,149 @@
+ Y
+    % vertical           1
+ racer O3
+ to    Oh
+ to    D4h
+ endchain
+ actor   1- perp        transi
+   oper MULTIPOLE
+     branch  1- > 0 1- >  1-   1.000
+ actor  ^0- para        transi
+   oper MULTIPOLE
+     branch  1- > 0 1- > ^0-   1.000
+ actor   0+ HAMILTONIAN ground
+ actor   0+ 10Dq        ground
+ actor   0+ Dt          ground
+ actor   0+ Ds          ground
+ actor   0+ HAMILTONIAN excite
+ actor   0+ 10Dq        excite
+ actor   0+ Dt          excite
+ actor   0+ Ds          excite
+ RUN
+    % vertical           2
+ racer O3
+ to    Oh
+ to    D4h
+ endchain
+ actor   1- perp        transi
+   oper MULTIPOLE
+     branch  1- > 0 1- >    1-  1.000
+ actor   ^0- para       transi
+   oper MULTIPOLE
+     branch  1- > 0 1- > ^0-   1.000
+ actor   0+ HAMILTONIAN ground
+ actor   0+ 10Dq        ground
+ actor   0+ Dt          ground
+ actor   0+ Ds          ground
+ actor   0+ HAMILTONIAN excite
+ actor   0+ 10Dq        excite
+ actor   0+ Dt          excite
+ actor   0+ Ds          excite
+ RUN
+    % horizontal           1
+ racer O3
+ to    Oh
+ to    D4h
+ endchain
+      ACTOR   0+ B1hybr      transi
+   OPER   MULTIPOLE 
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+   1.643167673
+ BRANCH  4+ > 0 2+  > 0+  -1.388730150
+ BRANCH  2+ > 0 2+  > 0+  -1.195228609
+  ACTOR   0+ A1hybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+   1.643167673
+ BRANCH  4+ > 0 2+  > 0+  +1.388730150
+ BRANCH  2+ > 0 2+  > 0+  +1.195228609
+  ACTOR   0+ B2hybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+  -1.095445115
+ BRANCH  4+ > 0 2+  > 0+  +1.851640200
+ BRANCH  2+ > 0 2+  > 0+  -1.195228609
+  ACTOR   0+ Ehybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.8944271910
+ BRANCH  4+ > 0 0+  > 0+  -2.190890230
+ BRANCH  4+ > 0 2+  > 0+  -1.851640200
+ BRANCH  2+ > 0 2+  > 0+  +1.195228609
+ actor   0+ HAMILTONIAN ground
+   oper     HAMILTONIAN
+     branch  0+ > 0 0+ >  0+   1.000
+ actor   0+ 10Dq        ground
+   oper     SHEll1
+    BRANCH 4+ > 0 0+ > 0+  3.28633
+ actor   0+ Dt          ground
+   oper SHEll1
+   BRANCH 4+ > 0 2+ > 0+  -16.2019 
+ actor   0+ Ds ground
+   oper SHEll1
+    BRANCH 2+ > 0 2+ > 0+      -8.3666
+ actor   0+ HAMILTONIAN excite
+   oper     HAMILTONIAN
+     branch  0+ > 0 0+ >  0+   1.000
+ actor   0+ 10Dq        excite
+   oper     SHEll1
+    BRANCH 4+ > 0 0+ > 0+        3.28633
+ actor   0+ Dt          excite
+   oper     SHEll1
+    BRANCH 4+ > 0 2+ > 0+      -16.2019
+ actor   0+ Ds          excite
+   oper     SHEll1
+    BRANCH 2+ > 0 2+ > 0+       -8.3666
+   RUN
+    % horizontal           2
+ racer O3
+ to    Oh
+ to    D4h
+ endchain
+      ACTOR   0+ B1hybr      transi
+   OPER   MULTIPOLE 
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+   1.643167673
+ BRANCH  4+ > 0 2+  > 0+  -1.388730150
+ BRANCH  2+ > 0 2+  > 0+  -1.195228609
+  ACTOR   0+ A1hybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+   1.643167673
+ BRANCH  4+ > 0 2+  > 0+  +1.388730150
+ BRANCH  2+ > 0 2+  > 0+  +1.195228609
+  ACTOR   0+ B2hybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.4472135955
+ BRANCH  4+ > 0 0+  > 0+  -1.095445115
+ BRANCH  4+ > 0 2+  > 0+  +1.851640200
+ BRANCH  2+ > 0 2+  > 0+  -1.195228609
+  ACTOR   0+ Ehybr      transi
+   OPER   MULTIPOLE
+ BRANCH  0+ > 0 0+  > 0+   0.8944271910
+ BRANCH  4+ > 0 0+  > 0+  -2.190890230
+ BRANCH  4+ > 0 2+  > 0+  -1.851640200
+ BRANCH  2+ > 0 2+  > 0+  +1.195228609
+ actor   0+ HAMILTONIAN ground
+   oper     HAMILTONIAN
+     branch  0+ > 0 0+ >  0+   1.000
+ actor   0+ 10Dq        ground
+   oper     SHEll1
+    BRANCH 4+ > 0 0+ > 0+       3.28633
+ actor   0+ Dt          ground
+   oper     SHEll1
+   BRANCH 4+ > 0 2+ > 0+       -16.2019
+ actor   0+ Ds          ground
+   oper     SHEll1
+    BRANCH 2+ > 0 2+ > 0+      -8.3666
+ actor   0+ HAMILTONIAN excite
+   oper     HAMILTONIAN
+     branch  0+ > 0 0+ >  0+   1.000
+ actor   0+ 10Dq        excite
+   oper     SHEll1
+    BRANCH 4+ > 0 0+ > 0+        3.28633
+ actor   0+ Dt          excite
+   oper     SHEll1
+    BRANCH 4+ > 0 2+ > 0+       -16.2019
+ actor   0+ Ds          excite
+   oper     SHEll1
+    BRANCH 2+ > 0 2+ > 0+       -8.3666
+   RUN

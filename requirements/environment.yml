@@ -1,0 +1,17 @@
+name: multi
+channels:
+  - pytorch
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pytorch>=2.2
+  - numpy>=1.24
+  - scipy>=1.11
+  - sympy>=1.12
+  - pandas>=2.0
+  - pyyaml>=6.0
+  - matplotlib>=3.8
+  - pytest>=7.4
+  - pytest-cov
+  # After creating the env, run: pip install -e . from the multitorch/ root

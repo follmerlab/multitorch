@@ -1,0 +1,27 @@
+ Y
+ % vertical 1 1
+  butler O3
+  to    Oh
+  to    D4h
+  endchain
+actor   0+ HAMILTONIAN ground  PRINTEIG
+ OPER HAMILTONIAN
+  BRANCH 0+ > 0 0+ > 0+       1.0
+ OPER SHELL2
+  BRANCH 4+ > 0 0+ > 0+      3.2863
+  BRANCH 4+ > 0 2+ > 0+      0.0
+  BRANCH 2+ > 0 2+ > 0+      -0.8367
+actor   0+ HAMILTONIAN excite  PRINTEIG
+ OPER HAMILTONIAN
+  BRANCH 0+ > 0 0+ > 0+       1.0
+ OPER SHELL2
+  BRANCH 4+ > 0 0+ > 0+      3.2863
+  BRANCH 4+ > 0 2+ > 0+      0.0
+  BRANCH 2+ > 0 2+ > 0+      -0.8367
+ actor   1- perp        transi PRINTTRANS 5
+   oper MULTIPOLE
+     branch  1- > 0 1- >    1-  1.000
+ actor   ^0- para       transi PRINTTRANS 5
+   oper MULTIPOLE
+     branch  1- > 0 1- > ^0-   1.000
+RUN

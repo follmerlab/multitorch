@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68", "setuptools_scm>=8"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multitorch"
+version = "0.1.0.dev0"
+description = "PyTorch implementation of multiplet X-ray spectroscopy simulations"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+dependencies = [
+    "torch>=2.2.0",
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "pandas>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.8"]
+notebook = ["matplotlib>=3.8", "jupyter>=1.0", "ipykernel>=6.0"]
+dev = ["pytest>=7.4", "pytest-cov", "sympy>=1.12"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["multitorch*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -v"
+markers = [
+    "slow: marks tests as slow (deselect with '-m not slow')",
+    "phase0: I/O scaffolding tests",
+    "phase1: spectrum layer tests",
+    "phase2: hamiltonian layer tests",
+    "phase3: angular momentum tests",
+    "phase4: atomic parameter tests",
+    "integration: end-to-end integration tests",
+]
