@@ -19,19 +19,18 @@ Mirrors the structure of ``pyctm.rixs.read_abs_ems`` and
 
 Unit conventions
 ----------------
-``read_ban_output`` parses ``.ban_out`` files literally:
+``read_ban_output`` parses ``.ban_out`` files literally. The bra column is
+labelled "Ry" in the file format documentation but the values are actually
+small offsets in the same eV-convention used by ``Ef`` (this matches the
+treatment in :mod:`multitorch.spectrum.sticks` where transition energies
+are computed as ``Ef - Eg`` without any Ry→eV conversion).
 
-* ``Eg`` (the bra eigenvalues) come out in **Ry**.
-* ``Ef`` (the ket eigenvalues) come out in **eV**.
-* ``M`` has shape ``(n_bra, n_ket)`` and is pre-squared (intensity).
-
-For RIXS we keep the absolute ground-state energies in Ry (matching what
-``kramers_heisenberg`` expects for its ``Eg`` argument) and use the
-absorption file's ket energies as the canonical intermediate-state grid in
-eV. The emission file's bra energies are intentionally **not** used: they
-parameterize the same intermediate states but in Ry, and trusting the
-eigenvalue ordering from the file is more robust than re-aligning two unit
-systems.
+We pass these values straight through to :func:`kramers_heisenberg`, which
+also operates in eV throughout. The emission file's bra column is
+intentionally **not** used: it parameterizes the same physical intermediate
+states as the absorption file's ket column, and trusting the eigenvalue
+ordering from the absorption side avoids having to re-align two parsed
+copies of the same eigenvalue list.
 """
 from __future__ import annotations
 
@@ -61,7 +60,7 @@ class RIXSChannel:
     """
 
     key: ChannelKey
-    Eg: torch.Tensor   # (n_g,)        ground state energies, Ry
+    Eg: torch.Tensor   # (n_g,)        ground state energies, eV
     TA: torch.Tensor   # (n_g, n_i)    pre-squared absorption matrix elements
     Ei: torch.Tensor   # (n_i,)        intermediate state energies, eV
     TE: torch.Tensor   # (n_i, n_f)    pre-squared emission matrix elements
@@ -89,8 +88,8 @@ class RIXSStore:
     ems_path: Path | None = None
 
     @property
-    def min_gs_ry(self) -> float:
-        """Lowest ground-state energy across all channels (Ry).
+    def min_gs(self) -> float:
+        """Lowest ground-state energy across all channels (eV).
 
         Useful as the ``min_gs`` argument to ``kramers_heisenberg`` for
         Boltzmann population referencing.
@@ -201,6 +200,22 @@ def read_abs_ems_pair(
     abs_bo = read_ban_output(abs_path)
     ems_bo = read_ban_output(ems_path)
 
+    store = build_rixs_store(abs_bo, ems_bo)
+    store.abs_path = abs_path
+    store.ems_path = ems_path
+    return store
+
+
+def build_rixs_store(
+    abs_bo: BanOutput,
+    ems_bo: BanOutput,
+) -> RIXSStore:
+    """Pair two already-parsed ``BanOutput`` objects into a ``RIXSStore``.
+
+    Same matching / truncation rules as :func:`read_abs_ems_pair`. This is
+    the in-memory entry point used by tests and by anyone who has already
+    parsed the ``.ban_out`` files (e.g. when caching the parser results).
+    """
     abs_groups = _group_by_triad(abs_bo)
     ems_groups = _group_by_triad(ems_bo)
 
@@ -256,4 +271,4 @@ def read_abs_ems_pair(
                 )
             )
 
-    return RIXSStore(channels=channels, abs_path=abs_path, ems_path=ems_path)
+    return RIXSStore(channels=channels)

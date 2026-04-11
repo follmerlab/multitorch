@@ -300,8 +300,7 @@ def calcRIXS(
             f"{ban_abs_path} and {ban_ems_path}."
         )
 
-    Ry_to_eV = 13.60569
-    min_gs_ry = store.min_gs_ry
+    min_gs = store.min_gs
 
     # Auto-generate Einc / Efin grids from the channel data.
     if Einc is None:
@@ -316,13 +315,13 @@ def calcRIXS(
 
     if Efin is None:
         # Emitted photon energy Efin satisfies energy conservation
-        # Efin ≈ Einc − (Ef − Eg_eV) for the dominant peaks. Span the
-        # full reachable range with the same padding.
+        # Efin ≈ Einc − (Ef − Eg) for the dominant peaks (all in eV).
+        # Span the full reachable range with the same padding.
         max_loss = 0.0
         min_loss = 0.0
         for ch in store.channels:
-            Eg_eV = float(ch.Eg.min()) * Ry_to_eV
-            losses = ch.Ef - Eg_eV   # (n_f,) eV  — final - ground in eV
+            Eg_min = float(ch.Eg.min())
+            losses = ch.Ef - Eg_min   # (n_f,) eV  — final - ground
             max_loss = max(max_loss, float(losses.max()))
             min_loss = min(min_loss, float(losses.min()))
         Ei_min = min(float(ch.Ei.min()) for ch in store.channels)
@@ -343,7 +342,7 @@ def calcRIXS(
             Eg=ch.Eg, TA=ch.TA, Ei=ch.Ei, TE=ch.TE, Ef=ch.Ef,
             Einc=Einc, Efin=Efin,
             Gamma_i=Gamma_i, Gamma_f=Gamma_f,
-            min_gs=min_gs_ry, T=T, device=device,
+            min_gs=min_gs, T=T, device=device,
         )
         intensity = intensity + rm
 

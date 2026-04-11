@@ -21,7 +21,7 @@ from multitorch._constants import DTYPE, k_B
 
 
 def kramers_heisenberg(
-    Eg: torch.Tensor,           # (n_g,)  ground state energies Ry
+    Eg: torch.Tensor,           # (n_g,)  ground state energies eV
     TA: torch.Tensor,           # (n_g, n_i)  absorption matrix elements
     Ei: torch.Tensor,           # (n_i,)  intermediate state energies eV
     TE: torch.Tensor,           # (n_i, n_f)  emission matrix elements
@@ -30,7 +30,7 @@ def kramers_heisenberg(
     Efin: torch.Tensor,         # (n_Efin,)  emitted energies eV
     Gamma_i: Union[float, torch.Tensor],   # intermediate state lifetime FWHM
     Gamma_f: Union[float, torch.Tensor],   # final state lifetime FWHM
-    min_gs: float = 0.0,        # minimum ground state energy (Ry), for Boltzmann
+    min_gs: float = 0.0,        # minimum ground state energy (eV), for Boltzmann
     T: float = 0.0,             # temperature K
     device: str = "cpu",
 ) -> torch.Tensor:
@@ -59,7 +59,7 @@ def kramers_heisenberg(
     n_f = Ef.shape[0]
 
     # Boltzmann population: shape (n_g,)
-    Ry_to_eV = torch.tensor(13.60569, dtype=DTYPE, device=device)
+    # Eg and min_gs are both in eV (the .ban_out / sticks convention).
     if T > 0:
         boltz = torch.exp(
             (torch.tensor(min_gs, dtype=DTYPE, device=device) - Eg)
@@ -83,10 +83,10 @@ def kramers_heisenberg(
         gf = torch.as_tensor(Gamma_f, dtype=DTYPE, device=device)
 
     # Absorption amplitude denominator:
-    # D[g, i, Einc] = Eg_eV[g] + Einc[Einc] - Ei[i] - 0.5j * gi[Einc]
-    Eg_eV = Eg * Ry_to_eV   # (n_g,)
+    # D[g, i, Einc] = Eg[g] + Einc[Einc] - Ei[i] - 0.5j * gi[Einc]
+    # Eg is in eV (the .ban_out / sticks convention) so no Ry conversion.
     # Shape broadcast: (n_g, 1, 1) + (1, 1, n_Einc) - (1, n_i, 1) - (1, 1, n_Einc)
-    D_real = (Eg_eV[:, None, None] + Einc[None, None, :]
+    D_real = (Eg[:, None, None] + Einc[None, None, :]
               - Ei[None, :, None])                                    # (n_g, n_i, n_Einc)
     D_imag = -0.5 * gi[None, None, :]                                 # (1, 1, n_Einc)
 
@@ -119,9 +119,9 @@ def kramers_heisenberg(
     # Final state Lorentzian:
     # L[f, Efin] = (gf/2π) / ((Ef - Eg + Efin - Einc)² + (gf/2)²)
     # This is a function of (g, Einc, f, Efin)
-    # Ef_diff[g, Einc, f, Efin] = Ef[f] - Eg_eV[g] + Efin[Efin] - Einc[Einc]
+    # Ef_diff[g, Einc, f, Efin] = Ef[f] - Eg[g] + Efin[Efin] - Einc[Einc]
     Ef_diff = (Ef[None, None, :, None]
-               - Eg_eV[:, None, None, None]
+               - Eg[:, None, None, None]
                + Efin[None, None, None, :]
                - Einc[None, :, None, None])   # (n_g, n_Einc, n_f, n_Efin)
 
