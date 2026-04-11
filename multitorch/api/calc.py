@@ -225,24 +225,131 @@ def calcXES(
 
 
 def calcRIXS(
-    element: str,
-    valence: str,
-    sym: str,
-    edge: str,
-    cf: dict,
+    element: str = '',
+    valence: str = '',
+    sym: str = '',
+    edge: str = '',
+    cf: Optional[dict] = None,
     Einc: Optional[torch.Tensor] = None,
     Efin: Optional[torch.Tensor] = None,
+    Gamma_i: float = 0.4,
+    Gamma_f: float = 0.2,
+    T: float = 80.0,
+    n_Einc: int = 400,
+    n_Efin: int = 400,
+    pad_eV: float = 5.0,
     ban_abs_path: Optional[str] = None,
     ban_ems_path: Optional[str] = None,
+    return_store: bool = False,
+    device: str = "cpu",
     **kwargs,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Calculate a RIXS (resonant inelastic X-ray scattering) plane.
 
-    Returns (Einc_grid, Efin_grid, intensity_2D) arrays.
-    Full Kramers-Heisenberg calculation available in multitorch.spectrum.rixs.
+    Bootstrap mode: pass ``ban_abs_path`` and ``ban_ems_path`` to read a
+    paired absorption/emission ``.ban_out`` set produced by ttban. The full
+    PyTorch physics pipeline (Phase 5) is not yet wired into this function.
+
+    Parameters
+    ----------
+    Einc, Efin
+        Energy grids in eV. If ``None``, auto-generated to span the
+        intermediate-state energies (Einc) and the relevant emitted-photon
+        range (Efin) with ``pad_eV`` padding.
+    Gamma_i, Gamma_f
+        Intermediate- and final-state lifetime FWHM (eV). Defaults to
+        ``0.4`` and ``0.2``, in line with typical L-edge core-hole and
+        resolution widths.
+    T
+        Temperature for Boltzmann population of ground states (K).
+    n_Einc, n_Efin
+        Auto-generated grid sizes (only used when the corresponding axis
+        is ``None``).
+    pad_eV
+        Padding around the data range used when auto-generating grids.
+    ban_abs_path, ban_ems_path
+        Paths to the absorption and emission ``.ban_out`` files.
+    return_store
+        If True, also return the underlying ``RIXSStore`` for inspection.
+
+    Returns
+    -------
+    Einc : torch.Tensor  shape (n_Einc,)
+        Incident energy axis (eV).
+    Efin : torch.Tensor  shape (n_Efin,)
+        Emitted-photon energy axis (eV).
+    intensity : torch.Tensor  shape (n_Einc, n_Efin)
+        Summed Kramers-Heisenberg intensity over all symmetry channels and
+        Boltzmann-weighted ground states.
     """
-    raise NotImplementedError("RIXS pipeline not yet complete. See multitorch.spectrum.rixs.")
+    if ban_abs_path is None or ban_ems_path is None:
+        raise NotImplementedError(
+            "Full PyTorch RIXS pipeline (Phase 5) is not yet complete. "
+            "Use bootstrap mode by passing both ban_abs_path and "
+            "ban_ems_path to a paired absorption/emission .ban_out set."
+        )
+
+    from multitorch.io.read_oba_pair import read_abs_ems_pair
+    from multitorch.spectrum.rixs import kramers_heisenberg
+
+    store = read_abs_ems_pair(ban_abs_path, ban_ems_path)
+    if not store.channels:
+        raise ValueError(
+            f"No matching absorption/emission triads found between "
+            f"{ban_abs_path} and {ban_ems_path}."
+        )
+
+    Ry_to_eV = 13.60569
+    min_gs_ry = store.min_gs_ry
+
+    # Auto-generate Einc / Efin grids from the channel data.
+    if Einc is None:
+        Ei_min = min(float(ch.Ei.min()) for ch in store.channels)
+        Ei_max = max(float(ch.Ei.max()) for ch in store.channels)
+        Einc = torch.linspace(
+            Ei_min - pad_eV, Ei_max + pad_eV, n_Einc,
+            dtype=DTYPE, device=device,
+        )
+    else:
+        Einc = torch.as_tensor(Einc, dtype=DTYPE, device=device)
+
+    if Efin is None:
+        # Emitted photon energy Efin satisfies energy conservation
+        # Efin ≈ Einc − (Ef − Eg_eV) for the dominant peaks. Span the
+        # full reachable range with the same padding.
+        max_loss = 0.0
+        min_loss = 0.0
+        for ch in store.channels:
+            Eg_eV = float(ch.Eg.min()) * Ry_to_eV
+            losses = ch.Ef - Eg_eV   # (n_f,) eV  — final - ground in eV
+            max_loss = max(max_loss, float(losses.max()))
+            min_loss = min(min_loss, float(losses.min()))
+        Ei_min = min(float(ch.Ei.min()) for ch in store.channels)
+        Ei_max = max(float(ch.Ei.max()) for ch in store.channels)
+        Efin = torch.linspace(
+            Ei_min - max_loss - pad_eV,
+            Ei_max - min_loss + pad_eV,
+            n_Efin,
+            dtype=DTYPE, device=device,
+        )
+    else:
+        Efin = torch.as_tensor(Efin, dtype=DTYPE, device=device)
+
+    intensity = torch.zeros((Einc.shape[0], Efin.shape[0]),
+                            dtype=DTYPE, device=device)
+    for ch in store.channels:
+        rm = kramers_heisenberg(
+            Eg=ch.Eg, TA=ch.TA, Ei=ch.Ei, TE=ch.TE, Ef=ch.Ef,
+            Einc=Einc, Efin=Efin,
+            Gamma_i=Gamma_i, Gamma_f=Gamma_f,
+            min_gs=min_gs_ry, T=T, device=device,
+        )
+        intensity = intensity + rm
+
+    if return_store:
+        return Einc, Efin, intensity, store
+    return Einc, Efin, intensity
 
 
 def calcDOC(

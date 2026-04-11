@@ -31,3 +31,31 @@ def getXAS(
 def getXES(ban_output_path: str, **kwargs) -> Tuple[torch.Tensor, torch.Tensor]:
     """Get XES spectrum from a .ban_out file."""
     return getXAS(ban_output_path, **kwargs)
+
+
+def getRIXS(
+    ban_abs_path: str,
+    ban_ems_path: str,
+    Gamma_i: float = 0.4,
+    Gamma_f: float = 0.2,
+    T: float = 80.0,
+    Einc: Optional[torch.Tensor] = None,
+    Efin: Optional[torch.Tensor] = None,
+    n_Einc: int = 400,
+    n_Efin: int = 400,
+    pad_eV: float = 5.0,
+    **kwargs,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Get a RIXS plane from a paired absorption / emission ``.ban_out`` set.
+
+    Mirrors :func:`getXAS` for the bootstrap RIXS pipeline.
+    Returns ``(Einc, Efin, intensity_2D)``.
+    """
+    return calcRIXS(
+        ban_abs_path=ban_abs_path,
+        ban_ems_path=ban_ems_path,
+        Gamma_i=Gamma_i, Gamma_f=Gamma_f, T=T,
+        Einc=Einc, Efin=Efin,
+        n_Einc=n_Einc, n_Efin=n_Efin, pad_eV=pad_eV,
+        **kwargs,
+    )
