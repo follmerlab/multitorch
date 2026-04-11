@@ -157,3 +157,31 @@ def test_excited_state_dimensions(nid8ct_assembled):
     t = nid8ct_assembled.get_triad('0+', '1-', '1-')
     assert t.n_fs == 30  # 15 + 15
     assert t.fs_conf_sizes == [15, 15]
+
+
+@pytest.mark.phase2
+def test_in_memory_entry_point_byte_equivalent(nid8ct_assembled):
+    """
+    Phase 5 contract: ``assemble_and_diagonalize_in_memory`` must produce
+    the same BanResult as the file-based wrapper when fed the parser
+    outputs directly. This is the regression that locks in the C1
+    refactor — if anyone removes the wrapper or breaks the in-memory
+    entry point, this test catches it.
+    """
+    from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+    from multitorch.io.read_rme import read_cowan_store, read_rme_rac_full
+    from multitorch.io.read_ban import read_ban
+
+    cowan = read_cowan_store(REFDATA / "nid8ct.rme_rcg")
+    rac = read_rme_rac_full(REFDATA / "nid8ct.rme_rac")
+    ban = read_ban(REFDATA / "nid8ct.ban")
+    in_mem = assemble_and_diagonalize_in_memory(cowan, rac, ban)
+
+    assert len(in_mem.triads) == len(nid8ct_assembled.triads)
+    for t_mem, t_file in zip(in_mem.triads, nid8ct_assembled.triads):
+        assert t_mem.gs_sym == t_file.gs_sym
+        assert t_mem.act_sym == t_file.act_sym
+        assert t_mem.fs_sym == t_file.fs_sym
+        assert torch.allclose(t_mem.Eg, t_file.Eg, atol=1e-12)
+        assert torch.allclose(t_mem.Ef, t_file.Ef, atol=1e-12)
+        assert torch.allclose(t_mem.T, t_file.T, atol=1e-12)

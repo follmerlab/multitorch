@@ -169,12 +169,17 @@ def assemble_and_diagonalize(
     device: str = 'cpu',
 ) -> BanResult:
     """
-    Full Hamiltonian assembly and diagonalization for a charge transfer calculation.
+    Full Hamiltonian assembly and diagonalization for a charge transfer
+    calculation, **file-based entry point**.
 
     This is the PyTorch equivalent of the Fortran ttban_exact.f program.
-    It reads the .rme_rcg, .rme_rac, and .ban files, assembles the block
-    Hamiltonian for each symmetry triad, diagonalizes, and builds transition
-    matrices.
+    It reads the .rme_rcg, .rme_rac, and .ban files, then forwards to the
+    in-memory core :func:`assemble_and_diagonalize_in_memory`.
+
+    For autograd / Phase 5 (parameters → spectrum) you should call the
+    in-memory variant directly with tensors that carry ``requires_grad``;
+    going through this wrapper round-trips through plain Python objects
+    and parsers, which breaks gradient flow.
 
     Parameters
     ----------
@@ -187,11 +192,46 @@ def assemble_and_diagonalize(
     -------
     BanResult with eigenvalues, eigenvectors, and transition matrices per triad.
     """
-    # 1. Load data
     cowan = read_cowan_store(rme_rcg_path)
     rac = read_rme_rac_full(rme_rac_path)
     ban = read_ban(ban_path)
+    return assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
+
+def assemble_and_diagonalize_in_memory(
+    cowan,
+    rac: RACFileFull,
+    ban: BanData,
+    device: str = 'cpu',
+) -> BanResult:
+    """
+    In-memory core of the Hamiltonian assembly + diagonalization pipeline.
+
+    This is the gradient-friendly entry point: ``cowan``, ``rac``, and
+    ``ban`` may contain torch.Tensor leaves with ``requires_grad=True``
+    (e.g. crystal-field coefficients or Slater reductions built from
+    physical parameters in Phase 5), and the resulting transition
+    matrices in the returned ``BanResult`` will participate in autograd.
+
+    The signature accepts whatever objects the existing parsers
+    (:func:`read_cowan_store`, :func:`read_rme_rac_full`, :func:`read_ban`)
+    produce, so the file-based wrapper is byte-equivalent.
+
+    Parameters
+    ----------
+    cowan : nested COWAN store as returned by ``read_cowan_store``
+        (currently ``List[List[Tensor]]``: per-section, per-add-entry).
+    rac : :class:`RACFileFull`
+        Parsed .rme_rac block + ADD-entry structure.
+    ban : :class:`BanData`
+        Parsed .ban specification (XHAM/XMIX coefficients, EG/EF offsets,
+        triads).
+    device : PyTorch device.
+
+    Returns
+    -------
+    BanResult with eigenvalues, eigenvectors, and transition matrices per triad.
+    """
     nconf = ban.nconf_gs
     xham = ban.xham[0].values if ban.xham else [1.0]
     xmix = ban.xmix[0].values if ban.xmix else []
