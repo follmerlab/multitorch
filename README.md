@@ -5,7 +5,7 @@ L-edge spectra of 3d transition metal complexes. Float64 throughout,
 GPU-agnostic, and (once built from the assembled pipeline) differentiable
 with respect to crystal-field and charge-transfer parameters.
 
-Current status: 166 / 166 tests passing. Both the pre-computed-parameters
+Current status: 173 / 173 tests passing. Both the pre-computed-parameters
 pipeline (read `.rme_rcg` / `.rme_rac` / `.ban` → assemble block
 Hamiltonian → diagonalize → build transition matrix → broaden) and the
 from-scratch HFS SCF pipeline (`atomic/hfs.py` → Slater integrals →
@@ -33,7 +33,7 @@ reference `rcg_cfp72/73` binary tables.
 pytest tests/ -q
 ```
 
-Expect 166 passing, 0 failing.
+Expect 173 passing, 0 failing.
 
 ## End-to-end audit
 
@@ -108,16 +108,23 @@ running Fortran at test time**.
 | Spectrum broadening (pseudo-Voigt) | 1e-2 rel. | matches `.xy` | OK |
 | RIXS bootstrap (Kramers-Heisenberg) | structural | 16/16 unit tests | OK (synthetic) |
 | HFS SCF orbital energies | 1 Ry | < 1 Ry | OK |
-| HFS SCF spin-orbit ζ | 5% | ~5% | OK (central-field) |
+| HFS SCF spin-orbit ζ (2p, central-field) | 5% | ~3% | OK |
+| HFS SCF spin-orbit ζ (2p, Blume-Watson) | 3% | ~1.7% | OK |
+| HFS SCF spin-orbit ζ (3d, BW reduction ratio) | 5% | ~2.6% | OK (absolute limited by §3) |
 
 Full per-layer, per-fixture table in `tests/audit_results.md`.
 
 ## Known limitations
 
-1. **Spin-orbit ζ uses the central-field formula, not full Blume-Watson**
-   (`SCIENTIFIC_AUDIT.md § 1.2`). The central-field result agrees with
-   the Fortran "R*VI" column to ~5%. The production Fortran code uses
-   the multi-orbital Blume-Watson method which adds exchange corrections.
+1. **Spin-orbit ζ — Blume-Watson now available, gated behind a kwarg.**
+   `hfs_scf(..., zeta_method="blume_watson")` runs the full multi-orbital
+   exchange treatment (`multitorch/atomic/blume_watson.py`, port of
+   `rcn31.f::ZETABW`). Default remains `"central_field"` for byte-stability
+   with prior calls. On Ni²⁺ 2p⁶3d⁸: BW 2p ζ matches Fortran to ~1.7%; the
+   3d BW *reduction ratio* matches to ~2.6%, but the absolute 3d ζ is still
+   ~25% above Fortran because of HFS limitation §3 below (3d binds 8% too
+   tightly → ⟨r⁻³⟩ too large). Fixing the absolute 3d ζ requires the
+   O(h⁴) Numerov upgrade tracked in §3, not more BW work.
 2. **MULTIPOLE two-shell basis ordering** now matches Fortran. Element-wise
    comparison passes to < 1e-6 for all 12 blocks.
 3. **HFS SCF orbital energies differ from Fortran by 1–8%** at the

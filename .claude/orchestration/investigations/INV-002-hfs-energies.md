@@ -118,3 +118,30 @@ Documentation follow-ups (this commit):
 - `.claude/orchestration/INDEX.md`
 - `.claude/orchestration/bugs/BUG-001-hfs-scf-energies.md`
 - `.claude/orchestration/investigations/INV-002-hfs-energies.md` (new)
+
+---
+
+## 2026-04-11 — Track B closure note (Blume-Watson now landed)
+
+The "BW residual gap" identified at the end of this investigation is no
+longer the main story. Track B (commits Track B1..B5) implemented full
+multi-orbital Blume-Watson via `multitorch/atomic/blume_watson.py` and
+wired it into `hfs_scf` behind `zeta_method="blume_watson"`. See
+[`INV-003-blume-watson.md`](INV-003-blume-watson.md) for the line-by-line
+mapping of `rcn31.f::ZETABW` to the PyTorch port.
+
+What's left: the **absolute** 3d ζ is still ~25% above Fortran, because
+the underlying HFS solution binds 3d ~8% too tightly (this investigation's
+core finding — see §3 of README "Known limitations"). The BW correction
+itself is correct: the *reduction ratio* (BW vs central-field) matches
+Fortran on every row tested:
+
+| orb | PyTorch BW/CF | Fortran BW/RVI | Δ |
+|---|---|---|---|
+| 2P | 0.939 | 0.951 | 1.3% |
+| 3P | 0.943 | 0.956 | 1.4% |
+| 3D | 0.834 | 0.860 | 2.6% |
+
+So the remaining gap is the O(h²) → O(h⁴) Numerov upgrade tracked here,
+not more BW work. Track B is closed; no further action under this
+investigation until someone takes on the Numerov port.
