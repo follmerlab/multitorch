@@ -45,8 +45,8 @@ more concentrated than the original plan suggested:
 |---|---|---|---|---|
 | C1 | Refactor `assemble_and_diagonalize` to in-memory inputs | ✅ landed | — | `assemble_and_diagonalize_in_memory` exists; regression test in `test_assemble.py::test_in_memory_entry_point_byte_equivalent` |
 | C2 | `build_banfile_from_params` | ⏳ pending | — | New file `hamiltonian/build_ban.py` |
-| **C3-pre** | Vectorize `assemble_matrix_from_adds` | ✅ landed 2026-04-11 | (uncommitted) | Vectorized slice-add replaces `float()` element loop. 8 new tests in `test_assemble_matrix_from_adds.py`: legacy equivalence on all 226 nid8ct blocks (atol=0), gradient propagation through `cowan_section` AND `scale`, slice arithmetic, OOB clipping. **184/184 passing.** Gradient gating contract met. |
-| C3a | Torch wrappers around numpy angular blocks | ⏳ pending | — | `angular/torch_blocks.py` |
+| **C3-pre** | Vectorize `assemble_matrix_from_adds` | ✅ landed 2026-04-11 | `200a82c` | Vectorized slice-add replaces `float()` element loop. 8 new tests in `test_assemble_matrix_from_adds.py`: legacy equivalence on all 226 nid8ct blocks (atol=0), gradient propagation through `cowan_section` AND `scale`, slice arithmetic, OOB clipping. **184/184 passing.** Gradient gating contract met. |
+| C3a | Torch wrappers around numpy angular blocks | ✅ landed 2026-04-11 | (uncommitted) | `angular/torch_blocks.py` with thin `torch.as_tensor` wrappers around `compute_{shell,spin,orbit,multipole}_blocks`. 16 tests in `test_torch_blocks.py`: numpy equivalence at 1e-12 across SHELL d^2/d^8 × k=0,2,4 + SPIN/ORBIT/MULTIPOLE d^8, dtype/shape/finiteness invariants, downstream gradient propagation through scalar parameter multipliers (Fk, ζ, R-proxy), non-leaf invariant. **200/200 passing.** |
 | C3b | `read_rcn31_out_params` (atomic param fixture loader) | ⏳ pending | — | `atomic/parameter_fixtures.py` |
 | C3c | `scale_atomic_params` (Slater/SOC scaling) | ⏳ pending | — | `atomic/scaled_params.py` |
 | C3d | `build_rac_in_memory` + section plan | ⏳ pending | — | `hamiltonian/build_rac.py`. **Defines the contract C3e must satisfy.** |
