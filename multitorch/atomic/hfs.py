@@ -555,6 +555,7 @@ def hfs_scf(
     EXF: float = 1.0,
     IREL: int = 1,  # 0=non-relativistic, 1=relativistic corrections
     device: str = "cpu",
+    zeta_method: str = "central_field",
 ) -> HFSResult:
     """
     Hartree-Fock-Slater self-consistent field calculation (rcn31.f).
@@ -585,11 +586,27 @@ def hfs_scf(
     IREL : int
         Relativistic correction level (0=none, 1=Darwin+mass-velocity).
     device : str
+    zeta_method : str
+        Method used to compute spin-orbit ζ after the SCF converges:
+
+        - ``"central_field"`` (default) — ``ζ = (α²/2) ∫ (1/r)(dV/dr) P²(r) dr``
+          using the converged HFS potential. Reproduces Cowan's "R*VI"
+          column to ~5% on Ni²⁺.
+        - ``"blume_watson"`` — full multi-orbital Blume-Watson treatment
+          (Proc. Roy. Soc. London A270, 127 (1962); A271, 565). Adds
+          exchange corrections via ``multitorch.atomic.blume_watson.zeta_blume_watson``.
+          Matches the Fortran "BLUME-WATSON" column up to the residual
+          gap from the HFS solver itself.
 
     Returns
     -------
     HFSResult with converged orbital wavefunctions and energies.
     """
+    if zeta_method not in ("central_field", "blume_watson"):
+        raise ValueError(
+            f"zeta_method must be 'central_field' or 'blume_watson', "
+            f"got {zeta_method!r}"
+        )
     # Parse configuration
     l_labels = {'s': 0, 'p': 1, 'd': 2, 'f': 3, 'g': 4}
     orbitals: List[OrbitalState] = []
@@ -724,6 +741,19 @@ def hfs_scf(
         else:
             orb.zeta_ry = 0.0
             orb.zeta_ev = 0.0
+
+    # If Blume-Watson was requested, overwrite the central-field ζ with the
+    # full multi-orbital exchange-corrected value (rcn31.f::ZETABW). This is
+    # done after the central-field pass so the central-field number is still
+    # available for diagnostics if anyone caches `zeta_ry` mid-call.
+    if zeta_method == "blume_watson":
+        from multitorch.atomic.blume_watson import zeta_blume_watson
+        for i, orb in enumerate(orbitals):
+            if orb.l > 0 and orb.P is not None:
+                zeta_t = zeta_blume_watson(orbitals, i, r, Z=float(Z))
+                zeta = float(zeta_t)
+                orb.zeta_ry = zeta
+                orb.zeta_ev = zeta * float(RY_TO_EV)
 
     result = HFSResult(
         orbitals=orbitals,
