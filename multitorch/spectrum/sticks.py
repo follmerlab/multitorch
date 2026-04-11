@@ -28,18 +28,36 @@ def get_sticks(
     T : float
         Temperature in Kelvin (0 = no Boltzmann weighting).
     max_gs : int
-        Keep only this many lowest ground states.
+        Keep only this many lowest *distinct* ground state energies in the
+        Boltzmann population pool. Higher values include more thermally
+        accessible states; the rest are dropped before weighting.
+
+        **Important — the temperature trap.** With ``max_gs=1`` (the
+        default, matching pyctm for byte-exact reproducibility) only one
+        energy is in the pool, so the Boltzmann weight is trivially 1.0
+        and the spectrum is **T-independent regardless of the value of T**.
+        To see any thermal effect you must pass ``max_gs >= 2``, and the
+        next-up state must actually be within a few kT of the lowest
+        (kT ≈ 0.026 eV at 300 K, ≈ 0.43 eV at 5000 K). For typical 3d
+        L-edge fixtures with d-d splittings of ~1 eV the effect is
+        invisible until ~5000 K with ``max_gs=1``; passing
+        ``max_gs=10, T=300`` is the recommended way to enable physical
+        thermal redistribution at room temperature for systems with a
+        low-lying multiplet ladder.
     device : str
         PyTorch device string ('cpu', 'cuda:0', etc.)
 
     Returns
     -------
     Etrans : torch.Tensor  shape (N_sticks,)
-        Transition energies in eV (Ef - Eg_eV, where Eg is converted to eV).
+        Transition energies in eV (Ef - Eg).
     Mtrans : torch.Tensor  shape (N_sticks,)
         Transition intensities (Boltzmann-weighted).
     Eg_min : torch.Tensor  scalar
-        Minimum ground state energy in Ry.
+        Minimum ground state energy in eV (despite the historical "Ry"
+        labels in some upstream parser docstrings, ttban .ban_out / .oba
+        ground state energies are in eV — d-d crystal-field splittings
+        are O(1 eV), not O(1 Ry).)
     """
     # Collect all (Eg, Ef, M) from all triads
     all_Eg = []
@@ -63,7 +81,7 @@ def get_sticks(
         empty = torch.zeros(0, dtype=DTYPE, device=device)
         return empty, empty, torch.tensor(0.0, dtype=DTYPE, device=device)
 
-    # Find global minimum ground state energy (in Ry)
+    # Find global minimum ground state energy (in eV — see docstring note)
     all_Eg_flat = torch.cat(all_Eg)
     Eg_min = all_Eg_flat.min()
 
@@ -79,9 +97,10 @@ def get_sticks(
     Etrans_list = []
     Mtrans_list = []
 
-    # k_B in eV/K; Eg in Ry; convert Eg to eV for energy difference
+    # k_B is in eV/K; ttban Eg/Ef are both in eV (despite some upstream
+    # docstrings labeling Eg as "Ry"). The subtraction below and the
+    # Boltzmann factor are both unit-consistent in eV.
     k_B_val = k_B.to(device=device)
-    Ry_to_eV = torch.tensor(13.60569, dtype=DTYPE, device=device)
 
     for eg, ef, m in zip(all_Eg, all_Ef, all_M):
         # Filter ground states
@@ -92,14 +111,9 @@ def get_sticks(
         if eg.numel() == 0:
             continue
 
-        # Transition energies: Ef (eV) - Eg (Ry).
-        # Note: this mixed-unit subtraction matches pyctm/get_spectrum.py
-        # exactly. The KET (Ef) values in ttban output are in eV (absolute
-        # photon energy including the edge offset). The BRA (Eg) values are
-        # in Ry (internal atomic energy units). The subtraction produces a
-        # value approximately equal to the photon energy + small Ry correction.
-        # This is a pyctm convention, preserved for exact numerical matching.
-        Etrans = ef.unsqueeze(0) - eg.unsqueeze(1)  # (n_g, n_f), mixed units by convention
+        # Transition energies: Ef (eV, absolute incl. edge offset) - Eg (eV).
+        # Matches pyctm/get_spectrum.py:77 exactly.
+        Etrans = ef.unsqueeze(0) - eg.unsqueeze(1)  # (n_g, n_f), eV
 
         # Boltzmann population
         if T > 0:

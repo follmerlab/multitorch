@@ -3,8 +3,11 @@ Parser for ttban .oba and .ban_out output files.
 
 These files contain:
   - For each symmetry triad (ground_sym, transition_sym, final_sym):
-    - Ground state energies (Ry)
-    - Final state energies (eV, converted to absolute using edge energy)
+    - Ground state energies (eV — relative to the configuration average,
+      typically a few eV. Some legacy comments label this column "Ry";
+      that label is wrong: ttban writes eV throughout. d-d crystal-field
+      splittings are O(1 eV), not O(1 Ry).)
+    - Final state energies (eV, absolute, including the edge offset)
     - Transition matrix elements (intensities, pre-squared)
 
 Ported from pyttmult/pyttmult/read_output.py with numpy replaced by
@@ -32,9 +35,9 @@ class TriadData:
     op_sym: str
     final_sym: str
     actor: str
-    # Shape: (n_ground,) ground state energies in Ry
+    # Shape: (n_ground,) ground state energies in eV (see module docstring)
     Eg: torch.Tensor
-    # Shape: (n_final,) final state energies in eV
+    # Shape: (n_final,) final state energies in eV (absolute, edge-shifted)
     Ef: torch.Tensor
     # Shape: (n_ground, n_final) transition matrix elements (pre-squared intensities)
     M: torch.Tensor
