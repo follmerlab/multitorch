@@ -5,11 +5,14 @@ L-edge spectra of 3d transition metal complexes. Float64 throughout,
 GPU-agnostic, and (once built from the assembled pipeline) differentiable
 with respect to crystal-field and charge-transfer parameters.
 
-Current status: 141 / 141 tests passing. Both the pre-computed-parameters
+Current status: 166 / 166 tests passing. Both the pre-computed-parameters
 pipeline (read `.rme_rcg` / `.rme_rac` / `.ban` → assemble block
 Hamiltonian → diagonalize → build transition matrix → broaden) and the
 from-scratch HFS SCF pipeline (`atomic/hfs.py` → Slater integrals →
 spin-orbit ζ) are functional and validated against Fortran reference data.
+RIXS bootstrap mode (`getRIXS(ban_abs_path, ban_ems_path)`) is wired up
+end-to-end on top of the vectorized Kramers-Heisenberg kernel; it is unit
+tested with synthetic fixtures pending committed paired `.ban_out` files.
 
 ## Install
 
@@ -30,7 +33,7 @@ reference `rcg_cfp72/73` binary tables.
 pytest tests/ -q
 ```
 
-Expect 141 passing, 0 failing.
+Expect 166 passing, 0 failing.
 
 ## End-to-end audit
 
@@ -103,6 +106,7 @@ running Fortran at test time**.
 | Hamiltonian eigenvalues (13 triads) | 1e-3 eV | < 1e-4 eV | OK |
 | Transition intensities | 1e-3 | within ttban tolerance | OK |
 | Spectrum broadening (pseudo-Voigt) | 1e-2 rel. | matches `.xy` | OK |
+| RIXS bootstrap (Kramers-Heisenberg) | structural | 16/16 unit tests | OK (synthetic) |
 | HFS SCF orbital energies | 1 Ry | < 1 Ry | OK |
 | HFS SCF spin-orbit ζ | 5% | ~5% | OK (central-field) |
 
