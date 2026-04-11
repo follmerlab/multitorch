@@ -547,16 +547,29 @@ def assemble_matrix_from_adds(
     starting at row (bra-1) with nbra rows, and place it at column (ket-1)
     in the full matrix, multiplied by coeff × scale.
 
+    The implementation is vectorized: each ADD entry contributes one
+    sliced add (`mat[r0:r0+nr, c0:c0+nc] += factor * src[...]`) instead
+    of an element-wise Python loop. This is essential for autograd —
+    the previous implementation called `float(src[jr, jc])`, which
+    severed the gradient graph from `src` to the assembled matrix.
+
     Parameters
     ----------
     add_entries : list of ADDEntry
     cowan_section : list of torch.Tensor (0-indexed; ADD uses 1-indexed)
     n_bra, n_ket : full matrix dimensions
-    scale : additional scaling factor (e.g., XHAM value)
+    scale : additional scaling factor (e.g., XHAM value).
+        Can be a Python float or a torch scalar tensor; if a tensor with
+        `requires_grad=True`, gradient flows through it. Per-entry
+        ``add.coeff`` is a Python float (parser output), so it does not
+        carry gradient.
 
     Returns
     -------
     torch.Tensor  shape (n_bra, n_ket)
+        If any source tensor in `cowan_section` (or `scale`) has
+        `requires_grad=True`, the returned tensor participates in the
+        autograd graph.
     """
     mat = torch.zeros(n_bra, n_ket, dtype=DTYPE)
 
@@ -564,29 +577,37 @@ def assemble_matrix_from_adds(
         idx = add.matrix_idx - 1  # 1-based → 0-based
         if idx < 0 or idx >= len(cowan_section):
             continue
-        src = cowan_section[idx]  # (src_rows, src_cols) matrix
-        # The ADD entry specifies where in the full matrix this subblock goes
-        # bra (1-based) → row offset, ket (1-based) → col offset
-        r0 = add.bra - 1
-        c0 = add.ket - 1
-        # The subblock dimensions are (add.nbra, add.nket) but the actual
-        # source matrix dimensions determine how many columns are placed
-        src_rows = min(add.nbra, src.shape[0])
-        src_cols = src.shape[1] if len(src.shape) > 1 else 1
-
-        factor = add.coeff * scale
-
-        if len(src.shape) == 1 or src.shape[1] == 0:
+        src = cowan_section[idx]
+        if src.ndim < 2 or src.shape[1] == 0:
             continue
 
-        # Place each row of the source matrix into the full matrix
-        for jr in range(src_rows):
-            for jc in range(src_cols):
-                val = float(src[jr, jc])
-                if val != 0.0:
-                    r = r0 + jr
-                    c = c0 + jc
-                    if 0 <= r < n_bra and 0 <= c < n_ket:
-                        mat[r, c] += factor * val
+        r0 = add.bra - 1
+        c0 = add.ket - 1
+        # The subblock advertised by the ADD entry is (add.nbra, src_cols);
+        # the actual source matrix may have fewer rows than add.nbra, in
+        # which case the loop in the legacy implementation would silently
+        # truncate. Preserve that behavior.
+        src_rows = min(add.nbra, src.shape[0])
+        src_cols = src.shape[1]
+
+        # Clip the source slice so that the destination slice
+        # mat[r0+sr_lo:r0+sr_hi, c0+sc_lo:c0+sc_hi] stays in bounds.
+        # This reproduces the per-element bounds check in the legacy
+        # implementation, including the case where r0 or c0 is negative
+        # (only ever happens with malformed ADD entries, but the legacy
+        # code tolerated it).
+        sr_lo = max(0, -r0)
+        sr_hi = min(src_rows, n_bra - r0)
+        sc_lo = max(0, -c0)
+        sc_hi = min(src_cols, n_ket - c0)
+
+        if sr_hi <= sr_lo or sc_hi <= sc_lo:
+            continue
+
+        factor = add.coeff * scale  # float or tensor; broadcasts cleanly
+        mat[r0 + sr_lo:r0 + sr_hi, c0 + sc_lo:c0 + sc_hi] = (
+            mat[r0 + sr_lo:r0 + sr_hi, c0 + sc_lo:c0 + sc_hi]
+            + factor * src[sr_lo:sr_hi, sc_lo:sc_hi]
+        )
 
     return mat

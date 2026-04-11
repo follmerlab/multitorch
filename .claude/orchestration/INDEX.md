@@ -3,9 +3,19 @@
 Master index for all implementation progress, bugs, investigations, and tasks.
 
 **Last updated:** 2026-04-11
-**Test status:** 141/141 pass | 7/8 fresh Fortran comparison cases pass
+**Test status:** 176/176 pass | All 8 Ti–Ni Fortran comparison cases pass
 
 ---
+
+## Active Tracks
+
+| Track | File | Status |
+|---|---|---|
+| **Track C — Phase 5 pure-PyTorch pipeline** | [TRACK-C-PHASE5.md](TRACK-C-PHASE5.md) | C1 done; **C3-pre next** |
+
+**Canonical plan file** for the Blume-Watson + RIXS + Phase 5 trio:
+`~/.claude/plans/velvet-kindling-walrus.md` — always read first when
+resuming work on any of these tracks.
 
 ## Active Investigations
 
