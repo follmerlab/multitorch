@@ -1,8 +1,8 @@
 # GPU Acceleration Plan for multitorch
 
 **Date:** 2026-04-12
-**Status:** Tier 1 partially implemented, profiled on exxa (2× RTX 4090)
-**Current state:** 398/398 tests passing on CPU; GPU pipeline functional
+**Status:** Complete — converged. All actionable items implemented.
+**Current state:** 402/402 tests passing; GPU pipeline functional
 
 ---
 
@@ -38,9 +38,12 @@ kernel launch overhead (~0.1 ms per launch) to be amortized.
 1. **RIXS maps** — large tensor contractions, 45× measured speedup
 2. **Broadening sweeps** — batched conv1d with ≥2000 sticks, 41× speedup
 3. **Large-matrix systems** — `eigh` at dim ≥ 500 (Cr d³, rare earths)
-4. **Fixture caching** — if I/O is eliminated, GPU compute could dominate
 
-Defer further Tier 1 work unless targeting these workloads.
+Fixture caching (`preload_fixture` + `calcXAS_cached`) gives **1.4–1.7×
+speedup on CPU** for parameter sweeps. However, even with caching, GPU
+still loses on typical 3d TM matrices (dim 10–200). The remaining
+bottleneck is pure compute (`build_cowan` rebuild + `eigh`), which is
+faster on CPU at these sizes.
 
 ---
 
@@ -58,18 +61,16 @@ Defer further Tier 1 work unless targeting these workloads.
 | `hamiltonian/charge_transfer.py` | ✅ Fixed | All 4× `torch.zeros`/`torch.eye` have `device=device` |
 | `_constants.py` | ✅ Skipped | Exports plain floats; scalars auto-transfer for free |
 
-### Still on CPU (not yet fixed)
+### Still on CPU (not worth fixing — confirmed by profiling)
 
-| Module | Issue | Tier |
-|---|---|---|
-| `hamiltonian/build_cowan.py` | `torch.zeros_like(h_parsed)` infers device from input, no explicit control | 1 |
-| `spectrum/broaden.py` | `broaden_gaussian` uses Python for-loop (not vectorized conv1d) | 1 |
-| `atomic/hfs.py:307-308,641,717-718` | `.cpu().numpy()` in SCF loop (scipy) | 3 (can't fix) |
-| `io/read_oba.py:175-177` | `torch.tensor()` in parser on CPU | 2 |
-| `io/read_rme.py:215,325` | `torch.tensor()` in fixture readers on CPU | 2 |
-| `io/read_rcf.py:60,67` | `torch.tensor()` in parser on CPU | 2 |
-| `hamiltonian/assemble.py:381,429,438` | `conf_labels` int tensors on CPU | 2 |
-| `atomic/slater.py:207,215` | `torch.tensor(0.0)` defaults on CPU | 3 |
+| Module | Issue | Tier | Why skip |
+|---|---|---|---|
+| `atomic/hfs.py:307-308,641,717-718` | `.cpu().numpy()` in SCF loop (scipy) | 3 | SciPy requires CPU; HFS not on Phase 5 path |
+| `io/read_oba.py:175-177` | `torch.tensor()` in parser on CPU | 2 | One-time parse; negligible vs compute |
+| `io/read_rme.py:215,325` | `torch.tensor()` in fixture readers on CPU | 2 | One-time parse; negligible vs compute |
+| `io/read_rcf.py:60,67` | `torch.tensor()` in parser on CPU | 2 | One-time parse; negligible vs compute |
+| `hamiltonian/assemble.py:381,429,438` | `conf_labels` int tensors on CPU | 2 | Index-only; never enters eigh |
+| `atomic/slater.py:207,215` | `torch.tensor(0.0)` defaults on CPU | 3 | CPU-only HFS path |
 
 ---
 
@@ -86,17 +87,15 @@ These are the tensor-creation sites on the hot path between
 Now accepts `device=None` and infers device from source COWAN tensors.
 The initial `torch.zeros` is created on the correct device.
 
-### 1b. `build_cowan_store_in_memory` — ⬜ NOT DONE
+### 1b. `build_cowan_store_in_memory` — ✅ DONE
 
 **File:** `multitorch/hamiltonian/build_cowan.py`
 
-`_rebuild_hamiltonian_block` uses `torch.zeros_like(h_parsed)` which
-inherits device from the input tensor. No explicit `device` parameter.
-This works if the parsed tensor is already on the target device, but
-there's no explicit device control in the function signature.
-
-**Impact:** Low — profiling shows build_cowan is not a bottleneck
-compared to fixture I/O.
+Accepts `device=None` parameter. Template tensors are migrated to the
+target device before processing. `_rebuild_hamiltonian_block` uses
+`torch.zeros_like(h_parsed)` which inherits device from the migrated
+input. Also accepts pre-parsed `cowan_template` + `cowan_metadata` for
+fixture caching (skips file I/O entirely).
 
 ### 1c. Charge transfer helpers — ✅ DONE
 
@@ -104,13 +103,14 @@ compared to fixture I/O.
 
 All four `torch.zeros`/`torch.eye` calls now pass `device=device`.
 
-### 1d. `broaden_gaussian` vectorization — ⬜ NOT DONE
+### 1d. `broaden_gaussian` vectorization — ✅ DONE
 
 **File:** `multitorch/spectrum/broaden.py`
 
-`broaden_gaussian` still uses a Python for-loop over columns.
-Replacing with batched `conv1d` would give **41× speedup** for
-≥2000 sticks (measured). Only matters for large broadening sweeps.
+Replaced Python for-loop with batched `conv1d` using `groups=m`.
+All columns processed in a single kernel call. Note: this function
+is not on the current production XAS path (only `pseudo_voigt` is
+used), but is ready for future RIXS post-processing.
 
 ### 1e. Thread `device` through API — ✅ DONE
 
@@ -252,10 +252,26 @@ for tendq in torch.linspace(0.5, 2.0, 100):
 | Ni²⁺ Oh (17×17) | 14.8 | 9.0 | **1.6×** |
 | Ni²⁺ D4h CT (~50×50) | 60.3 | 48.4 | **1.2×** |
 
-The savings come entirely from eliminating file I/O (~6–12 ms/call).
-On exxa where I/O overhead is higher (~30–100 ms), the speedup should
-be proportionally larger. With GPU, the compute portion is also faster,
-so the total speedup compounds.
+### Measured speedup (exxa, 2× RTX 4090)
+
+| System | Uncached CPU (ms) | Cached CPU (ms) | Cached GPU (ms) | Cache speedup | GPU vs cached CPU |
+|---|---|---|---|---|---|
+| Ni²⁺ Oh (17×17) | 35.9 | 25.5 | 55.5 | **1.4×** | 0.5× (slower) |
+| Fe²⁺ Oh (~120×120) | 450.5 | 261.5 | 317.6 | **1.7×** | 0.8× (slower) |
+| Ni²⁺ D4h CT (~50×50) | 137.9 | 120.5 | 275.3 | **1.1×** | 0.4× (slower) |
+
+### 100-spectrum sweep with caching (exxa)
+
+| System | Uncached CPU (s) | Cached CPU (s) | Cached GPU (s) | Cache speedup | GPU vs cached CPU |
+|---|---|---|---|---|---|
+| Ni²⁺ Oh × 100 | 3.31 | 2.29 | 5.60 | **1.4×** | 0.4× |
+| Fe²⁺ Oh × 100 | 45.85 | 26.80 | 31.77 | **1.7×** | 0.8× |
+
+**Key finding:** Caching gives 1.4–1.7× speedup by eliminating fixture
+I/O, but **GPU still loses even with caching** — the matrices (17–120
+dim) are too small for GPU kernel launch overhead. The remaining
+wall time is `build_cowan_store_in_memory` (scaling + rebuild) and
+`eigh`, both faster on CPU at these sizes. GPU crossover is ~dim ≥ 500.
 
 ### Autograd through cached path
 
@@ -274,11 +290,15 @@ print(slater.grad)  # finite, nonzero
 - RIXS 2D maps — 45× measured speedup on Kramers-Heisenberg kernel
 - Large broadening sweeps (≥2000 sticks) — 41× with conv1d
 - Systems with dim ≥ 500 (e.g., Cr d³ Oh at 1074×1074) — 4.3× on eigh
-- Parameter sweeps with fixture caching — I/O eliminated, compute dominates
 
 **Stay on CPU for:**
-- Single-spectrum 3d L-edge XAS — fixture I/O dominates, GPU adds overhead
-- Very small matrices (Ni Oh 17×17) — kernel launch overhead exceeds compute
+- Single-spectrum 3d L-edge XAS — GPU adds overhead at all tested sizes
+- Parameter sweeps (even with caching) — Fe Oh cached GPU is 0.8× vs CPU
+- All common 3d TM systems (dim 10–200) — GPU kernel launch > compute time
+
+**Fixture caching verdict:** Use `preload_fixture` + `calcXAS_cached`
+for sweeps (1.4–1.7× speedup on CPU), but keep `device='cpu'`. GPU
+only helps if matrix dim ≥ 500 or you're computing RIXS maps.
 
 **Never needed:** Tier 2 (parsers) and Tier 3 (HFS SCF). Parser tensors
 auto-transfer, and HFS SCF will always be CPU-bound.
