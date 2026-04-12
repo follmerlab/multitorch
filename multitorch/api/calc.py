@@ -588,9 +588,9 @@ def _run_phase5_pipeline(
         rcg_path = rcg_candidates[0]
         rac_path = rac_candidates[0]
     else:
-        ban_path = next(fixture_dir.glob("*.ban"))
-        rcg_path = next(fixture_dir.glob("*.rme_rcg"))
-        rac_path = next(fixture_dir.glob("*.rme_rac"))
+        ban_path = _find_primary_fixture(fixture_dir, "*.ban")
+        rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
+        rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
 
     rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
 
@@ -830,9 +830,9 @@ def _calcDOC_phase5(
     from multitorch.io.read_ban import read_ban
 
     fixture_dir = _find_fixture_dir(element, valence, sym)
-    ban_path = next(fixture_dir.glob("*.ban"))
-    rcg_path = next(fixture_dir.glob("*.rme_rcg"))
-    rac_path = next(fixture_dir.glob("*.rme_rac"))
+    ban_path = _find_primary_fixture(fixture_dir, "*.ban")
+    rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
+    rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
     rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
     ban = read_ban(str(ban_path))
 
