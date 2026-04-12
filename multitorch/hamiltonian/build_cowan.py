@@ -222,7 +222,7 @@ def _rebuild_hamiltonian_block(
     v11 = (h_parsed - h_coulomb_raw) / zeta_raw_ev
 
     # ── Step 3: Rebuild with scaled params ───────────────────
-    h_new = torch.zeros(h_parsed.shape, dtype=DTYPE)
+    h_new = torch.zeros_like(h_parsed)
     for k, shell_mat in shell_blocks.items():
         fk_scaled_ev = scaled_cfg.f(a, b, k) * ry_to_ev  # tensor × float
         h_new = h_new + fk_scaled_ev * shell_mat
@@ -244,6 +244,7 @@ def build_cowan_store_in_memory(
     plan: SectionPlan,
     *,
     source_rcg_path: str | Path,
+    device=None,
 ) -> List[List[torch.Tensor]]:
     """Build a COWAN store with autograd-carrying HAMILTONIAN blocks.
 
@@ -316,6 +317,13 @@ def build_cowan_store_in_memory(
                 f"Section {s}: {len(template[s])} matrices but plan "
                 f"expects {plan.section_size(s)}"
             )
+
+    # Move template tensors to target device
+    if device is not None:
+        template = [
+            [mat.to(device=device) for mat in sec]
+            for sec in template
+        ]
 
     result: List[List[torch.Tensor]] = []
 

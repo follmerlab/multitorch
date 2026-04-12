@@ -8,7 +8,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 import torch
 
-from multitorch._constants import DTYPE, k_B
+from multitorch._constants import DTYPE, K_B_FLOAT
 from multitorch.io.read_oba import BanOutput
 
 from typing import TYPE_CHECKING
@@ -101,11 +101,9 @@ def get_sticks(
     Etrans_list = []
     Mtrans_list = []
 
-    # k_B is in eV/K; ttban Eg/Ef are both in eV (despite some upstream
+    # K_B_FLOAT is in eV/K; ttban Eg/Ef are both in eV (despite some upstream
     # docstrings labeling Eg as "Ry"). The subtraction below and the
     # Boltzmann factor are both unit-consistent in eV.
-    k_B_val = k_B.to(device=device)
-
     for eg, ef, m in zip(all_Eg, all_Ef, all_M):
         # Filter ground states
         gs_mask = eg <= gs_threshold
@@ -121,7 +119,7 @@ def get_sticks(
 
         # Boltzmann population
         if T > 0:
-            boltz = torch.exp((Eg_min - eg) / (k_B_val * T))  # (n_g,)
+            boltz = torch.exp((Eg_min - eg) / (K_B_FLOAT * T))  # (n_g,)
         else:
             boltz = torch.ones_like(eg)
 
@@ -208,8 +206,6 @@ def get_sticks_from_banresult(
 
     Etrans_list = []
     Mtrans_list = []
-    k_B_val = k_B.to(device=device)
-
     for eg, ef, m in zip(all_Eg, all_Ef, all_M):
         gs_mask = eg <= gs_threshold
         eg = eg[gs_mask]
@@ -221,7 +217,7 @@ def get_sticks_from_banresult(
         Etrans = ef.unsqueeze(0) - eg.unsqueeze(1)
 
         if T > 0:
-            boltz = torch.exp((Eg_min - eg) / (k_B_val * T))
+            boltz = torch.exp((Eg_min - eg) / (K_B_FLOAT * T))
         else:
             boltz = torch.ones_like(eg)
 

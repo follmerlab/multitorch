@@ -354,7 +354,7 @@ def _calcXAS_phase5(
 
     # Step 5: Build COWAN store with autograd-carrying params (C3e)
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path,
+        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
     )
 
     # Step 6: Assemble Hamiltonian and diagonalize (C1)
@@ -606,7 +606,7 @@ def _run_phase5_pipeline(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
     )
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path,
+        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
     )
     return assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
@@ -818,7 +818,7 @@ def _calcDOC_bootstrap(ban_output_path: str, T: float) -> dict:
 
 def _calcDOC_phase5(
     element: str, valence: str, sym: str, edge: str,
-    cf: dict, T: float, **kwargs,
+    cf: dict, T: float, device: str = 'cpu', **kwargs,
 ) -> dict:
     """Compute DOC from Phase 5 assembled Hamiltonian eigenvectors."""
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
@@ -853,9 +853,9 @@ def _calcDOC_phase5(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
     )
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path,
+        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
     )
-    result = assemble_and_diagonalize_in_memory(cowan, rac, ban)
+    result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
     kB = 8.6173303e-5  # eV/K
     RY_TO_EV = 13.605693122994

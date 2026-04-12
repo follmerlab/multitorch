@@ -17,7 +17,7 @@ from typing import List, Optional, Union
 import torch
 import math
 
-from multitorch._constants import DTYPE, k_B
+from multitorch._constants import DTYPE, K_B_FLOAT
 
 
 def kramers_heisenberg(
@@ -63,7 +63,7 @@ def kramers_heisenberg(
     if T > 0:
         boltz = torch.exp(
             (torch.tensor(min_gs, dtype=DTYPE, device=device) - Eg)
-            / (k_B.to(device) * T)
+            / (K_B_FLOAT * T)
         )
     else:
         boltz = torch.ones(n_g, dtype=DTYPE, device=device)

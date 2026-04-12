@@ -55,6 +55,7 @@ def assemble_hamiltonian_block(
     n_dim: int,
     energy_offset: float = 0.0,
     cowan_section_idx: int = 0,
+    device=None,
 ) -> torch.Tensor:
     """
     Assemble one diagonal Hamiltonian block for a single configuration.
@@ -84,20 +85,20 @@ def assemble_hamiltonian_block(
     """
     from multitorch.io.read_rme import assemble_matrix_from_adds
 
-    H = torch.zeros(n_dim, n_dim, dtype=DTYPE)
+    H = torch.zeros(n_dim, n_dim, dtype=DTYPE, device=device)
 
     section = cowan_sections[cowan_section_idx] if cowan_section_idx < len(cowan_sections) else []
 
     for block, xval in zip(rac_blocks, xham_values):
         if block is not None and block.add_entries and xval != 0.0:
             contrib = assemble_matrix_from_adds(
-                block.add_entries, section, n_dim, n_dim, scale=xval,
+                block.add_entries, section, n_dim, n_dim, scale=xval, device=device,
             )
             H += contrib
 
     # Add energy offset
     if energy_offset != 0.0:
-        H += energy_offset * torch.eye(n_dim, dtype=DTYPE)
+        H += energy_offset * torch.eye(n_dim, dtype=DTYPE, device=device)
 
     # Symmetrize
     H = 0.5 * (H + H.T)
@@ -112,6 +113,7 @@ def assemble_mixing_block(
     n_bra: int,
     n_ket: int,
     cowan_section_idx: int = 0,
+    device=None,
 ) -> torch.Tensor:
     """
     Assemble one off-diagonal mixing block between configurations.
@@ -136,13 +138,13 @@ def assemble_mixing_block(
     """
     from multitorch.io.read_rme import assemble_matrix_from_adds
 
-    V = torch.zeros(n_bra, n_ket, dtype=DTYPE)
+    V = torch.zeros(n_bra, n_ket, dtype=DTYPE, device=device)
     section = cowan_sections[cowan_section_idx] if cowan_section_idx < len(cowan_sections) else []
 
     for block, xval in zip(rac_blocks, xmix_values):
         if block is not None and block.add_entries and xval != 0.0:
             contrib = assemble_matrix_from_adds(
-                block.add_entries, section, n_bra, n_ket, scale=xval,
+                block.add_entries, section, n_bra, n_ket, scale=xval, device=device,
             )
             V += contrib
 
@@ -155,6 +157,7 @@ def assemble_transition_block(
     n_bra: int,
     n_ket: int,
     cowan_section_idx: int = 0,
+    device=None,
 ) -> torch.Tensor:
     """
     Assemble one transition matrix block for a single configuration pair.
@@ -176,10 +179,10 @@ def assemble_transition_block(
     section = cowan_sections[cowan_section_idx] if cowan_section_idx < len(cowan_sections) else []
 
     if rac_block is None or not rac_block.add_entries:
-        return torch.zeros(n_bra, n_ket, dtype=DTYPE)
+        return torch.zeros(n_bra, n_ket, dtype=DTYPE, device=device)
 
     return assemble_matrix_from_adds(
-        rac_block.add_entries, section, n_bra, n_ket, scale=1.0,
+        rac_block.add_entries, section, n_bra, n_ket, scale=1.0, device=device,
     )
 
 

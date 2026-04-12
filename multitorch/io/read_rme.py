@@ -539,6 +539,7 @@ def assemble_matrix_from_adds(
     n_bra: int,
     n_ket: int,
     scale: float = 1.0,
+    device=None,
 ) -> torch.Tensor:
     """
     Assemble a dense matrix from ADD entries using COWAN store matrices.
@@ -563,6 +564,9 @@ def assemble_matrix_from_adds(
         `requires_grad=True`, gradient flows through it. Per-entry
         ``add.coeff`` is a Python float (parser output), so it does not
         carry gradient.
+    device : torch.device or str, optional
+        Device for the output matrix. If ``None``, inherits from the
+        first source tensor in ``cowan_section``, or defaults to CPU.
 
     Returns
     -------
@@ -571,7 +575,13 @@ def assemble_matrix_from_adds(
         `requires_grad=True`, the returned tensor participates in the
         autograd graph.
     """
-    mat = torch.zeros(n_bra, n_ket, dtype=DTYPE)
+    # Infer device from source tensors if not specified
+    if device is None and cowan_section:
+        for src in cowan_section:
+            if isinstance(src, torch.Tensor) and src.numel() > 0:
+                device = src.device
+                break
+    mat = torch.zeros(n_bra, n_ket, dtype=DTYPE, device=device)
 
     for add in add_entries:
         idx = add.matrix_idx - 1  # 1-based → 0-based

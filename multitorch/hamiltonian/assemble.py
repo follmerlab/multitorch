@@ -378,7 +378,7 @@ def _assemble_one_triad(
 
     # Diagonal blocks for each configuration
     offset = 0
-    conf_labels_gs = torch.zeros(n_gs, dtype=torch.int64)
+    conf_labels_gs = torch.zeros(n_gs, dtype=torch.int64, device=device)
     for ic, d in enumerate(gs_conf_sizes):
         # In the .rme_rac file, the first config's operator blocks are labeled
         # GROUND and the second config's are labeled EXCITE (even though both
@@ -389,7 +389,7 @@ def _assemble_one_triad(
         H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
         for blk, xv in zip(op_blocks, xham):
             if blk is not None and blk.add_entries and xv != 0.0:
-                H_block += assemble_matrix_from_adds(blk.add_entries, sec, d, d, scale=xv)
+                H_block += assemble_matrix_from_adds(blk.add_entries, sec, d, d, scale=xv, device=device)
 
         # Symmetrize and apply IDIM scaling
         H_block = 0.5 * (H_block + H_block.T) * idim_scale_gs
@@ -411,7 +411,7 @@ def _assemble_one_triad(
         V = torch.zeros(d1, d2, dtype=DTYPE, device=device)
         for blk, xv in zip(hybr_blocks, xmix):
             if blk is not None and blk.add_entries and xv != 0.0:
-                V += assemble_matrix_from_adds(blk.add_entries, sec, d1, d2, scale=xv)
+                V += assemble_matrix_from_adds(blk.add_entries, sec, d1, d2, scale=xv, device=device)
 
         V *= idim_scale_gs
         H_gs[:d1, d1:d1 + d2] = V
@@ -426,7 +426,7 @@ def _assemble_one_triad(
         n_fs = 0
         Ef = torch.zeros(0, dtype=DTYPE, device=device)
         Uf = torch.zeros(0, 0, dtype=DTYPE, device=device)
-        conf_labels_fs = torch.zeros(0, dtype=torch.int64)
+        conf_labels_fs = torch.zeros(0, dtype=torch.int64, device=device)
         T_eig = torch.zeros(n_gs, 0, dtype=DTYPE, device=device)
     else:
         n_fs = sum(fs_conf_sizes)
@@ -435,7 +435,7 @@ def _assemble_one_triad(
         sec_fs = cowan[fs_cowan_sec] if fs_cowan_sec < len(cowan) else []
 
         offset = 0
-        conf_labels_fs = torch.zeros(n_fs, dtype=torch.int64)
+        conf_labels_fs = torch.zeros(n_fs, dtype=torch.int64, device=device)
         for ic, d in enumerate(fs_conf_sizes):
             kind = 'GROUND' if ic == 0 else 'EXCITE'
             op_blocks = _find_operator_blocks(rac, kind, fs_sym, operators, d)
@@ -443,7 +443,7 @@ def _assemble_one_triad(
             H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
             for blk, xv in zip(op_blocks, xham):
                 if blk is not None and blk.add_entries and xv != 0.0:
-                    H_block += assemble_matrix_from_adds(blk.add_entries, sec_fs, d, d, scale=xv)
+                    H_block += assemble_matrix_from_adds(blk.add_entries, sec_fs, d, d, scale=xv, device=device)
 
             H_block = 0.5 * (H_block + H_block.T) * idim_scale_fs
             ef = ef_offsets[ic] if ic < len(ef_offsets) else 0.0
@@ -463,7 +463,7 @@ def _assemble_one_triad(
             V_fs = torch.zeros(d1, d2, dtype=DTYPE, device=device)
             for blk, xv in zip(hybr_blocks, xmix):
                 if blk is not None and blk.add_entries and xv != 0.0:
-                    V_fs += assemble_matrix_from_adds(blk.add_entries, sec_fs, d1, d2, scale=xv)
+                    V_fs += assemble_matrix_from_adds(blk.add_entries, sec_fs, d1, d2, scale=xv, device=device)
 
             V_fs *= idim_scale_fs
             H_fs[:d1, d1:d1 + d2] = V_fs
@@ -501,7 +501,7 @@ def _assemble_one_triad(
                     )
                     if tran_block is not None:
                         T_sub = assemble_matrix_from_adds(
-                            tran_block.add_entries, tran_sec, dg, df, scale=1.0,
+                            tran_block.add_entries, tran_sec, dg, df, scale=1.0, device=device,
                         )
                         T_raw[gs_offset:gs_offset + dg, fs_offset:fs_offset + df] = T_sub
 
