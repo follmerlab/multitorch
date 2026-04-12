@@ -186,15 +186,14 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
     E0 = float(E[n2])
     G = _gauss_torch(E, sigma, E0)   # (N,)
 
-    Y = torch.zeros_like(D)
-    for i in range(m):
-        # Full convolution then slice (matches np.convolve behavior)
-        col = torch.nn.functional.conv1d(
-            D[:, i].unsqueeze(0).unsqueeze(0),
-            G.flip(0).unsqueeze(0).unsqueeze(0),
-            padding=n - 1,
-        ).squeeze()[n2 : n2 + n]
-        Y[:, i] = col
+    # Batch all columns in a single conv1d call (GPU-friendly, no Python loop)
+    # D: (N, M) → (1, M, N) for grouped conv1d
+    kernel = G.flip(0).unsqueeze(0).unsqueeze(0).expand(m, 1, -1)  # (M, 1, N)
+    D_batch = D.T.unsqueeze(0)  # (1, M, N)
+    Y_batch = torch.nn.functional.conv1d(
+        D_batch, kernel, padding=n - 1, groups=m,
+    )  # (1, M, 2N-1)
+    Y = Y_batch.squeeze(0)[:, n2 : n2 + n].T  # (N, M)
     return Y
 
 

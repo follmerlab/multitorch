@@ -12,7 +12,10 @@ Usage:
 """
 
 # Public API
-from multitorch.api.calc import calcXAS, calcXES, calcRIXS, calcDOC
+from multitorch.api.calc import (
+    calcXAS, calcXES, calcRIXS, calcDOC,
+    preload_fixture, calcXAS_cached, CachedFixture,
+)
 from multitorch.api.plot import getXAS, getXES
 
 __version__ = "0.1.0.dev0"

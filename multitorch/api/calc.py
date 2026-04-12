@@ -23,9 +23,211 @@ from typing import Optional, Tuple, Union
 import torch
 import numpy as np
 
+from dataclasses import dataclass
+from typing import List
+
 from multitorch._constants import DTYPE
 from multitorch.spectrum.sticks import get_sticks
 from multitorch.spectrum.broaden import pseudo_voigt
+
+
+# ─────────────────────────────────────────────────────────────
+# Fixture caching for fast parameter sweeps
+# ─────────────────────────────────────────────────────────────
+
+@dataclass
+class CachedFixture:
+    """Pre-parsed fixture data for fast parameter sweeps.
+
+    Created by :func:`preload_fixture`. Pass to :func:`calcXAS_cached`
+    to skip all file I/O and parsing on each iteration of a parameter
+    sweep. Only the physics parameters (``slater``, ``soc``, ``cf``,
+    ``delta``, ``lmct``, ``mlct``) vary per iteration; the angular
+    structure and template matrices are reused from this cache.
+
+    Attributes
+    ----------
+    ban : BanData
+        Parsed BAN template (before parameter overrides).
+    raw_params : AtomicParams
+        Parsed atomic parameters from ``.rcn31_out``.
+    rac : RACFileFull
+        Parsed RAC assembly recipe.
+    plan : SectionPlan
+        COWAN section plan derived from RAC + COWAN store.
+    cowan_template : list of list of torch.Tensor
+        Parsed COWAN store matrices (template before rebuild).
+    cowan_metadata : list of list of CowanBlockMeta
+        Block metadata for each COWAN store matrix.
+    """
+    ban: object          # BanData
+    raw_params: object   # AtomicParams
+    rac: object          # RACFileFull
+    plan: object         # SectionPlan
+    cowan_template: list  # List[List[torch.Tensor]]
+    cowan_metadata: list  # List[List[CowanBlockMeta]]
+
+
+def preload_fixture(
+    element: str,
+    valence: str,
+    sym: str,
+    edge: str = 'l',
+) -> CachedFixture:
+    """Parse all fixture files once and return a reusable cache.
+
+    Use with :func:`calcXAS_cached` for fast parameter sweeps::
+
+        cache = preload_fixture("Ni", "ii", "oh")
+        for tendq in torch.linspace(0.5, 2.0, 100):
+            x, y = calcXAS_cached(cache, cf={'tendq': float(tendq)})
+
+    Parameters
+    ----------
+    element, valence, sym, edge : str
+        System specification (same as ``calcXAS``).
+
+    Returns
+    -------
+    CachedFixture
+        Reusable cache holding all parsed fixture data.
+    """
+    from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
+    from multitorch.hamiltonian.build_cowan import read_cowan_metadata
+    from multitorch.hamiltonian.build_rac import build_rac_in_memory
+    from multitorch.io.read_ban import read_ban
+    from multitorch.io.read_rme import read_cowan_store, read_rme_rac_full
+
+    fixture_dir = _find_fixture_dir(element, valence, sym)
+    ban_path = _find_primary_fixture(fixture_dir, "*.ban")
+    rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
+    rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
+    rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
+
+    ban = read_ban(ban_path)
+    raw_params = read_rcn31_out_params(rcn31_path)
+
+    # Parse the heavy files once
+    parsed_rac = read_rme_rac_full(rac_path)
+    cowan_template = read_cowan_store(rcg_path)
+    cowan_metadata = read_cowan_metadata(rcg_path)
+
+    # Build RAC + plan from pre-parsed data (no file I/O)
+    rac, plan = build_rac_in_memory(
+        ban, parsed_rac=parsed_rac, parsed_cowan=cowan_template,
+    )
+
+    return CachedFixture(
+        ban=ban,
+        raw_params=raw_params,
+        rac=rac,
+        plan=plan,
+        cowan_template=cowan_template,
+        cowan_metadata=cowan_metadata,
+    )
+
+
+def calcXAS_cached(
+    cache: CachedFixture,
+    cf: Optional[dict] = None,
+    slater: float = 0.8,
+    soc: float = 1.0,
+    delta=None, u=None, lmct=None, mlct=None,
+    T: float = 80.0,
+    beam_fwhm: float = 0.2,
+    gamma1: float = 0.2,
+    gamma2: float = 0.4,
+    med_energy: float = 25.0,
+    max_gs: int = 1,
+    broaden_mode: str = "legacy",
+    xmin=None, xmax=None, nbins: int = 2000,
+    return_sticks: bool = False,
+    device: str = "cpu",
+) -> Union[Tuple[torch.Tensor, torch.Tensor],
+           Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Calculate XAS from a pre-loaded fixture cache (no file I/O).
+
+    This is the fast-path version of :func:`calcXAS` for parameter
+    sweeps. Create a cache with :func:`preload_fixture`, then call
+    this function in a loop with varying physics parameters.
+
+    Parameters
+    ----------
+    cache : CachedFixture
+        Pre-parsed fixture data from :func:`preload_fixture`.
+    cf : dict, optional
+        Crystal-field parameters (same as ``calcXAS``).
+    slater, soc : float or torch.Tensor
+        Slater / SOC scaling (supports ``requires_grad=True``).
+    delta, u, lmct, mlct : float, optional
+        Charge-transfer parameters.
+    T, beam_fwhm, gamma1, gamma2, med_energy, max_gs, broaden_mode,
+    xmin, xmax, nbins, return_sticks, device
+        Same as ``calcXAS``.
+
+    Returns
+    -------
+    (x, y) or (x, y, sticks)
+        Same as ``calcXAS``.
+    """
+    import copy
+    from multitorch.atomic.scaled_params import scale_atomic_params
+    from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+    from multitorch.hamiltonian.build_ban import modify_ban_params
+    from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    if cf is None:
+        cf = {}
+
+    # Apply parameter overrides to a copy of the cached BAN
+    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+
+    # Scale atomic params (fast tensor ops, no file I/O)
+    scaled_params = scale_atomic_params(
+        cache.raw_params, slater_scale=slater, soc_scale=soc,
+    )
+
+    # Build COWAN store from cached template + metadata (no file I/O)
+    cowan = build_cowan_store_in_memory(
+        scaled_params, cache.raw_params, cache.plan,
+        cowan_template=cache.cowan_template,
+        cowan_metadata=cache.cowan_metadata,
+        device=device,
+    )
+
+    # Assemble and diagonalize
+    result = assemble_and_diagonalize_in_memory(cowan, cache.rac, ban, device=device)
+
+    # Extract sticks
+    E_sticks, M_sticks, _ = get_sticks_from_banresult(
+        result, T=T, max_gs=max_gs, device=device,
+    )
+
+    if E_sticks.numel() == 0:
+        raise ValueError("No transitions found")
+
+    # Broaden
+    E_min = float(E_sticks.min())
+    E_max = float(E_sticks.max())
+    if xmin is None:
+        xmin = E_min - 5.0
+    if xmax is None:
+        xmax = E_max + 5.0
+
+    x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
+
+    med = 0.5 * (E_min + E_max)
+    y = pseudo_voigt(
+        x, E_sticks, M_sticks,
+        fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
+        med_energy=med, mode=broaden_mode,
+    )
+
+    if return_sticks:
+        sticks = torch.stack([E_sticks, M_sticks], dim=1)
+        return x, y, sticks
+    return x, y
 
 
 def calcXAS(

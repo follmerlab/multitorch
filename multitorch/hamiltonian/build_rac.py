@@ -408,8 +408,10 @@ def validate_section_plan(plan: SectionPlan, rac: RACFileFull, *, nconf: int) ->
 def build_rac_in_memory(
     ban: BanData,
     *,
-    source_rac_path: str | Path,
-    source_rcg_path: str | Path,
+    source_rac_path: Optional[str | Path] = None,
+    source_rcg_path: Optional[str | Path] = None,
+    parsed_rac: Optional[RACFileFull] = None,
+    parsed_cowan: Optional[List] = None,
 ) -> Tuple[RACFileFull, SectionPlan]:
     """Construct a :class:`RACFileFull` + :class:`SectionPlan` for C3e.
 
@@ -419,15 +421,20 @@ def build_rac_in_memory(
         Parsed BAN file. Only ``ban.nconf_gs`` is consulted here; the
         rest of the BAN content is consumed downstream by C3e and the
         in-memory assembler.
-    source_rac_path : path-like
+    source_rac_path : path-like, optional
         Path to a ``.rme_rac`` fixture. Parsed via
-        :func:`read_rme_rac_full`. **Required for the loader-based
-        implementation; will become optional once a from-scratch ttrac
-        port lands.**
-    source_rcg_path : path-like
+        :func:`read_rme_rac_full`. Not needed if ``parsed_rac`` is
+        provided.
+    source_rcg_path : path-like, optional
         Path to a ``.rme_rcg`` fixture. Parsed via
         :func:`read_cowan_store` so the section plan can record the
-        per-slot column count.
+        per-slot column count. Not needed if ``parsed_cowan`` is
+        provided.
+    parsed_rac : RACFileFull, optional
+        Pre-parsed RAC data. If provided, skips file I/O for RAC.
+    parsed_cowan : list, optional
+        Pre-parsed COWAN store (from ``read_cowan_store``). If
+        provided, skips file I/O for the COWAN template.
 
     Returns
     -------
@@ -442,8 +449,24 @@ def build_rac_in_memory(
         (``validate_section_plan`` failed). This is the contract that
         protects C3e from building against a bad fixture.
     """
-    rac = read_rme_rac_full(source_rac_path)
-    cowan = read_cowan_store(source_rcg_path)
+    if parsed_rac is not None:
+        rac = parsed_rac
+    elif source_rac_path is not None:
+        rac = read_rme_rac_full(source_rac_path)
+    else:
+        raise ValueError(
+            "Either source_rac_path or parsed_rac must be provided"
+        )
+
+    if parsed_cowan is not None:
+        cowan = parsed_cowan
+    elif source_rcg_path is not None:
+        cowan = read_cowan_store(source_rcg_path)
+    else:
+        raise ValueError(
+            "Either source_rcg_path or parsed_cowan must be provided"
+        )
+
     plan = derive_section_plan(rac, cowan, nconf=ban.nconf_gs)
     validate_section_plan(plan, rac, nconf=ban.nconf_gs)
     return rac, plan

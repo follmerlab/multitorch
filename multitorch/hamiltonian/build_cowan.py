@@ -243,7 +243,9 @@ def build_cowan_store_in_memory(
     raw_params: AtomicParams,
     plan: SectionPlan,
     *,
-    source_rcg_path: str | Path,
+    source_rcg_path: Optional[str | Path] = None,
+    cowan_template: Optional[List[List[torch.Tensor]]] = None,
+    cowan_metadata: Optional[List[List[CowanBlockMeta]]] = None,
     device=None,
 ) -> List[List[torch.Tensor]]:
     """Build a COWAN store with autograd-carrying HAMILTONIAN blocks.
@@ -266,10 +268,17 @@ def build_cowan_store_in_memory(
     plan : SectionPlan
         The section plan from :func:`~multitorch.hamiltonian.build_rac.build_rac_in_memory`.
         Used as a cross-check on section count.
-    source_rcg_path : path-like
+    source_rcg_path : path-like, optional
         Path to the ``.rme_rcg`` fixture. Parsed both for the template
         matrices (``read_cowan_store``) and for block metadata
-        (``read_cowan_metadata``).
+        (``read_cowan_metadata``). Not needed if ``cowan_template`` and
+        ``cowan_metadata`` are provided.
+    cowan_template : list of list of torch.Tensor, optional
+        Pre-parsed COWAN store template. If provided together with
+        ``cowan_metadata``, skips file I/O entirely.
+    cowan_metadata : list of list of CowanBlockMeta, optional
+        Pre-parsed block metadata. Must be provided alongside
+        ``cowan_template``.
 
     Returns
     -------
@@ -288,9 +297,18 @@ def build_cowan_store_in_memory(
     The parity is exact (``atol=0``) because the decomposition is
     algebraically self-consistent.
     """
-    source_rcg_path = Path(source_rcg_path)
-    template = read_cowan_store(source_rcg_path)
-    meta = read_cowan_metadata(source_rcg_path)
+    if cowan_template is not None and cowan_metadata is not None:
+        template = cowan_template
+        meta = cowan_metadata
+    elif source_rcg_path is not None:
+        source_rcg_path = Path(source_rcg_path)
+        template = read_cowan_store(source_rcg_path)
+        meta = read_cowan_metadata(source_rcg_path)
+    else:
+        raise ValueError(
+            "Either source_rcg_path or (cowan_template, cowan_metadata) "
+            "must be provided"
+        )
 
     # Alignment sanity
     if len(template) != len(meta):
