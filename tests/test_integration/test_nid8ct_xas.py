@@ -91,12 +91,15 @@ def test_calcXAS_bootstrap_with_return_sticks():
 
 
 @pytest.mark.integration
-def test_calcXAS_bootstrap_not_implemented_without_ban():
-    """calcXAS without ban_output_path should raise NotImplementedError."""
+def test_calcXAS_phase5_runs():
+    """calcXAS without ban_output_path runs the Phase 5 pipeline."""
     from multitorch.api.calc import calcXAS
-    with pytest.raises(NotImplementedError):
-        calcXAS(element='Ni', valence='ii', sym='d4h', edge='l',
-                cf={'tendq': 1.0})
+    x, y = calcXAS(element='Ni', valence='ii', sym='d4h', edge='l',
+                    cf={'tendq': 1.0, 'dt': 0.0, 'ds': 0.1})
+    assert x.shape == y.shape
+    assert x.numel() > 0
+    assert (y >= -1e-10).all(), "Negative spectrum values"
+    assert float(y.max()) > 0.0, "Empty spectrum"
 
 
 @pytest.mark.integration

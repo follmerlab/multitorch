@@ -22,11 +22,8 @@ Physical meaning:
   Ds: tetragonal distortion (rank-2 axial, eV)
 """
 from __future__ import annotations
-from typing import Dict, Optional
+from typing import Dict
 import math
-import torch
-
-from multitorch._constants import DTYPE
 
 
 # Pre-computed exact algebraic crystal field coefficients
@@ -93,47 +90,3 @@ def get_cf_branch_values(
     return result
 
 
-def build_cf_matrix(
-    rme_shell_blocks: list,
-    cf_params: dict,
-    sym: str,
-    n_states: int,
-    device: str = "cpu",
-) -> torch.Tensor:
-    """
-    Build the crystal field Hamiltonian matrix from RME SHELL operator blocks.
-
-    H_CF = Σ_α (branch_value_α) × RME_block_α
-
-    Parameters
-    ----------
-    rme_shell_blocks : list of RACBlock
-        HAMIL blocks with operator names 10Dq, Dt, Ds (or SHELL1, SHELL2, etc.)
-    cf_params : dict
-        Crystal field parameters: {'tendq': ..., 'ds': ..., 'dt': ...}
-    sym : str
-        Symmetry ('oh', 'd4h', 'c4h').
-    n_states : int
-        Dimension of the Hilbert space for this symmetry sector.
-    device : str
-
-    Returns
-    -------
-    H_CF : torch.Tensor  shape (n_states, n_states)
-    """
-    branch_vals = get_cf_branch_values(
-        sym,
-        tendq=cf_params.get("tendq", 0.0),
-        ds=cf_params.get("ds", 0.0),
-        dt=cf_params.get("dt", 0.0),
-    )
-
-    H = torch.zeros(n_states, n_states, dtype=DTYPE, device=device)
-
-    for block in rme_shell_blocks:
-        # Map block operator name to branch coefficient
-        op = block.kind.upper() if hasattr(block, "kind") else ""
-        # TODO: full operator → branch coefficient mapping
-        # For now, this is a placeholder
-
-    return H

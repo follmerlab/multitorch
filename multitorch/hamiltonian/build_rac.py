@@ -336,42 +336,68 @@ def validate_section_plan(plan: SectionPlan, rac: RACFileFull, *, nconf: int) ->
       - Every ADD entry's ``matrix_idx`` is in range for its section.
       - Every ADD entry's ``nbra`` does not exceed the slot's row capacity.
 
+    TRANSI dipole blocks (PERP/PARA) are validated more loosely: the
+    assembler determines the COWAN section at runtime based on the
+    config index (``tran_cowan_sec = icg``), so we only check that the
+    matrix_idx is in range for *at least one* of the dipole sections
+    (0 or 1). This is necessary because fixtures like Ti⁴⁺ d⁰ have
+    TRANSI blocks that exist only for conf-2 (d¹L), and the
+    duplicate-based conf-1/conf-2 classifier cannot handle asymmetric
+    irrep counts.
+
     Raises
     ------
     ValueError
         On any inconsistency. Used by :func:`build_rac_in_memory` to
         fail loudly when a fixture's RAC and RCG files disagree.
     """
-    transi_section = _split_transi_dipole_sections(rac, nconf)
+    # Determine which sections are "dipole sections" (0 and/or 1)
+    dipole_sections = [0] if nconf == 1 else [0, 1]
 
     for blk in rac.blocks:
-        if blk.kind == "TRANSI" and "HYBR" not in blk.geometry:
-            sec = transi_section[id(blk)]
+        is_transi_dipole = (blk.kind == "TRANSI" and "HYBR" not in blk.geometry)
+
+        if is_transi_dipole:
+            # Validate against any eligible dipole section
+            for add in blk.add_entries:
+                valid = any(
+                    1 <= add.matrix_idx <= plan.section_size(sec)
+                    for sec in dipole_sections
+                    if sec < plan.n_sections
+                )
+                if not valid:
+                    sizes = {s: plan.section_size(s) for s in dipole_sections
+                             if s < plan.n_sections}
+                    raise ValueError(
+                        f"ADD matrix_idx={add.matrix_idx} out of range for "
+                        f"all dipole sections {sizes} in "
+                        f"block {(blk.kind, blk.bra_sym, blk.ket_sym, blk.geometry)}"
+                    )
         else:
             sec = classify_block_section(blk, nconf=nconf)
 
-        if sec >= plan.n_sections:
-            raise ValueError(
-                f"Block {(blk.kind, blk.bra_sym, blk.ket_sym, blk.geometry)} "
-                f"classified to section {sec} but plan has only "
-                f"{plan.n_sections} sections"
-            )
-
-        for add in blk.add_entries:
-            if not (1 <= add.matrix_idx <= plan.section_size(sec)):
+            if sec >= plan.n_sections:
                 raise ValueError(
-                    f"ADD matrix_idx={add.matrix_idx} out of range for "
-                    f"section {sec} (size {plan.section_size(sec)}) in "
-                    f"block {(blk.kind, blk.bra_sym, blk.ket_sym, blk.geometry)}"
+                    f"Block {(blk.kind, blk.bra_sym, blk.ket_sym, blk.geometry)} "
+                    f"classified to section {sec} but plan has only "
+                    f"{plan.n_sections} sections"
                 )
 
-            entry = plan.get(sec, add.matrix_idx)
-            if add.nbra > entry.required_n_rows:
-                raise ValueError(
-                    f"ADD nbra={add.nbra} exceeds slot capacity "
-                    f"{entry.required_n_rows} at section {sec} "
-                    f"matrix_idx {add.matrix_idx}"
-                )
+            for add in blk.add_entries:
+                if not (1 <= add.matrix_idx <= plan.section_size(sec)):
+                    raise ValueError(
+                        f"ADD matrix_idx={add.matrix_idx} out of range for "
+                        f"section {sec} (size {plan.section_size(sec)}) in "
+                        f"block {(blk.kind, blk.bra_sym, blk.ket_sym, blk.geometry)}"
+                    )
+
+                entry = plan.get(sec, add.matrix_idx)
+                if add.nbra > entry.required_n_rows:
+                    raise ValueError(
+                        f"ADD nbra={add.nbra} exceeds slot capacity "
+                        f"{entry.required_n_rows} at section {sec} "
+                        f"matrix_idx {add.matrix_idx}"
+                    )
 
 
 # ─────────────────────────────────────────────────────────────

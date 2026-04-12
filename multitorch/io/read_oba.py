@@ -44,6 +44,15 @@ class TriadData:
 
 
 @dataclass
+class BandMetadata:
+    """Per-band metadata extracted from the .ban_out file header."""
+    triad_sym: str = ""              # e.g. "0+  1-  1-"
+    gs_energy: float = 0.0           # Eg0 in eV (relative to config average)
+    gs_degeneracy: int = 1           # number of degenerate ground states
+    config_weights: list = field(default_factory=list)  # [w1, w2, ...]
+
+
+@dataclass
 class BanOutput:
     """
     Complete parsed output of a ttban .oba / .ban_out file.
@@ -55,6 +64,8 @@ class BanOutput:
     """
     # Flat list of all parsed triads in file order
     triad_list: List[TriadData] = field(default_factory=list)
+    # Per-band metadata (config weights, GS energy) in file order
+    band_metadata: List[BandMetadata] = field(default_factory=list)
 
     def get(self, actor: str, sym: Tuple[str, str, str]) -> TriadData | None:
         """Return the first TriadData matching actor and sym."""
@@ -103,10 +114,44 @@ def read_ban_output(path: str | Path) -> BanOutput:
     """
     path = Path(path)
     result = BanOutput()
+    current_band = None
 
     with open(path, "r") as f:
         line = f.readline()
         while line:
+            # Track band metadata
+            if "TRIADS" in line and "TRANSFORMED" not in line:
+                # Next line has the triad symmetries
+                triad_line = f.readline()
+                current_band = BandMetadata(triad_sym=triad_line.strip())
+                line = f.readline()
+                continue
+
+            if "Ground state energy Eg0=" in line:
+                if current_band is None:
+                    current_band = BandMetadata()
+                # Parse "Ground state energy Eg0= -2.190453291     (   1 times)"
+                parts = line.split("Eg0=")[1]
+                energy_str = parts.split("(")[0].strip()
+                current_band.gs_energy = float(energy_str)
+                times_str = parts.split("(")[1].split("times")[0].strip()
+                current_band.gs_degeneracy = int(times_str)
+                line = f.readline()
+                continue
+
+            if "Weight of configurations" in line:
+                if current_band is None:
+                    current_band = BandMetadata()
+                # Parse "Weight of configurations 1,2,3 in the ground state: 0.91158 0.08842 0.00000"
+                weights_str = line.split(":")[-1].strip()
+                current_band.config_weights = [
+                    float(w) for w in weights_str.split()
+                ]
+                result.band_metadata.append(current_band)
+                current_band = None
+                line = f.readline()
+                continue
+
             if "TRANSFORMED" in line:
                 xdim, ydim, actor, sym_list = _parse_mat_header(line)
                 # Determine file type by extension

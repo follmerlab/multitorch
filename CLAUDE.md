@@ -38,7 +38,7 @@ Legacy Python API at `../pyctm/`.
 
 ## Test status
 
-141/141 tests pass as of 2026-04-09.
+398/398 tests pass as of 2026-04-11.
 
 ## Orchestration
 

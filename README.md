@@ -2,30 +2,70 @@
 
 A PyTorch port of the Cowan/ttmult multiplet X-ray spectroscopy suite for
 L-edge spectra of 3d transition metal complexes. Float64 throughout,
-GPU-agnostic, and (once built from the assembled pipeline) differentiable
-with respect to crystal-field and charge-transfer parameters.
+GPU-agnostic, and differentiable with respect to Slater scaling, spin-orbit
+coupling, crystal-field, and charge-transfer parameters via
+`torch.autograd`.
 
-Current status: 175 / 175 tests passing. Both the pre-computed-parameters
-pipeline (read `.rme_rcg` / `.rme_rac` / `.ban` → assemble block
-Hamiltonian → diagonalize → build transition matrix → broaden) and the
-from-scratch HFS SCF pipeline (`atomic/hfs.py` → Slater integrals →
-spin-orbit ζ) are functional and validated against Fortran reference data.
-RIXS bootstrap mode (`getRIXS(ban_abs_path, ban_ems_path)`) is wired up
-end-to-end on top of the vectorized Kramers-Heisenberg kernel; it is unit
-tested with synthetic fixtures pending committed paired `.ban_out` files.
+Current status: 398 / 398 tests passing. Three operational modes:
+
+1. **Phase 5 pure-PyTorch** (`calcXAS(element, valence, sym, edge, cf, slater, soc)`)
+   — autograd-traceable end-to-end; gradients flow through `slater` and
+   `soc` into eigenvalues and the broadened spectrum. Validated against
+   bootstrap on all 9 Ti–Ni fixtures (cosine ≥ 0.97).
+2. **Bootstrap from files** (`calcXAS(..., ban_output_path=...)`) — reads
+   pre-computed Fortran `.ban_out` files; byte-exact with pyctm.
+3. **RIXS bootstrap** (`calcRIXS(ban_abs_path, ban_ems_path)`) — paired
+   absorption/emission 2D map via the vectorized Kramers-Heisenberg kernel.
 
 ## Install
 
+### Quick start (Python-only, no Fortran needed)
+
 ```bash
+# 1. Clone the repository
+git clone <repo-url>
+cd multitorch
+
+# 2. Create the conda environment
 conda env create -f requirements/environment.yml
 conda activate multi
+
+# 3. Install multitorch in editable mode
 pip install -e .
+
+# 4. Verify the installation
+pytest tests/ -q
 ```
 
-Python 3.11, PyTorch 2.5. No Fortran compiler required for the
-pre-computed-parameters pipeline; the from-scratch pipeline needs the
-`ttmult/` Fortran sources built (`make all` in `ttmult/src/`) for its
-reference `rcg_cfp72/73` binary tables.
+**Requirements:** Python 3.11+, PyTorch 2.5+, NumPy, SciPy. All
+dependencies are pinned in `requirements/environment.yml`.
+
+### What you can do without Fortran
+
+Everything in multitorch runs in pure Python/PyTorch:
+
+- **Phase 5 pipeline** — compute XAS from physical parameters
+  (`calcXAS(element, valence, sym, edge, cf, slater, soc)`) with full
+  autograd support. Uses pre-computed angular coefficients bundled as
+  fixture files under `tests/reference_data/`.
+- **Bootstrap pipeline** — read pre-computed Fortran `.ban_out` files and
+  compute broadened spectra (`calcXAS(..., ban_output_path=...)`)
+- **RIXS** — 2D resonant inelastic scattering maps from paired fixture files
+- **DOC** — ground-state configuration weight analysis
+- **HFS SCF** — Hartree-Fock-Slater self-consistent field from atomic number
+
+### Optional: Fortran tools (for generating new reference data)
+
+To generate new `.rme_rcg`/`.rme_rac`/`.ban_out` fixture files for ions
+not already in `tests/reference_data/`, you need the Fortran ttmult suite:
+
+```bash
+cd ../ttmult/src && make all    # requires gfortran
+```
+
+Then use the `pyttmult` Python wrapper (`../pyttmult/`) to drive the
+Fortran binaries. This is only needed for expanding coverage to new ions —
+the existing 9 Ti-Ni fixtures cover the most common 3d L-edge cases.
 
 ## Run the tests
 
@@ -33,7 +73,7 @@ reference `rcg_cfp72/73` binary tables.
 pytest tests/ -q
 ```
 
-Expect 175 passing, 0 failing.
+Expect 398 passing, 0 failing.
 
 ## End-to-end audit
 
@@ -47,6 +87,37 @@ fixture in `tests/reference_data/` and writes a per-cell pass/fail report
 to `tests/audit_results.md`.
 
 ## Minimal example
+
+### Phase 5 — autograd-traceable from physical parameters
+
+```python
+import torch
+from multitorch.api.calc import calcXAS
+
+# Ni²⁺ D4h L-edge — differentiable w.r.t. slater and soc
+slater = torch.tensor(0.8, dtype=torch.float64, requires_grad=True)
+x, y = calcXAS(
+    element="Ni", valence="ii", sym="d4h", edge="l",
+    cf={}, slater=slater, soc=1.0, T=300,
+)
+
+# Gradient of the spectrum with respect to Slater scaling
+loss = y.sum()
+grad = torch.autograd.grad(loss, slater)
+```
+
+### Bootstrap from pre-computed files
+
+```python
+from multitorch.api.calc import calcXAS
+
+x, y = calcXAS(
+    element='', valence='', sym='', edge='', cf={},
+    ban_output_path="tests/reference_data/nid8ct/nid8ct.ban_out",
+)
+```
+
+### Low-level pipeline
 
 ```python
 from multitorch.hamiltonian.assemble import assemble_and_diagonalize
@@ -74,11 +145,12 @@ byte-exact agreement with historical `.xy` reference files; prefer
 
 ## Notebooks
 
-Three runnable demonstration notebooks live under `notebooks/`:
+Four runnable demonstration notebooks live under `notebooks/`:
 
 - `01_quickstart.ipynb` — one-line `getXAS()` call on the `nid8ct` fixture, overlay vs the Fortran reference, broadening-parameter sweep.
 - `02_pipeline_walkthrough.ipynb` — Wigner primitives → COWAN store → `assemble_and_diagonalize` → sticks → pseudo-Voigt, closing with a byte-level match against `getXAS()`.
-- `03_parameter_exploration.ipynb` — full Ti–Ni 3d L-edge series in one figure plus temperature / broadening sweeps.
+- `03_parameter_exploration.ipynb` — full Ti–Ni 3d L-edge series, 10Dq/Δ/Slater sweeps via Phase 5 `calcXAS()` with autograd, temperature and broadening sweeps.
+- `04_rixs_quickstart.ipynb` — synthetic RIXS 2D map via the Kramers-Heisenberg kernel, CIE/CEE line cuts, autograd demo, `calcRIXS` API reference.
 
 ```bash
 pip install -e ".[notebook]"
@@ -89,11 +161,12 @@ See `notebooks/README.md` for details.
 
 ## Reference data
 
-All Fortran reference outputs for the three validation fixtures
-(`nid8`, `nid8ct`, `als1ni2`) are committed under `tests/reference_data/`.
-Regenerating them requires building the Fortran binaries in `ttmult/src/`
-plus running the `pyttmult` driver — **no part of the test suite requires
-running Fortran at test time**.
+All Fortran reference outputs are committed under `tests/reference_data/`:
+the three core fixtures (`nid8`, `nid8ct`, `als1ni2`) plus the eight
+Ti–Ni Oh L-edge fixtures (`ti4_d0_oh` through `ni2_d8_oh`) used for the
+Phase 5 parity sweep. Regenerating them requires building the Fortran
+binaries in `ttmult/src/` plus running the `pyttmult` driver — **no part
+of the test suite requires running Fortran at test time**.
 
 ## Validation status
 
@@ -106,6 +179,8 @@ running Fortran at test time**.
 | Hamiltonian eigenvalues (13 triads) | 1e-3 eV | < 1e-4 eV | OK |
 | Transition intensities | 1e-3 | within ttban tolerance | OK |
 | Spectrum broadening (pseudo-Voigt) | 1e-2 rel. | matches `.xy` | OK |
+| Phase 5 vs bootstrap parity (9 fixtures) | cosine ≥ 0.97 | ≥ 0.97 (Ti d⁰) to ≥ 0.999 (Ni Oh) | OK |
+| Phase 5 autograd (slater + soc) | finite, nonzero | verified on Ni Oh, Fe Oh, Ni D4h | OK |
 | RIXS bootstrap (Kramers-Heisenberg) | structural | 16/16 unit tests | OK (synthetic) |
 | HFS SCF orbital energies | 1 Ry | < 1 Ry | OK |
 | HFS SCF spin-orbit ζ (2p, central-field) | 5% | ~3% | OK |

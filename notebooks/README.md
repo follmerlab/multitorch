@@ -1,9 +1,8 @@
 # multitorch demonstration notebooks
 
-Three runnable Jupyter notebooks that introduce the multitorch package
-end-to-end. All three use only the `.ban_out` bootstrap pipeline (no
-Fortran at runtime, no HFS SCF), so they run from a fresh `pip install -e .`
-plus the optional notebook dependencies.
+Four runnable Jupyter notebooks that introduce the multitorch package
+end-to-end. They run from a fresh `pip install -e .` plus the optional
+notebook dependencies — no Fortran at runtime, no HFS SCF.
 
 ## Setup
 
@@ -22,7 +21,8 @@ Jupyter from anywhere inside the repository.
 |---|---|
 | `01_quickstart.ipynb` | One-line `getXAS()` call on the `nid8ct` fixture, overlay vs the Fortran reference `.xy`, and a sweep over the broadening parameters (`beam_fwhm`, `gamma1`, `gamma2`). |
 | `02_pipeline_walkthrough.ipynb` | Peels back the `getXAS()` wrapper layer by layer: Wigner primitives → COWAN store → `assemble_and_diagonalize` → Boltzmann sticks → pseudo-Voigt. Closes with a byte-level match against `getXAS()`. |
-| `03_parameter_exploration.ipynb` | Uses the eight committed Ti–Ni fixtures to plot the full 3d L-edge series in a single figure, then explores temperature and broadening sweeps on `nid8ct`. |
+| `03_parameter_exploration.ipynb` | Full 3d L-edge series, 10Dq/Δ/Slater sweeps (both file-editing and Phase 5 `calcXAS`), temperature and broadening sweeps, autograd demo. |
+| `04_rixs_quickstart.ipynb` | Synthetic RIXS 2D map via the Kramers-Heisenberg kernel, CIE/CEE line cuts, autograd through the kernel, `calcRIXS` API reference. |
 
 ## Re-executing in CI / from the command line
 
@@ -32,5 +32,5 @@ for nb in notebooks/*.ipynb; do
 done
 ```
 
-All three notebooks should run to completion against the fixtures committed
+All four notebooks should run to completion against the fixtures committed
 under `tests/reference_data/`.

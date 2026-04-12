@@ -23,8 +23,14 @@ from pathlib import Path
 REFROOT = Path(__file__).parent.parent / "reference_data"
 
 # (case_id, expected cosine lower bound)
+# Per-case cosine similarity thresholds.
+# Cases below 0.99 are KNOWN LIMITATIONS with documented root causes:
+#   ti4_d0_oh (0.97): d0 has no d-d Slater integrals → eigenvalues match to
+#       3.7e-7 Ry but the residual gap is in the broadening layer (Voigt
+#       convolution grid alignment). See README §Known limitations §4.
+# All other cases must achieve ≥ 0.99.
 CASES = [
-    ("ti4_d0_oh", 0.97),   # d0, known edge case (see README §Known limitations §4)
+    ("ti4_d0_oh", 0.97),
     ("v3_d2_oh",  0.99),
     ("cr3_d3_oh", 0.99),
     ("mn2_d5_oh", 0.99),
@@ -35,14 +41,18 @@ CASES = [
 ]
 
 
-def _cosine_to_reference(x: torch.Tensor, y: torch.Tensor, xy_path: Path) -> float:
+def _compare_to_reference(x: torch.Tensor, y: torch.Tensor, xy_path: Path) -> dict:
     """
     Compare a multitorch spectrum to a pyctm .xy file.
 
     The .xy file is in relative-energy coordinates (starts at 0) so we
     shift the multitorch x-axis so its peak lines up with the reference
-    peak, then interpolate onto the reference grid and compute the
-    cosine similarity.
+    peak, then interpolate onto the reference grid and compute:
+      - cosine similarity
+      - peak shift (eV) before alignment
+      - amplitude ratio (multitorch peak / reference peak)
+
+    Returns a dict with keys: cosine, peak_shift_eV, amplitude_ratio.
     """
     x_np = x.detach().cpu().numpy()
     y_np = y.detach().cpu().numpy()
@@ -50,20 +60,39 @@ def _cosine_to_reference(x: torch.Tensor, y: torch.Tensor, xy_path: Path) -> flo
     x_ref = xy_ref[:, 0]
     y_ref = xy_ref[:, 1]
 
-    # Align peaks
-    shift = x_np[y_np.argmax()] - x_ref[y_ref.argmax()]
-    x_aligned = x_np - shift
+    # Peak shift before alignment (eV)
+    peak_shift = float(x_np[y_np.argmax()] - x_ref[y_ref.argmax()])
+
+    # Amplitude ratio (peak heights)
+    ref_max = float(y_ref.max())
+    mt_max = float(y_np.max())
+    amp_ratio = mt_max / ref_max if ref_max > 1e-30 else float('inf')
+
+    # Align peaks for cosine similarity
+    x_aligned = x_np - peak_shift
     y_interp = np.interp(x_ref, x_aligned, y_np, left=0.0, right=0.0)
 
     num = float(np.dot(y_interp, y_ref))
     den = float(np.linalg.norm(y_interp) * np.linalg.norm(y_ref) + 1e-30)
-    return num / den
+    cosine = num / den
+
+    return {
+        'cosine': cosine,
+        'peak_shift_eV': peak_shift,
+        'amplitude_ratio': amp_ratio,
+    }
 
 
 @pytest.mark.integration
 @pytest.mark.parametrize("case_id,cos_min", CASES)
 def test_tm_series_getXAS_runs(case_id, cos_min):
-    """getXAS from {case}.ban_out runs, returns valid tensors, and matches ref."""
+    """getXAS from {case}.ban_out runs, returns valid tensors, and matches ref.
+
+    Three independent checks prevent false positives:
+      1. Cosine similarity ≥ threshold (catches shape distortion)
+      2. Peak shift < 2 eV (catches energy offset errors that cosine misses)
+      3. Amplitude ratio within [0.5, 2.0] (catches scaling errors that cosine misses)
+    """
     from multitorch.api.plot import getXAS
 
     ban_path = REFROOT / case_id / f"{case_id}.ban_out"
@@ -83,10 +112,19 @@ def test_tm_series_getXAS_runs(case_id, cos_min):
     assert (y >= -1e-10).all(), f"{case_id}: negative spectrum values"
     assert float(y.max()) > 0.0, f"{case_id}: empty spectrum"
 
-    # Shape fidelity vs Fortran reference
-    cos = _cosine_to_reference(x, y, xy_path)
-    assert cos >= cos_min, (
-        f"{case_id}: cosine similarity {cos:.4f} below threshold {cos_min:.3f}"
+    # Multi-metric fidelity check vs Fortran reference
+    cmp = _compare_to_reference(x, y, xy_path)
+
+    assert cmp['cosine'] >= cos_min, (
+        f"{case_id}: cosine similarity {cmp['cosine']:.4f} below threshold {cos_min:.3f}"
+    )
+    # Peak shift catches uniform energy offsets (cosine-invisible)
+    assert abs(cmp['peak_shift_eV']) < 2.0, (
+        f"{case_id}: peak shift {cmp['peak_shift_eV']:.2f} eV exceeds 2 eV"
+    )
+    # Amplitude ratio catches uniform scaling (cosine-invisible)
+    assert 0.5 < cmp['amplitude_ratio'] < 2.0, (
+        f"{case_id}: amplitude ratio {cmp['amplitude_ratio']:.3f} outside [0.5, 2.0]"
     )
 
 

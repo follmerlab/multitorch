@@ -11,6 +11,10 @@ import torch
 from multitorch._constants import DTYPE, k_B
 from multitorch.io.read_oba import BanOutput
 
+from typing import TYPE_CHECKING
+if TYPE_CHECKING:
+    from multitorch.hamiltonian.assemble import BanResult
+
 
 def get_sticks(
     ban: BanOutput,
@@ -142,3 +146,99 @@ def get_sticks(
     # Sort by energy
     order = torch.argsort(unique_E)
     return unique_E[order], unique_M[order], Eg_min
+
+
+def get_sticks_from_banresult(
+    result: 'BanResult',
+    T: float = 80.0,
+    max_gs: int = 1,
+    device: str = "cpu",
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute a Boltzmann-weighted XAS stick spectrum from a BanResult.
+
+    This is the Phase 5 analog of :func:`get_sticks`.  The input is a
+    :class:`~multitorch.hamiltonian.assemble.BanResult` (from the in-memory
+    assembler) rather than a :class:`~multitorch.io.read_oba.BanOutput`
+    (from a ``.ban_out`` file).
+
+    The key difference: ``TriadResult.T`` contains transition *amplitudes*
+    in the eigenbasis (real-valued, possibly negative).  Intensities are
+    ``T ** 2`` (the absolute square).
+
+    Parameters
+    ----------
+    result : BanResult
+        Output of ``assemble_and_diagonalize_in_memory``.
+    T : float
+        Temperature in Kelvin (0 = no Boltzmann weighting).
+    max_gs : int
+        Number of lowest distinct ground-state energies to keep.
+    device : str
+        PyTorch device.
+
+    Returns
+    -------
+    Etrans, Mtrans, Eg_min : same as :func:`get_sticks`.
+    """
+    all_Eg = []
+    all_Ef = []
+    all_M = []
+
+    for t in result.triads:
+        eg = t.Eg.to(device=device, dtype=DTYPE)
+        ef = t.Ef.to(device=device, dtype=DTYPE)
+        m = t.T.to(device=device, dtype=DTYPE) ** 2  # amplitude → intensity
+
+        all_Eg.append(eg)
+        all_Ef.append(ef)
+        all_M.append(m)
+
+    if not all_Eg:
+        empty = torch.zeros(0, dtype=DTYPE, device=device)
+        return empty, empty, torch.tensor(0.0, dtype=DTYPE, device=device)
+
+    all_Eg_flat = torch.cat(all_Eg)
+    Eg_min = all_Eg_flat.min()
+
+    unique_Eg = torch.unique(torch.sort(all_Eg_flat)[0])
+    if max_gs < len(unique_Eg):
+        gs_threshold = unique_Eg[max_gs - 1]
+    else:
+        gs_threshold = unique_Eg[-1]
+
+    Etrans_list = []
+    Mtrans_list = []
+    k_B_val = k_B.to(device=device)
+
+    for eg, ef, m in zip(all_Eg, all_Ef, all_M):
+        gs_mask = eg <= gs_threshold
+        eg = eg[gs_mask]
+        m = m[gs_mask]
+
+        if eg.numel() == 0:
+            continue
+
+        Etrans = ef.unsqueeze(0) - eg.unsqueeze(1)
+
+        if T > 0:
+            boltz = torch.exp((Eg_min - eg) / (k_B_val * T))
+        else:
+            boltz = torch.ones_like(eg)
+
+        M_weighted = m * boltz.unsqueeze(1)
+
+        Etrans_list.append(Etrans.reshape(-1))
+        Mtrans_list.append(M_weighted.reshape(-1))
+
+    if not Etrans_list:
+        empty = torch.zeros(0, dtype=DTYPE, device=device)
+        return empty, empty, Eg_min
+
+    Etrans_all = torch.cat(Etrans_list)
+    Mtrans_all = torch.cat(Mtrans_list)
+
+    # Skip deduplication (unlike get_sticks) to preserve autograd flow.
+    # Broadening is linear: summing duplicate sticks before broadening
+    # gives the same result as broadening individually and summing.
+    order = torch.argsort(Etrans_all)
+    return Etrans_all[order], Mtrans_all[order], Eg_min
