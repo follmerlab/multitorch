@@ -110,3 +110,31 @@ def test_broaden_gaussian_fwhm_differentiable():
     loss.backward()
     assert fwhm.grad is not None, "Gradient w.r.t. FWHM must exist"
     assert not fwhm.grad.isnan(), "FWHM gradient must not be NaN"
+
+
+@pytest.mark.phase1
+def test_broaden_gaussian_fwhm_finite_difference():
+    """Autograd gradient for broaden_gaussian FWHM must match finite difference."""
+    from multitorch.spectrum.broaden import broaden_gaussian
+    N, M = 100, 5
+    torch.manual_seed(42)
+    E = torch.linspace(0, 10, N, dtype=torch.float64)
+    D = torch.rand(N, M, dtype=torch.float64)
+    h = 1e-5
+
+    # Autograd
+    fwhm = torch.tensor(0.5, dtype=torch.float64, requires_grad=True)
+    Y = broaden_gaussian(E, D, fwhm=fwhm)
+    loss = Y.sum()
+    loss.backward()
+    grad_auto = fwhm.grad.item()
+
+    # Finite difference
+    Y_plus = broaden_gaussian(E, D, fwhm=0.5 + h)
+    Y_minus = broaden_gaussian(E, D, fwhm=0.5 - h)
+    grad_fd = (Y_plus.sum().item() - Y_minus.sum().item()) / (2 * h)
+
+    rel_err = abs(grad_auto - grad_fd) / (abs(grad_fd) + 1e-30)
+    assert rel_err < 0.01, (
+        f"FWHM autograd {grad_auto:.6e} vs finite-diff {grad_fd:.6e} (rel err {rel_err:.2%})"
+    )

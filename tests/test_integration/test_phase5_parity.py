@@ -251,3 +251,35 @@ def test_autograd_slater_finite_difference(ban, raw_params):
         f"Autograd grad {grad_auto.item():.6e} vs finite-diff {grad_fd.item():.6e} "
         f"(rel error {abs(grad_auto.item() - grad_fd.item()) / (abs(grad_fd.item()) + 1e-30):.2%})"
     )
+
+
+@pytest.mark.phase4
+def test_autograd_soc_finite_difference(ban, raw_params):
+    """Verify autograd gradient for soc_scale matches finite-difference estimate.
+
+    Analogous to test_autograd_slater_finite_difference but for the
+    spin-orbit coupling scale factor.
+    """
+    h = 1e-5
+
+    # Autograd gradient
+    soc_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=soc_scale)
+    loss = result.triads[0].Eg.sum()
+    grad_auto, = torch.autograd.grad(loss, soc_scale)
+
+    # Finite difference: f(1+h) and f(1-h)
+    result_plus = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=1.0 + h)
+    loss_plus = result_plus.triads[0].Eg.sum()
+
+    result_minus = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=1.0 - h)
+    loss_minus = result_minus.triads[0].Eg.sum()
+
+    grad_fd = (loss_plus - loss_minus) / (2 * h)
+
+    assert torch.allclose(
+        grad_auto, grad_fd.detach(), rtol=0.01, atol=1e-6
+    ), (
+        f"SOC autograd grad {grad_auto.item():.6e} vs finite-diff {grad_fd.item():.6e} "
+        f"(rel error {abs(grad_auto.item() - grad_fd.item()) / (abs(grad_fd.item()) + 1e-30):.2%})"
+    )
