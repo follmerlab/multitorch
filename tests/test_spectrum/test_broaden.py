@@ -94,3 +94,19 @@ def test_broaden_gaussian_shape():
     D = torch.rand(N, M, dtype=torch.float64)
     Y = broaden_gaussian(E, D, fwhm=0.5)
     assert Y.shape == (N, M)
+
+
+@pytest.mark.phase1
+def test_broaden_gaussian_fwhm_differentiable():
+    """broaden_gaussian must support tensor FWHM for RIXS autograd."""
+    from multitorch.spectrum.broaden import broaden_gaussian
+    N, M = 100, 5
+    E = torch.linspace(0, 10, N, dtype=torch.float64)
+    D = torch.rand(N, M, dtype=torch.float64)
+    fwhm = torch.tensor(0.5, dtype=torch.float64, requires_grad=True)
+    Y = broaden_gaussian(E, D, fwhm=fwhm)
+    assert Y.shape == (N, M)
+    loss = Y.sum()
+    loss.backward()
+    assert fwhm.grad is not None, "Gradient w.r.t. FWHM must exist"
+    assert not fwhm.grad.isnan(), "FWHM gradient must not be NaN"

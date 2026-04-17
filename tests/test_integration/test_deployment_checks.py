@@ -259,3 +259,34 @@ class TestExtremeParameters:
             cf={'tendq': 1.0}, slater=0.8, soc=0.0, nbins=200,
         )
         assert torch.isfinite(y).all()
+
+
+# ────────────────────────────────────────────────────────────────
+# TEST-10: Error handling for invalid API inputs
+# ────────────────────────────────────────────────────────────────
+
+@pytest.mark.phase5
+class TestAPIErrorHandling:
+    """API entry points must raise clear errors for invalid inputs."""
+
+    def test_calcXAS_bad_element(self):
+        """Unknown element must raise ValueError."""
+        from multitorch.api.calc import calcXAS
+        with pytest.raises(ValueError, match="[Uu]nknown|not.*support"):
+            calcXAS(element='Xx', valence='ii', sym='oh', edge='l',
+                    cf={'tendq': 1.0})
+
+    def test_calcXAS_from_scratch_bad_element(self):
+        """Unknown element must raise ValueError in from_scratch path."""
+        from multitorch.api.calc import calcXAS_from_scratch
+        with pytest.raises(ValueError, match="not.*support|[Uu]nknown"):
+            calcXAS_from_scratch(element='Xx', valence='ii',
+                                 cf={'tendq': 1.0})
+
+    def test_calcXAS_missing_ban_file(self):
+        """Nonexistent ban_output_path must raise FileNotFoundError."""
+        from multitorch.api.calc import calcXAS
+        with pytest.raises(FileNotFoundError):
+            calcXAS(element='Ni', valence='ii', sym='oh', edge='l',
+                    cf={'tendq': 1.0},
+                    ban_output_path='/nonexistent/path.ban_out')

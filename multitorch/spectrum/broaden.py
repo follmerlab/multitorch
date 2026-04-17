@@ -182,7 +182,7 @@ def _convolve_sticks(
     return (profile * amp.unsqueeze(0)).sum(dim=1)   # (N_grid,)
 
 
-def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Tensor:
+def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: _Scalar) -> torch.Tensor:
     """
     Convolve a 2D spectrum matrix D with a Gaussian of given FWHM.
 
@@ -195,8 +195,9 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
         Energy axis.
     D : torch.Tensor  shape (N, M)
         Spectrum to broaden along axis 0.
-    fwhm : float
-        Gaussian FWHM in eV.
+    fwhm : float or torch.Tensor
+        Gaussian FWHM in eV. When a tensor with requires_grad=True,
+        gradients flow through the broadening width.
 
     Returns
     -------
@@ -205,7 +206,7 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
     n, m = D.shape
     sigma = fwhm / (2 * _SQRT_2_LN2)
     n2 = n // 2
-    E0 = float(E[n2])
+    E0 = E[n2]  # keep on tape when E requires grad
     G = _gauss_torch(E, sigma, E0)   # (N,)
 
     # Batch all columns in a single conv1d call (GPU-friendly, no Python loop)
@@ -219,7 +220,11 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
     return Y
 
 
-def _gauss_torch(x: torch.Tensor, sigma: float, x0: float) -> torch.Tensor:
+def _gauss_torch(x: torch.Tensor, sigma: _Scalar, x0: _Scalar) -> torch.Tensor:
+    if not isinstance(sigma, torch.Tensor):
+        sigma = torch.tensor(sigma, dtype=x.dtype, device=x.device)
+    if not isinstance(x0, torch.Tensor):
+        x0 = torch.tensor(x0, dtype=x.dtype, device=x.device)
     return (1.0 / (sigma * _SQRT_2_PI)) * torch.exp(
         -0.5 * ((x - x0) / sigma) ** 2
     )

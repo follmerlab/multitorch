@@ -210,20 +210,38 @@ def test_cfp73_uk_matches_computed():
 
 @pytest.mark.phase3
 def test_orbit_blocks_d8():
-    """ORBIT blocks should be diagonal in term and rank-1 in J."""
+    """ORBIT blocks for d^8 must match analytical UNCPLA × sqrt(L(L+1)(2L+1)) values."""
     from multitorch.angular.rme import compute_orbit_blocks
     terms, _, _ = _get_terms_and_parents(2, 8)
 
     blocks = compute_orbit_blocks(terms)
-    # Should produce blocks for valid (J_bra, J_ket) pairs with |ΔJ| ≤ 1
-    assert len(blocks) > 0
 
-    # Check that diagonal J=L blocks have nonzero values for L>0 terms
-    # (orbital angular momentum is nonzero only when L > 0)
+    # d^8 terms: 3F(S=1,L=3), 3P(S=1,L=1), 1G(S=0,L=4), 1D(S=0,L=2), 1S(S=0,L=0)
+    # ORBIT is rank-1 in J, diagonal in LS term.
+    # Reference values from UNCPLA(L, S, J_bra, 1, L, J_ket) × sqrt(L(L+1)(2L+1)):
+    assert len(blocks) == 12, f"Expected 12 ORBIT blocks for d^8, got {len(blocks)}"
+
+    # Diagonal J blocks (selection rule ΔJ=0)
+    ref_diag = {
+        (1.0, 1.0): np.array([[1.224744871392]]),
+        (2.0, 2.0): np.array([[7.302967433402, 0.0, 0.0],
+                               [0.0, 2.738612787526, 0.0],
+                               [0.0, 0.0, 5.477225575052]]),
+        (3.0, 3.0): np.array([[8.401388774086]]),
+        (4.0, 4.0): np.array([[10.062305898749, 0.0],
+                               [0.0, 13.416407864999]]),
+    }
+    for (Jb, Jk), expected in ref_diag.items():
+        assert (Jb, Jk) in blocks, f"Missing diagonal ORBIT block J={Jb}"
+        np.testing.assert_allclose(blocks[(Jb, Jk)], expected, atol=1e-8,
+            err_msg=f"ORBIT diagonal block J={Jb}")
+
+    # Off-diagonal J blocks (ΔJ=±1): check antisymmetry ORBIT(J,J') = -ORBIT(J',J)^T
     for (Jb, Jk), mat in blocks.items():
-        # All entries should be finite
-        import numpy as np
-        assert np.all(np.isfinite(mat))
+        assert np.all(np.isfinite(mat)), f"ORBIT ({Jb},{Jk}) has non-finite values"
+        if Jb != Jk and (Jk, Jb) in blocks:
+            np.testing.assert_allclose(mat, -blocks[(Jk, Jb)].T, atol=1e-10,
+                err_msg=f"ORBIT antisymmetry: ({Jb},{Jk}) vs ({Jk},{Jb})")
 
 
 # ─── MULTIPOLE transition tests ───────────────────────────

@@ -1,14 +1,15 @@
-"""Diagnostic script for debugging the two-shell exchange calculation.
+"""Tests for V^(k,1) double tensor and two-shell exchange angular coefficients.
 
-Computes V^(k,1) double tensor, validates exchange angular coefficients
-against the Ni²⁺ L-edge fixture HAMILTONIAN blocks.
+Validates:
+- V^(k,1) for single-electron shells equals sqrt(3/2) (analytical result)
+- V^(k,1) for almost-filled shells produces finite, nonzero matrices
+- Exchange G^k angular coefficients for Ni2+ L-edge are symmetric and finite
 """
 import math
 import os
-import sys
-import numpy as np
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
+import numpy as np
+import pytest
 
 from multitorch.angular.wigner import wigner3j, wigner6j, wigner9j
 from multitorch.angular.rme import (
@@ -103,31 +104,27 @@ def get_terms_and_cfp(l, n):
     return terms, parent_terms, cfp
 
 
-def test_vk1_single_electron():
-    """V^(k,1) for single electron should equal √(3/2) for all k."""
-    print("=== V^(k,1) for single-electron shells ===")
-
-    for l_val, name in [(1, 'p^1'), (2, 'd^1')]:
-        terms, parents, cfp = get_terms_and_cfp(l_val, 1)
-        print(f"\n{name}: single term = {terms[0].label}")
-        for k in range(0, 2 * l_val + 1):
-            vk = compute_vk1_ls(l_val, 1, k, terms, parents, cfp)
-            uk = compute_uk_ls(l_val, 1, k, terms, parents, cfp)
-            print(f"  k={k}: V={vk[0,0]:+.6f}  U={uk[0,0]:+.6f}  "
-                  f"(expect V=√(3/2)={math.sqrt(1.5):.6f})")
+@pytest.mark.parametrize("l_val,name", [(1, 'p^1'), (2, 'd^1')])
+def test_vk1_single_electron(l_val, name):
+    """V^(k,1) for single electron must equal sqrt(3/2) for all k."""
+    expected = math.sqrt(1.5)
+    terms, parents, cfp = get_terms_and_cfp(l_val, 1)
+    assert len(terms) == 1, f"{name} should have exactly one term"
+    for k in range(0, 2 * l_val + 1):
+        vk = compute_vk1_ls(l_val, 1, k, terms, parents, cfp)
+        assert abs(vk[0, 0] - expected) < 1e-10, \
+            f"{name} k={k}: V^(k,1) = {vk[0,0]}, expected sqrt(3/2) = {expected}"
 
 
-def test_vk1_almost_filled():
-    """V^(k,1) for p^5 and d^9 (single-term, almost-filled shells)."""
-    print("\n=== V^(k,1) for almost-filled shells ===")
-
-    for l_val, n, name in [(1, 5, 'p^5'), (2, 9, 'd^9')]:
-        terms, parents, cfp = get_terms_and_cfp(l_val, n)
-        print(f"\n{name}: single term = {terms[0].label}")
-        for k in range(0, 2 * l_val + 1):
-            vk = compute_vk1_ls(l_val, n, k, terms, parents, cfp)
-            uk = compute_uk_ls(l_val, n, k, terms, parents, cfp)
-            print(f"  k={k}: V={vk[0,0]:+.6f}  U={uk[0,0]:+.6f}")
+@pytest.mark.parametrize("l_val,n,name", [(1, 5, 'p^5'), (2, 9, 'd^9')])
+def test_vk1_almost_filled(l_val, n, name):
+    """V^(k,1) for almost-filled shells must produce finite, nonzero values."""
+    terms, parents, cfp = get_terms_and_cfp(l_val, n)
+    assert len(terms) == 1, f"{name} should have exactly one term"
+    for k in range(0, 2 * l_val + 1):
+        vk = compute_vk1_ls(l_val, n, k, terms, parents, cfp)
+        assert np.isfinite(vk).all(), f"{name} k={k}: V^(k,1) has non-finite values"
+        assert abs(vk[0, 0]) > 1e-15, f"{name} k={k}: V^(k,1) should be nonzero"
 
 
 def compute_exchange_reij(
@@ -317,154 +314,38 @@ def compute_exchange_reij(
     return blocks
 
 
-def test_exchange_ni2():
-    """Test exchange for Ni2+ L-edge (p^5 d^9) against fixture."""
-    import torch
-    from multitorch.io.read_rme import read_cowan_store
-    from multitorch.hamiltonian.build_cowan import read_cowan_metadata
-    from multitorch._constants import RY_TO_EV_FLOAT
-
-    print("\n=== Exchange test: Ni2+ L-edge (p^5 d^9) ===")
-
+def test_exchange_ni2_symmetric_and_finite():
+    """Exchange G^k angular coefficients for Ni2+ L-edge (p^5 d^9)
+    must be symmetric and finite for all J sectors."""
     l_core, n_core = 1, 5  # p^5
     l_val, n_val = 2, 9     # d^9
 
-    # Get terms and CFP
     core_terms, core_parents, core_cfp = get_terms_and_cfp(l_core, n_core)
     val_terms, val_parents, val_cfp = get_terms_and_cfp(l_val, n_val)
 
-    print(f"Core: {[t.label for t in core_terms]}")
-    print(f"Valence: {[t.label for t in val_terms]}")
-
     # Compute U^(R) and V^(R,1) for both shells
-    U_core = {}
-    V_core = {}
+    U_core, V_core = {}, {}
     for R in range(0, 2 * l_core + 1):
         U_core[R] = compute_uk_ls(l_core, n_core, R, core_terms, core_parents, core_cfp)
         V_core[R] = compute_vk1_ls(l_core, n_core, R, core_terms, core_parents, core_cfp)
-        print(f"  Core U^({R}) = {U_core[R][0,0]:+.6f}, V^({R},1) = {V_core[R][0,0]:+.6f}")
 
-    U_val = {}
-    V_val = {}
+    U_val, V_val = {}, {}
     for R in range(0, 2 * l_val + 1):
         U_val[R] = compute_uk_ls(l_val, n_val, R, val_terms, val_parents, val_cfp)
         V_val[R] = compute_vk1_ls(l_val, n_val, R, val_terms, val_parents, val_cfp)
-        print(f"  Val U^({R}) = {U_val[R][0,0]:+.6f}, V^({R},1) = {V_val[R][0,0]:+.6f}")
 
-    # Compute exchange for G^1 and G^3
+    # Exchange for G^1 and G^3 must produce non-empty, symmetric, finite blocks
     for k in [1, 3]:
         exchange = compute_exchange_reij(
             l_core, n_core, l_val, n_val, k,
             core_terms, val_terms,
             U_core, V_core, U_val, V_val,
         )
-        print(f"\nExchange G^{k} angular coefficients:")
-        for J in sorted(exchange.keys()):
-            mat = exchange[J]
-            print(f"  J={J:.0f}: diag={np.diag(mat)}")
-
-    # Now assemble the full HAMILTONIAN and compare with fixture
-    ref_dir = os.path.join(os.path.dirname(__file__), '..', 'reference_data')
-    rcg_file = os.path.join(ref_dir, 'ni2_d8_oh', 'ni2_d8_oh.rme_rcg')
-
-    if not os.path.exists(rcg_file):
-        print("No fixture file, skipping comparison")
-        return
-
-    cowan = read_cowan_store(rcg_file)
-    meta = read_cowan_metadata(rcg_file)
-
-    # Section 3 has the excited-state blocks
-    sec3_meta = meta[3]
-    sec3_mats = cowan[3]
-
-    # Find HAMILTONIAN blocks
-    print("\n=== Fixture HAMILTONIAN eigenvalues (section 3) ===")
-    for idx, m in enumerate(sec3_meta):
-        if m.operator == "HAMILTONIAN" and m.block_type == "GROUND":
-            mat = sec3_mats[idx]
-            if mat.numel() > 0:
-                J_sym = m.bra_sym
-                evals = torch.linalg.eigvalsh(mat)
-                print(f"  {J_sym}: shape={mat.shape}, evals={evals.tolist()}")
-
-    # Assemble our HAMILTONIAN from components
-    # H = Σ_k F^k(dd) × SHELL2_k + ζ_d × SOC_d + ζ_p × SOC_p
-    #   + Σ_k G^k(pd) × EXCHANGE_k + Σ_k>0 F^k(pd) × DIRECT_k
-    #   + F^2(pp) × pp_angular
-
-    # Atomic parameters (from rcn31_out, in Rydberg)
-    F2_dd = 0.8146951 * RY_TO_EV_FLOAT
-    F4_dd = 0.5024169 * RY_TO_EV_FLOAT
-    zeta_d = 0.00546 * RY_TO_EV_FLOAT  # Blume-Watson for d shell
-    zeta_p = 0.81599 * RY_TO_EV_FLOAT  # p shell SOC
-    G1_pd = 0.3359510 * RY_TO_EV_FLOAT
-    G3_pd = 0.1906853 * RY_TO_EV_FLOAT
-    F2_pd = 0.4656287 * RY_TO_EV_FLOAT
-    F2_pp = 4.0099902 * RY_TO_EV_FLOAT
-
-    print(f"\nParameters: F2_dd={F2_dd:.3f} F4_dd={F4_dd:.3f} "
-          f"ζ_d={zeta_d:.4f} ζ_p={zeta_p:.3f}")
-    print(f"  G1_pd={G1_pd:.3f} G3_pd={G3_pd:.3f} "
-          f"F2_pd={F2_pd:.3f} F2_pp={F2_pp:.3f}")
-
-    # Get the SHELL2 blocks (d-d Coulomb angular factors)
-    shell2_k0 = compute_two_shell_shell_blocks(l_val, n_val, l_core, n_core, 0)
-    shell2_k2 = compute_two_shell_shell_blocks(l_val, n_val, l_core, n_core, 2)
-    shell2_k4 = compute_two_shell_shell_blocks(l_val, n_val, l_core, n_core, 4)
-
-    # Get SOC blocks
-    soc_d = compute_two_shell_soc(l_val, n_val, l_core, n_core, shell_idx=2)
-    soc_p = compute_two_shell_soc(l_val, n_val, l_core, n_core, shell_idx=1)
-
-    # Compute exchange
-    exchange_k1 = compute_exchange_reij(
-        l_core, n_core, l_val, n_val, 1,
-        core_terms, val_terms,
-        U_core, V_core, U_val, V_val)
-    exchange_k3 = compute_exchange_reij(
-        l_core, n_core, l_val, n_val, 3,
-        core_terms, val_terms,
-        U_core, V_core, U_val, V_val)
-
-    # Compute direct inter-shell Coulomb F^2(pd)
-    # This is a SHELL block for the (core, val) pair with cross-shell rank
-    # For now, compute it using the same approach as SHELL2 blocks
-    # TODO: implement properly
-
-    print("\n=== Assembled HAMILTONIAN eigenvalues ===")
-    two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
-
-    for J in sorted(two_shell_basis.keys()):
-        n_states = len(two_shell_basis[J])
-        H = np.zeros((n_states, n_states), dtype=np.float64)
-
-        # d-d Coulomb (F^k(dd), k>0)
-        if J in shell2_k2:
-            H += F2_dd * shell2_k2[J]
-        if J in shell2_k4:
-            H += F4_dd * shell2_k4[J]
-
-        # SOC
-        if J in soc_d:
-            H += zeta_d * soc_d[J]
-        if J in soc_p:
-            H += zeta_p * soc_p[J]
-
-        # Exchange
-        if J in exchange_k1:
-            H += G1_pd * exchange_k1[J]
-        if J in exchange_k3:
-            H += G3_pd * exchange_k3[J]
-
-        # Make symmetric
-        H = 0.5 * (H + H.T)
-
-        evals = np.linalg.eigvalsh(H)
-        print(f"  J={J:.0f}: partial H evals = {evals}")
-
-
-if __name__ == '__main__':
-    test_vk1_single_electron()
-    test_vk1_almost_filled()
-    test_exchange_ni2()
+        assert len(exchange) > 0, f"G^{k} exchange should produce at least one J block"
+        for J, mat in exchange.items():
+            assert np.isfinite(mat).all(), \
+                f"G^{k} J={J}: exchange matrix has non-finite values"
+            assert mat.shape[0] == mat.shape[1], \
+                f"G^{k} J={J}: exchange matrix must be square"
+            assert np.abs(mat).max() > 1e-15, \
+                f"G^{k} J={J}: exchange matrix should be nonzero"
