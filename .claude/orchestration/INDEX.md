@@ -12,6 +12,7 @@ Master index for all implementation progress, bugs, investigations, and tasks.
 | Track | File | Status |
 |---|---|---|
 | **Track C — Phase 5 pure-PyTorch pipeline** | [TRACK-C-PHASE5.md](TRACK-C-PHASE5.md) | C1 done; **C3-pre next** |
+| **Deployment Audit Fixes** | [DEPLOYMENT-AUDIT-FIXES.md](DEPLOYMENT-AUDIT-FIXES.md) | 11 fixes + 6 tests + 2 rewrites |
 
 **Canonical plan file** for the Blume-Watson + RIXS + Phase 5 trio:
 `~/.claude/plans/velvet-kindling-walrus.md` — always read first when

@@ -13,7 +13,7 @@ Usage:
 
 # Public API
 from multitorch.api.calc import (
-    calcXAS, calcXES, calcRIXS, calcDOC,
+    calcXAS, calcXAS_from_scratch, calcXES, calcRIXS, calcDOC,
     preload_fixture, calcXAS_cached, CachedFixture,
 )
 from multitorch.api.plot import getXAS, getXES

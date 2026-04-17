@@ -23,6 +23,7 @@ from pathlib import Path
 import torch
 
 from multitorch._constants import DTYPE
+from multitorch.hamiltonian.diagonalize import safe_eigh
 from multitorch.io.read_rme import (
     read_cowan_store, read_rme_rac_full,
     RACFileFull, RACBlockFull, ADDEntry,
@@ -134,13 +135,13 @@ class TriadResult:
     act_sym: str
     fs_sym: str
     # Ground state
-    Eg: torch.Tensor            # eigenvalues (n_gs,) in Ry
+    Eg: torch.Tensor            # eigenvalues (n_gs,) in eV
     Ug: torch.Tensor            # eigenvectors (n_gs, n_gs)
     gs_conf_labels: torch.Tensor  # config label (1-based) for each state
     gs_conf_sizes: List[int]
     n_gs: int
     # Final state
-    Ef: torch.Tensor            # eigenvalues (n_fs,) in Ry
+    Ef: torch.Tensor            # eigenvalues (n_fs,) in eV
     Uf: torch.Tensor            # eigenvectors (n_fs, n_fs)
     fs_conf_labels: torch.Tensor
     fs_conf_sizes: List[int]
@@ -418,7 +419,7 @@ def _assemble_one_triad(
         H_gs[d1:d1 + d2, :d1] = V.T
 
     # Diagonalize ground state
-    Eg, Ug = torch.linalg.eigh(H_gs)
+    Eg, Ug = safe_eigh(H_gs)
 
     # ── Build final state Hamiltonian ──
     if not fs_conf_sizes:
@@ -469,7 +470,7 @@ def _assemble_one_triad(
             H_fs[:d1, d1:d1 + d2] = V_fs
             H_fs[d1:d1 + d2, :d1] = V_fs.T
 
-        Ef, Uf = torch.linalg.eigh(H_fs)
+        Ef, Uf = safe_eigh(H_fs)
 
         # ── Build transition matrix ──
         # T_raw[gs_state, fs_state] assembled from TRANSI blocks

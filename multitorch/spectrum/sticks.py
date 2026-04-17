@@ -73,8 +73,10 @@ def get_sticks(
         ef = t.Ef.to(device=device, dtype=DTYPE)  # (n_f,)
         m = t.M.to(device=device, dtype=DTYPE)    # (n_g, n_f)
 
-        # Auto-square negative matrix elements (ttban_exact outputs amplitudes)
-        if m.min() < 0:
+        # ttban_exact may output amplitudes (with sign, needs squaring) or
+        # pre-squared intensities (all non-negative). Detect from data:
+        # if any element is negative, it must be amplitudes.
+        if (m < 0).any():
             m = m ** 2
 
         all_Eg.append(eg)

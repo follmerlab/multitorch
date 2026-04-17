@@ -5,8 +5,10 @@ Ported from pyctm/pyctm/background.py with numpy replaced by torch.Tensor.
 """
 from __future__ import annotations
 from typing import Optional
-import torch
 import math
+import torch
+
+_SQRT_2_LN2 = math.sqrt(2 * math.log(2))
 
 from multitorch._constants import DTYPE
 
@@ -50,7 +52,7 @@ def add_background(
     if linear_slope != 0.0:
         bg = bg + linear_slope * (E - edge_energy)
     if gaussian_amp != 0.0:
-        sigma = gaussian_fwhm / (2 * math.sqrt(2 * math.log(2)))
+        sigma = gaussian_fwhm / (2 * _SQRT_2_LN2)
         bg = bg + gaussian_amp * torch.exp(
             -0.5 * ((E - gaussian_center) / sigma) ** 2
         )

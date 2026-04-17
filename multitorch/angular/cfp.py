@@ -24,6 +24,7 @@ Reference:
 """
 from __future__ import annotations
 import struct
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -267,6 +268,7 @@ def parse_cfp_file(path: str | Path) -> List[CFPBlock]:
 # ─────────────────────────────────────────────────────────────
 
 _cfp_cache: Optional[List[CFPBlock]] = None
+_cfp_lock = threading.Lock()
 
 
 def load_cfp_tables(binpath: Optional[str] = None) -> List[CFPBlock]:
@@ -278,32 +280,37 @@ def load_cfp_tables(binpath: Optional[str] = None) -> List[CFPBlock]:
       2. MULTITORCH_BINPATH environment variable
       3. Adjacent ttmult/bin directory relative to this file
 
-    Returns cached results on repeated calls.
+    Returns cached results on repeated calls.  Thread-safe.
     """
     global _cfp_cache
     if _cfp_cache is not None:
         return _cfp_cache
 
-    import os
-    search_paths = []
-    if binpath:
-        search_paths.append(Path(binpath) / 'rcg_cfp72')
-    env_path = os.environ.get('MULTITORCH_BINPATH')
-    if env_path:
-        search_paths.append(Path(env_path) / 'rcg_cfp72')
-    # Relative to this file: ../../../../ttmult/bin/
-    here = Path(__file__).resolve()
-    for _ in range(5):
-        here = here.parent
-        candidate = here / 'ttmult' / 'bin' / 'rcg_cfp72'
-        if candidate.exists():
-            search_paths.append(candidate)
-            break
-
-    for p in search_paths:
-        if p.exists():
-            _cfp_cache = parse_cfp_file(p)
+    with _cfp_lock:
+        # Double-check after acquiring lock
+        if _cfp_cache is not None:
             return _cfp_cache
+
+        import os
+        search_paths = []
+        if binpath:
+            search_paths.append(Path(binpath) / 'rcg_cfp72')
+        env_path = os.environ.get('MULTITORCH_BINPATH')
+        if env_path:
+            search_paths.append(Path(env_path) / 'rcg_cfp72')
+        # Relative to this file: ../../../../ttmult/bin/
+        here = Path(__file__).resolve()
+        for _ in range(5):
+            here = here.parent
+            candidate = here / 'ttmult' / 'bin' / 'rcg_cfp72'
+            if candidate.exists():
+                search_paths.append(candidate)
+                break
+
+        for p in search_paths:
+            if p.exists():
+                _cfp_cache = parse_cfp_file(p)
+                return _cfp_cache
 
     raise FileNotFoundError(
         "rcg_cfp72 not found. Set binpath or MULTITORCH_BINPATH to the ttmult/bin directory, "
@@ -393,6 +400,7 @@ class UkBlock:
 
 
 _uk_cache: Optional[List[UkBlock]] = None
+_uk_lock = threading.Lock()
 
 
 def parse_cfp73_file(path: str | Path) -> List[UkBlock]:
@@ -467,30 +475,35 @@ def parse_cfp73_file(path: str | Path) -> List[UkBlock]:
 
 
 def load_uk_tables(binpath: Optional[str] = None) -> List[UkBlock]:
-    """Load U^(k) tables from rcg_cfp73 file (cached)."""
+    """Load U^(k) tables from rcg_cfp73 file (cached).  Thread-safe."""
     global _uk_cache
     if _uk_cache is not None:
         return _uk_cache
 
-    import os
-    search_paths = []
-    if binpath:
-        search_paths.append(Path(binpath) / 'rcg_cfp73')
-    env_path = os.environ.get('MULTITORCH_BINPATH')
-    if env_path:
-        search_paths.append(Path(env_path) / 'rcg_cfp73')
-    here = Path(__file__).resolve()
-    for _ in range(5):
-        here = here.parent
-        candidate = here / 'ttmult' / 'bin' / 'rcg_cfp73'
-        if candidate.exists():
-            search_paths.append(candidate)
-            break
-
-    for p in search_paths:
-        if p.exists():
-            _uk_cache = parse_cfp73_file(p)
+    with _uk_lock:
+        # Double-check after acquiring lock
+        if _uk_cache is not None:
             return _uk_cache
+
+        import os
+        search_paths = []
+        if binpath:
+            search_paths.append(Path(binpath) / 'rcg_cfp73')
+        env_path = os.environ.get('MULTITORCH_BINPATH')
+        if env_path:
+            search_paths.append(Path(env_path) / 'rcg_cfp73')
+        here = Path(__file__).resolve()
+        for _ in range(5):
+            here = here.parent
+            candidate = here / 'ttmult' / 'bin' / 'rcg_cfp73'
+            if candidate.exists():
+                search_paths.append(candidate)
+                break
+
+        for p in search_paths:
+            if p.exists():
+                _uk_cache = parse_cfp73_file(p)
+                return _uk_cache
 
     raise FileNotFoundError(
         "rcg_cfp73 not found. Set binpath or MULTITORCH_BINPATH."

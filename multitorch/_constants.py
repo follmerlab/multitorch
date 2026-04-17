@@ -15,11 +15,11 @@ DTYPE = torch.float64
 
 # ── Plain float constants (device-agnostic, preferred) ──
 
-# Boltzmann constant in eV/K
-K_B_FLOAT = 8.6173303e-05
+# Boltzmann constant in eV/K (CODATA 2018 exact, post-SI redefinition)
+K_B_FLOAT = 8.617333262e-05
 
-# Rydberg to eV conversion
-RY_TO_EV_FLOAT = 13.60569
+# Rydberg to eV conversion (CODATA 2018)
+RY_TO_EV_FLOAT = 13.605693122994
 
 # eV to Rydberg
 EV_TO_RY_FLOAT = 1.0 / RY_TO_EV_FLOAT

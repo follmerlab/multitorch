@@ -18,10 +18,11 @@ Usage:
                    slater=0.8, soc=1.0, T=80)
 """
 from __future__ import annotations
+import math
 from pathlib import Path
 from typing import Optional, Tuple, Union
 import torch
-import numpy as np
+
 
 from dataclasses import dataclass
 from typing import List
@@ -595,6 +596,251 @@ def _calcXAS_phase5(
     return x, y
 
 
+# ─────────────────────────────────────────────────────────────
+# Standalone (no-fixture) XAS pipeline
+# ─────────────────────────────────────────────────────────────
+
+def _hfs_to_slater_params(
+    Z: int,
+    gs_config: dict,
+    ex_config: dict,
+    slater_scale: float = 1.0,
+    soc_scale: float = 1.0,
+    zeta_method: str = "blume_watson",
+):
+    """Run HFS SCF for ground and excited configs, return Slater parameter dicts.
+
+    Returns the dicts in the format expected by ``generate_ledge_rac``:
+      gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
+    """
+    from multitorch.atomic.hfs import hfs_scf
+    from multitorch.atomic.slater import compute_slater_from_wavefunctions
+
+    # Ground state HFS
+    hfs_gs = hfs_scf(Z, gs_config, zeta_method=zeta_method)
+    pnl_gs = {orb.nl_label.lower(): orb.P for orb in hfs_gs.orbitals
+              if orb.P is not None}
+    slater_gs = compute_slater_from_wavefunctions(
+        pnl_gs, hfs_gs.r, hfs_gs.r[1].item() - hfs_gs.r[0].item())
+
+    # Excited state HFS
+    hfs_ex = hfs_scf(Z, ex_config, zeta_method=zeta_method)
+    pnl_ex = {orb.nl_label.lower(): orb.P for orb in hfs_ex.orbitals
+              if orb.P is not None}
+    slater_ex = compute_slater_from_wavefunctions(
+        pnl_ex, hfs_ex.r, hfs_ex.r[1].item() - hfs_ex.r[0].item())
+
+    # Extract zeta values from HFS orbitals
+    zeta_3d_gs = next(
+        (orb.zeta_ry for orb in hfs_gs.orbitals if orb.nl_label.upper() == '3D'),
+        0.0)
+    zeta_3d_ex = next(
+        (orb.zeta_ry for orb in hfs_ex.orbitals if orb.nl_label.upper() == '3D'),
+        0.0)
+    zeta_2p_ex = next(
+        (orb.zeta_ry for orb in hfs_ex.orbitals if orb.nl_label.upper() == '2P'),
+        0.0)
+
+    # Format for generate_ledge_rac
+    gs_slater_ry = {
+        'F0': float(slater_gs.get('F0dd', 0.0)) * slater_scale,
+        'F2': float(slater_gs.get('F2dd', 0.0)) * slater_scale,
+        'F4': float(slater_gs.get('F4dd', 0.0)) * slater_scale,
+    }
+    gs_zeta_ry = float(zeta_3d_gs) * soc_scale
+
+    ex_slater_ry = {
+        'F2_dd': float(slater_ex.get('F2dd', 0.0)) * slater_scale,
+        'F4_dd': float(slater_ex.get('F4dd', 0.0)) * slater_scale,
+        'G1_pd': float(slater_ex.get('G1pd', 0.0)) * slater_scale,
+        'G3_pd': float(slater_ex.get('G3pd', 0.0)) * slater_scale,
+        'F2_pd': float(slater_ex.get('F2pd', 0.0)) * slater_scale,
+    }
+    ex_zeta_ry = {
+        'd': float(zeta_3d_ex) * soc_scale,
+        'p': float(zeta_2p_ex) * soc_scale,
+    }
+
+    return gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
+
+
+def _build_ban_from_rac(rac, tendq: float = 1.0):
+    """Build a minimal BanData from a generated RAC for single-config Oh.
+
+    Extracts triads from TRANSI blocks and constructs XHAM entries
+    for the HAMILTONIAN (k=0) + 10DQ (CF) operators.
+    """
+    from multitorch.io.read_ban import BanData, XHAMEntry
+
+    triads = []
+    for b in rac.blocks:
+        if b.kind == 'TRANSI' and b.add_entries:
+            triad = (b.bra_sym, b.op_sym, b.ket_sym)
+            if triad not in triads:
+                triads.append(triad)
+
+    # XHAM: operator 1 = HAMILTONIAN (weight 1.0), operator 2 = 10DQ (weight tendq)
+    # combos: (config, operator) pairs — for single config, config=1
+    xham = [XHAMEntry(
+        values=[1.0, tendq],
+        combos=[(1, 1), (1, 2)],
+    )]
+
+    return BanData(
+        nconf_gs=1,
+        nconf_fs=1,
+        xham=xham,
+        tran=[(1, 1)],
+        triads=triads,
+        eg={1: 0.0},
+        ef={1: 0.0},
+    )
+
+
+def calcXAS_from_scratch(
+    element: str,
+    valence: str,
+    cf: dict,
+    slater: float = 0.8,
+    soc: float = 1.0,
+    T: float = 80.0,
+    beam_fwhm: float = 0.2,
+    gamma1: float = 0.2,
+    gamma2: float = 0.4,
+    med_energy: float = 25.0,
+    max_gs: int = 1,
+    broaden_mode: str = "legacy",
+    xmin: Optional[float] = None,
+    xmax: Optional[float] = None,
+    nbins: int = 2000,
+    return_sticks: bool = False,
+    device: str = "cpu",
+    zeta_method: str = "blume_watson",
+) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
+    """Calculate an L-edge XAS spectrum from scratch — no Fortran fixture files.
+
+    Runs the full pipeline:
+      1. HFS SCF → radial wavefunctions for ground and excited configs
+      2. Slater integrals + SOC from the HFS wavefunctions
+      3. Angular RME structure (RAC + COWAN store) via generate_ledge_rac
+      4. BanData construction from the RAC topology
+      5. Hamiltonian assembly + diagonalization
+      6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
+
+    Currently supports single-configuration Oh symmetry only (no charge
+    transfer, no D4h splitting beyond PERP/PARA). This is sufficient for
+    isolated-ion crystal-field calculations.
+
+    Parameters
+    ----------
+    element : str
+        Element symbol (e.g. 'Ni', 'Fe', 'Ti').
+    valence : str
+        Oxidation state ('i', 'ii', 'iii', 'iv').
+    cf : dict
+        Crystal field parameters. Must include 'tendq' (10Dq in eV).
+    slater : float
+        Slater integral reduction factor (0-1, default 0.8).
+    soc : float
+        Spin-orbit coupling reduction factor (0-1, default 1.0).
+    T : float
+        Temperature in Kelvin.
+    beam_fwhm, gamma1, gamma2, med_energy : float
+        Broadening parameters (eV).
+    max_gs : int
+        Number of ground states to include in Boltzmann average.
+    broaden_mode : str
+        'legacy' or 'correct' pseudo-Voigt mode.
+    xmin, xmax : float or None
+        Energy range. Auto-detected if None.
+    nbins : int
+        Number of energy bins.
+    return_sticks : bool
+        If True, also return the stick spectrum.
+    device : str
+        PyTorch device.
+    zeta_method : str
+        HFS SOC method ('blume_watson' or 'central_field').
+
+    Returns
+    -------
+    x : torch.Tensor  shape (nbins,)
+        Energy axis (eV).
+    y : torch.Tensor  shape (nbins,)
+        Absorption intensity.
+    sticks : torch.Tensor  shape (N, 2)  (only if return_sticks=True)
+    """
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.atomic.tables import (
+        get_atomic_number, get_d_electrons, get_l_edge_configs,
+        parse_config_string,
+    )
+    from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    # Step 1: Resolve element info
+    Z = get_atomic_number(element)
+    n_d = get_d_electrons(element, valence)
+    gs_cfg_str, ex_cfg_str = get_l_edge_configs(element, valence)
+    gs_config = parse_config_string(gs_cfg_str)
+    ex_config = parse_config_string(ex_cfg_str)
+
+    # Step 2: HFS SCF → Slater integrals + SOC
+    gs_slater, gs_zeta, ex_slater, ex_zeta = _hfs_to_slater_params(
+        Z, gs_config, ex_config,
+        slater_scale=slater, soc_scale=soc,
+        zeta_method=zeta_method,
+    )
+
+    # Step 3: Generate angular structure + COWAN store
+    rac, cowan = generate_ledge_rac(
+        l_val=2, n_val_gs=n_d,
+        raw_slater_gs_ry=gs_slater,
+        raw_zeta_gs_ry=gs_zeta,
+        raw_slater_ex_ry=ex_slater,
+        raw_zeta_ex_ry=ex_zeta,
+    )
+
+    # Step 4: Build BanData from RAC
+    tendq = cf.get('tendq', 1.0)
+    ban = _build_ban_from_rac(rac, tendq=tendq)
+
+    # Step 5: Assemble and diagonalize
+    result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
+
+    # Step 6: Extract stick spectrum
+    E_sticks, M_sticks, _ = get_sticks_from_banresult(
+        result, T=T, max_gs=max_gs, device=device,
+    )
+
+    if E_sticks.numel() == 0:
+        raise ValueError(
+            f"No transitions found for {element} {valence}"
+        )
+
+    # Step 7: Broaden
+    E_min = float(E_sticks.min())
+    E_max = float(E_sticks.max())
+    if xmin is None:
+        xmin = E_min - 5.0
+    if xmax is None:
+        xmax = E_max + 5.0
+
+    x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
+
+    med = 0.5 * (E_min + E_max)
+    y = pseudo_voigt(
+        x, E_sticks, M_sticks,
+        fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
+        med_energy=med, mode=broaden_mode,
+    )
+
+    if return_sticks:
+        sticks = torch.stack([E_sticks, M_sticks], dim=1)
+        return x, y, sticks
+    return x, y
+
+
 def calcXES(
     element: str,
     valence: str,
@@ -613,7 +859,14 @@ def calcXES(
     state assignments are swapped (emission from a core-hole state).
     """
     if ban_output_path is not None:
-        return _calcXAS_from_ban(ban_output_path, **kwargs)
+        return _calcXAS_from_ban(
+            ban_output_path,
+            T=kwargs.pop('T', 80.0),
+            beam_fwhm=kwargs.pop('beam_fwhm', 0.2),
+            gamma1=kwargs.pop('gamma1', 0.2),
+            gamma2=kwargs.pop('gamma2', 0.4),
+            **kwargs,
+        )
     raise NotImplementedError("Full XES pipeline pending. Use ban_output_path.")
 
 
@@ -822,15 +1075,11 @@ def _banresult_to_banoutput(result):
     """
     from multitorch.io.read_oba import BanOutput, TriadData
 
-    RY_TO_EV = 13.605693122994
     bo = BanOutput()
     for t in result.triads:
         # T is (n_gs, n_fs) — transition matrix elements
         # M = T**2 (pre-squared intensities, matching .ban_out convention)
         M = t.T ** 2
-        # Ef is already in eV (absolute, edge-shifted)
-        # Eg is in Ry — convert to eV for consistency with .ban_out format
-        Eg_eV = t.Eg * RY_TO_EV
 
         # Emit one TriadData per ground state (matching .ban_out convention)
         for g in range(t.n_gs):
@@ -839,7 +1088,7 @@ def _banresult_to_banoutput(result):
                 op_sym=t.act_sym,
                 final_sym=t.fs_sym,
                 actor="MULTIPOLE",
-                Eg=Eg_eV[g:g+1],      # (1,) eV
+                Eg=t.Eg[g:g+1],       # (1,) eV
                 Ef=t.Ef,               # (n_fs,) eV
                 M=M[g:g+1, :],         # (1, n_fs)
             )
@@ -975,13 +1224,13 @@ def _calcDOC_bootstrap(ban_output_path: str, T: float) -> dict:
         )
 
     # Boltzmann-weight the per-band config weights
-    kB = 8.6173303e-5  # eV/K
+    from multitorch._constants import K_B_FLOAT
     energies = [bm.gs_energy for bm in bo.band_metadata]
     e_min = min(energies)
 
     if T > 0:
         boltz = [
-            bm.gs_degeneracy * np.exp(-(bm.gs_energy - e_min) / (kB * T))
+            bm.gs_degeneracy * math.exp(-(bm.gs_energy - e_min) / (K_B_FLOAT * T))
             for bm in bo.band_metadata
         ]
     else:
@@ -1059,14 +1308,13 @@ def _calcDOC_phase5(
     )
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
-    kB = 8.6173303e-5  # eV/K
-    RY_TO_EV = 13.605693122994
+    from multitorch._constants import K_B_FLOAT
 
     # Collect config weights from all triads
     all_eg = []
     for t in result.triads:
         all_eg.append(t.Eg.min().item())
-    e_min_ry = min(all_eg) if all_eg else 0.0
+    e_min = min(all_eg) if all_eg else 0.0
 
     per_triad = []
     n_configs = max(
@@ -1076,27 +1324,21 @@ def _calcDOC_phase5(
     z_total = 0.0
 
     for t in result.triads:
-        # Eigenvectors: Ug[:, k] is eigenvector k
-        # gs_conf_labels: config label (1-based) for each basis state
         n = t.Eg.shape[0]
         cw = []
         for c_idx in range(len(t.gs_conf_sizes)):
-            mask = (t.gs_conf_labels == (c_idx + 1))  # bool (n_gs,)
-            # Weight of config c in eigenstate k = sum_j |U[j,k]|^2 for j in config c
-            # For the ground state (k=0): sum |U[mask, 0]|^2
-            # Boltzmann-averaged over all states
+            mask = (t.gs_conf_labels == (c_idx + 1))
             config_weight_per_state = (
                 t.Ug[mask, :].pow(2).sum(dim=0)
-            )  # (n_gs,)
+            )
             cw.append(config_weight_per_state)
 
-        # Boltzmann weights for this triad's ground states
-        e_ry = t.Eg - e_min_ry  # relative to global minimum
-        e_ev = e_ry * RY_TO_EV
+        # Boltzmann weights — eigenvalues are in eV (build_cowan converts Ry→eV)
+        e_rel = t.Eg - e_min
         if T > 0:
-            boltz = torch.exp(-e_ev / (kB * T))
+            boltz = torch.exp(-e_rel / (K_B_FLOAT * T))
         else:
-            boltz = (e_ry.abs() < 1e-10).to(DTYPE)
+            boltz = (e_rel.abs() < 1e-10).to(DTYPE)
 
         z_triad = float(boltz.sum())
         z_total += z_triad
@@ -1111,7 +1353,7 @@ def _calcDOC_phase5(
 
         per_triad.append({
             'sym': f"{t.gs_sym}  {t.act_sym}  {t.fs_sym}",
-            'gs_energy': float(t.Eg[0]) * RY_TO_EV,
+            'gs_energy': float(t.Eg[0]),  # already in eV
             'config_weights': triad_weights,
         })
 

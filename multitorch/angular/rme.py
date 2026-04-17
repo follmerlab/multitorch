@@ -883,3 +883,422 @@ def validate_rme_against_reference(
             else:
                 results[label] = None  # not computed
     return results
+
+
+# ─────────────────────────────────────────────────────────────
+# Two-shell operator embedding (excited state p^5 d^(N+1))
+# ─────────────────────────────────────────────────────────────
+
+
+def compute_two_shell_shell_blocks(
+    l_val: int,
+    n_val_excited: int,
+    l_core: int,
+    n_core_excited: int,
+    k: int,
+) -> Dict[Tuple[float, float], np.ndarray]:
+    """Compute SHELL_k blocks for the valence shell in the two-shell J basis.
+
+    Embeds U^(k) acting on the valence shell (shell 2) into the coupled
+    two-shell basis |(S1 L1)(S2 L2) S_total L_total; J⟩.
+
+    Used for d-d Coulomb (k=0,2,4) and crystal field (k=4) in the
+    excited state configuration.
+
+    Parameters
+    ----------
+    l_val : int
+        Orbital AM of valence shell (2 for d).
+    n_val_excited : int
+        Number of valence electrons in excited state (n_gs + 1).
+    l_core : int
+        Orbital AM of core shell (1 for p).
+    n_core_excited : int
+        Number of core electrons in excited state (n_core_gs - 1).
+    k : int
+        Tensor rank of the operator (0, 2, 4 for Coulomb; 4 for CF).
+
+    Returns
+    -------
+    dict mapping (J_bra, J_ket) → np.ndarray
+        Matrix blocks in the two-shell J basis.
+    """
+    from multitorch.angular.cfp import get_cfp_block
+
+    # Get terms for each shell
+    core_block = get_cfp_block(l_core, n_core_excited)
+    core_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                         seniority=t.seniority,
+                         label=f"{int(2*t.S+1)}{t.L_label}")
+                  for t in core_block.terms]
+
+    val_block = get_cfp_block(l_val, n_val_excited)
+    val_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                        seniority=t.seniority,
+                        label=f"{int(2*t.S+1)}{t.L_label}")
+                 for t in val_block.terms]
+
+    # U^(k) in the valence-shell LS basis
+    val_parent_block = get_cfp_block(l_val, n_val_excited - 1)
+    val_parent_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                               seniority=t.seniority,
+                               label=f"{int(2*t.S+1)}{t.L_label}")
+                        for t in val_parent_block.terms]
+    uk_ls = compute_uk_ls(l_val, n_val_excited, k,
+                          val_terms, val_parent_terms, val_block.cfp)
+
+    # Build two-shell J basis
+    two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
+
+    blocks: Dict[Tuple[float, float], np.ndarray] = {}
+
+    for J_bra, states_bra in two_shell_basis.items():
+        for J_ket, states_ket in two_shell_basis.items():
+            # Triangle rule for rank k
+            if k > J_bra + J_ket + 1e-10 or k < abs(J_bra - J_ket) - 1e-10:
+                continue
+
+            n_bra = len(states_bra)
+            n_ket = len(states_ket)
+            mat = np.zeros((n_bra, n_ket), dtype=np.float64)
+
+            for ib, sa in enumerate(states_bra):
+                for ik, sb in enumerate(states_ket):
+                    # Shell 1 unchanged
+                    if sa.term1_idx != sb.term1_idx:
+                        continue
+                    # Total spin unchanged (spin-scalar)
+                    if abs(sa.S_total - sb.S_total) > 1e-10:
+                        continue
+
+                    # U^(k) in LS basis (has δ(S2,S2') built in)
+                    uk_val = uk_ls[sa.term2_idx, sb.term2_idx]
+                    if abs(uk_val) < 1e-15:
+                        continue
+
+                    L1 = sa.L1  # = sb.L1 (same shell 1 term)
+                    L2_a = sa.L2
+                    L2_b = sb.L2
+                    Lt_a = sa.L_total
+                    Lt_b = sb.L_total
+
+                    # Orbital recoupling: operator on shell 2
+                    # in L = L1 ⊗ L2 coupling
+                    phase_orb = (-1) ** int(round(L1 + L2_a + Lt_b + k))
+                    factor_orb = math.sqrt(
+                        (2 * Lt_a + 1) * (2 * Lt_b + 1))
+                    sixj_orb = wigner6j(
+                        L2_a, Lt_a, L1, Lt_b, L2_b, k)
+
+                    # J recoupling via UNCPLA
+                    rc = uncpla(Lt_a, sa.S_total, J_bra,
+                                k, Lt_b, J_ket)
+
+                    # Fortran two-shell state phase convention:
+                    # each state carries (-1)^{S_total + L_total}
+                    phase_conv = (-1) ** int(round(
+                        sa.S_total + sa.L_total
+                        + sb.S_total + sb.L_total))
+
+                    mat[ib, ik] = (uk_val * phase_orb
+                                   * factor_orb * sixj_orb * rc
+                                   * phase_conv)
+
+            if np.any(np.abs(mat) > 1e-15):
+                blocks[(J_bra, J_ket)] = mat
+
+    return blocks
+
+
+def compute_two_shell_soc(
+    l_val: int,
+    n_val_excited: int,
+    l_core: int,
+    n_core_excited: int,
+    shell_idx: int,
+) -> Dict[float, np.ndarray]:
+    """Compute spin-orbit coupling for one shell in the two-shell J basis.
+
+    The SOC operator l_i · s_i is a scalar in J (rank 0), so the
+    returned matrices are diagonal-in-J blocks.
+
+    Parameters
+    ----------
+    l_val, n_val_excited, l_core, n_core_excited : int
+        Shell configuration.
+    shell_idx : int
+        1 for core shell, 2 for valence shell.
+
+    Returns
+    -------
+    dict mapping J → np.ndarray
+        SOC matrix for each J sector (shape n_states × n_states).
+    """
+    from multitorch.angular.cfp import get_cfp_block
+
+    core_block = get_cfp_block(l_core, n_core_excited)
+    core_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                         seniority=t.seniority,
+                         label=f"{int(2*t.S+1)}{t.L_label}")
+                  for t in core_block.terms]
+
+    val_block = get_cfp_block(l_val, n_val_excited)
+    val_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                        seniority=t.seniority,
+                        label=f"{int(2*t.S+1)}{t.L_label}")
+                 for t in val_block.terms]
+
+    two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
+
+    blocks: Dict[float, np.ndarray] = {}
+
+    for J, states in two_shell_basis.items():
+        n = len(states)
+        mat = np.zeros((n, n), dtype=np.float64)
+
+        for ib, sa in enumerate(states):
+            for ik, sb in enumerate(states):
+                # Both shell terms unchanged (l·s is diagonal in LS terms)
+                if sa.term1_idx != sb.term1_idx:
+                    continue
+                if sa.term2_idx != sb.term2_idx:
+                    continue
+
+                L1 = sa.L1
+                L2 = sa.L2
+                S1 = sa.S1
+                S2 = sa.S2
+                Lt_a = sa.L_total
+                Lt_b = sb.L_total
+                St_a = sa.S_total
+                St_b = sb.S_total
+
+                if shell_idx == 2:
+                    l_shell = l_val
+                    L_shell = L2
+                    S_shell = S2
+                elif shell_idx == 1:
+                    l_shell = l_core
+                    L_shell = L1
+                    S_shell = S1
+                else:
+                    raise ValueError(f"shell_idx must be 1 or 2, got {shell_idx}")
+
+                # Skip if shell has zero orbital or spin AM
+                if L_shell < 1e-10 or S_shell < 1e-10:
+                    continue
+
+                # J coupling: scalar product of rank-1 operators
+                # ⟨SLJ | T_L^(1)·T_S^(1) | S'L'J⟩
+                #   = (-1)^{L'+S+J} × {L S J; S' L' 1}
+                #     × ⟨L||T_L||L'⟩ × ⟨S||T_S||S'⟩
+                phase_J = (-1) ** int(round(Lt_b + St_a + J))
+                sixj_J = wigner6j(Lt_a, St_a, J, St_b, Lt_b, 1)
+
+                if abs(sixj_J) < 1e-15:
+                    continue
+
+                # Orbital embedding: l_shell in L = L1 ⊗ L2
+                if shell_idx == 2:
+                    # Operator on second subsystem
+                    phase_L = (-1) ** int(round(L1 + L2 + Lt_b + 1))
+                    factor_L = math.sqrt(
+                        (2 * Lt_a + 1) * (2 * Lt_b + 1))
+                    sixj_L = wigner6j(L2, Lt_a, L1, Lt_b, L2, 1)
+                else:
+                    # Operator on first subsystem
+                    phase_L = (-1) ** int(round(L1 + L2 + Lt_b + 1))
+                    factor_L = math.sqrt(
+                        (2 * Lt_a + 1) * (2 * Lt_b + 1))
+                    sixj_L = wigner6j(L1, Lt_a, L2, Lt_b, L1, 1)
+
+                orbit_rme = math.sqrt(
+                    L_shell * (L_shell + 1) * (2 * L_shell + 1))
+
+                # Spin embedding: s_shell in S = S1 ⊗ S2
+                if shell_idx == 2:
+                    phase_S = (-1) ** int(round(S1 + S2 + St_b + 1))
+                    factor_S = math.sqrt(
+                        (2 * St_a + 1) * (2 * St_b + 1))
+                    sixj_S = wigner6j(S2, St_a, S1, St_b, S2, 1)
+                else:
+                    phase_S = (-1) ** int(round(S1 + S2 + St_b + 1))
+                    factor_S = math.sqrt(
+                        (2 * St_a + 1) * (2 * St_b + 1))
+                    sixj_S = wigner6j(S1, St_a, S2, St_b, S1, 1)
+
+                spin_rme = math.sqrt(
+                    S_shell * (S_shell + 1) * (2 * S_shell + 1))
+
+                # Fortran two-shell state phase convention
+                phase_conv = (-1) ** int(round(
+                    sa.S_total + sa.L_total
+                    + sb.S_total + sb.L_total))
+
+                mat[ib, ik] = (phase_J * sixj_J
+                               * phase_L * factor_L * sixj_L * orbit_rme
+                               * phase_S * factor_S * sixj_S * spin_rme
+                               * phase_conv)
+
+        if np.any(np.abs(mat) > 1e-15):
+            blocks[J] = mat
+
+    return blocks
+
+
+def compute_two_shell_exchange(
+    l_val: int,
+    n_val_excited: int,
+    l_core: int,
+    n_core_excited: int,
+    k: int,
+) -> Dict[float, np.ndarray]:
+    """Compute inter-shell exchange G^k angular coefficients in two-shell J basis.
+
+    The exchange Coulomb is a scalar operator (rank 0 in J), so the
+    matrices are diagonal in J.
+
+    Uses the general two-shell Coulomb formula with 9j symbols for
+    orbital and spin recoupling.
+
+    Parameters
+    ----------
+    l_val, n_val_excited, l_core, n_core_excited : int
+        Shell configuration for the excited state.
+    k : int
+        Exchange rank (1, 3 for p-d).
+
+    Returns
+    -------
+    dict mapping J → np.ndarray
+        Exchange angular coefficient matrix for each J sector.
+    """
+    from multitorch.angular.cfp import get_cfp_block
+
+    # Core shell terms and CFP
+    core_block = get_cfp_block(l_core, n_core_excited)
+    core_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                         seniority=t.seniority,
+                         label=f"{int(2*t.S+1)}{t.L_label}")
+                  for t in core_block.terms]
+    core_parent_block = get_cfp_block(l_core, n_core_excited - 1)
+    core_parent_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                                seniority=t.seniority,
+                                label=f"{int(2*t.S+1)}{t.L_label}")
+                         for t in core_parent_block.terms]
+    cfp_core = core_block.cfp  # shape (n_core_terms, n_core_parents)
+
+    # Valence shell terms and CFP
+    val_block = get_cfp_block(l_val, n_val_excited)
+    val_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                        seniority=t.seniority,
+                        label=f"{int(2*t.S+1)}{t.L_label}")
+                 for t in val_block.terms]
+    val_parent_block = get_cfp_block(l_val, n_val_excited - 1)
+    val_parent_terms = [LSTerm(index=t.index, S=t.S, L=t.L,
+                               seniority=t.seniority,
+                               label=f"{int(2*t.S+1)}{t.L_label}")
+                        for t in val_parent_block.terms]
+    cfp_val = val_block.cfp  # shape (n_val_terms, n_val_parents)
+
+    two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
+
+    # Occupation numbers
+    n1 = n_core_excited
+    n2 = n_val_excited
+
+    blocks: Dict[float, np.ndarray] = {}
+
+    for J, states in two_shell_basis.items():
+        n = len(states)
+        mat = np.zeros((n, n), dtype=np.float64)
+
+        for ib, sa in enumerate(states):
+            for ik, sb in enumerate(states):
+                val = 0.0
+
+                t1_a = core_terms[sa.term1_idx]
+                t2_a = val_terms[sa.term2_idx]
+                t1_b = core_terms[sb.term1_idx]
+                t2_b = val_terms[sb.term2_idx]
+
+                # Dimension prefactors
+                dim_factor = math.sqrt(
+                    (2 * t1_a.L + 1) * (2 * t1_b.L + 1)
+                    * (2 * t2_a.L + 1) * (2 * t2_b.L + 1)
+                    * (2 * t1_a.S + 1) * (2 * t1_b.S + 1)
+                    * (2 * t2_a.S + 1) * (2 * t2_b.S + 1))
+
+                # Sum over parent terms of both shells
+                for ip1, p1 in enumerate(core_parent_terms):
+                    c1a = cfp_core[sa.term1_idx, ip1]
+                    c1b = cfp_core[sb.term1_idx, ip1]
+                    if abs(c1a * c1b) < 1e-15:
+                        continue
+
+                    for ip2, p2 in enumerate(val_parent_terms):
+                        c2a = cfp_val[sa.term2_idx, ip2]
+                        c2b = cfp_val[sb.term2_idx, ip2]
+                        if abs(c2a * c2b) < 1e-15:
+                            continue
+
+                        # Orbital 9j: recouples L1, L2, L through
+                        # l_core, l_val, k
+                        orb_9j = wigner9j(
+                            float(l_core), t1_a.L, p1.L,
+                            float(l_val), t2_a.L, p2.L,
+                            float(k), sa.L_total, sb.L_total,
+                        )
+                        if abs(orb_9j) < 1e-15:
+                            continue
+
+                        # Spin 9j: recouples S1, S2, S through
+                        # 1/2, 1/2, 0 (Coulomb is spin-rank-0)
+                        spin_9j = wigner9j(
+                            0.5, t1_a.S, p1.S,
+                            0.5, t2_a.S, p2.S,
+                            0.0, sa.S_total, sb.S_total,
+                        )
+
+                        phase_p = (-1) ** int(round(
+                            p1.S + p1.L + p2.S + p2.L))
+
+                        val += (c1a * c1b * c2a * c2b
+                                * phase_p * orb_9j * spin_9j)
+
+                if abs(val) < 1e-15:
+                    continue
+
+                # Overall phase and factors
+                phase = (-1) ** int(round(
+                    float(l_core) + float(l_val) + float(k) + 1
+                    + t1_a.S + t1_a.L + t2_a.S + t2_a.L
+                    + sa.S_total + sa.L_total))
+
+                # J coupling: UNCPLA for the scalar (k=0 in J)
+                # Since exchange is scalar in J, the J-coupling
+                # factor is: δ(J,J') already enforced by loop.
+                # Need to couple through L_total, S_total → J:
+                # For a scalar, this is (-1)^{S+L+J} × {L S J; S' L' 0}
+                # × hat(L) hat(S) × ⟨L||⟩ × ⟨S||⟩
+                # But the LS → J coupling for a scalar product is:
+                # (-1)^{L'+S+J} × {L S J; S' L' 1} for rank-1·rank-1
+                # Wait, the exchange IS scalar in J (rank 0), so the
+                # J coupling is trivial: same J, same M_J.
+                # The 9j symbols already handle the full LS coupling,
+                # and we just need the J projection via UNCPLA(k=0).
+                rc = uncpla(sa.L_total, sa.S_total, J,
+                            0, sb.L_total, J)
+
+                # Fortran two-shell state phase convention
+                phase_conv = (-1) ** int(round(
+                    sa.S_total + sa.L_total
+                    + sb.S_total + sb.L_total))
+
+                mat[ib, ik] = (val * phase * dim_factor * n1 * n2
+                               * rc * phase_conv)
+
+        if np.any(np.abs(mat) > 1e-15):
+            blocks[J] = mat
+
+    return blocks

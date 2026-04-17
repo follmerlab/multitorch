@@ -11,22 +11,39 @@ Two modes:
 Reference:
   Thompson P., Cox D.E., Hastings J.B. (1987) J. Appl. Cryst. 20, 79.
   Ida T., Ando M., Toraya H. (2000) J. Appl. Cryst. 33, 1311.
+
+Broadening parameters (fwhm_g, fwhm_l) can be either plain floats or
+scalar ``torch.Tensor`` values.  When tensors are passed, all arithmetic
+stays on the autograd tape so gradients w.r.t. beam width or lifetime
+broadening are available.
 """
 from __future__ import annotations
-from typing import Optional
+from typing import Optional, Union
 import torch
 import math
 
 from multitorch._constants import DTYPE
+
+# Type alias for parameters that can be float or scalar tensor.
+_Scalar = Union[float, torch.Tensor]
+
+# Precomputed constants
+_SQRT_2_LN2 = math.sqrt(2 * math.log(2))   # ≈ 1.17741
+_SQRT_2_PI = math.sqrt(2 * math.pi)         # ≈ 2.50663
+
+
+def _to_float(v: _Scalar) -> float:
+    """Extract a plain float (for comparisons/guards only)."""
+    return float(v) if isinstance(v, torch.Tensor) else v
 
 
 def pseudo_voigt(
     x: torch.Tensor,
     x0: torch.Tensor,
     amp: torch.Tensor,
-    fwhm_g: float,
-    fwhm_l: float,
-    fwhm_l2: Optional[float] = None,
+    fwhm_g: _Scalar,
+    fwhm_l: _Scalar,
+    fwhm_l2: Optional[_Scalar] = None,
     med_energy: Optional[float] = None,
     mode: str = "legacy",
 ) -> torch.Tensor:
@@ -44,11 +61,11 @@ def pseudo_voigt(
         Stick center positions (eV).
     amp : torch.Tensor  shape (N_sticks,)
         Stick amplitudes (intensities).
-    fwhm_g : float
+    fwhm_g : float or torch.Tensor (scalar)
         Gaussian FWHM (beam width, eV).
-    fwhm_l : float
+    fwhm_l : float or torch.Tensor (scalar)
         Lorentzian FWHM for low-energy region (L3 lifetime, eV).
-    fwhm_l2 : float or None
+    fwhm_l2 : float, torch.Tensor, or None
         Lorentzian FWHM for high-energy region (L2 lifetime, eV).
         If None, uses fwhm_l for all sticks.
     med_energy : float or None
@@ -78,19 +95,22 @@ def pseudo_voigt(
 
     # Low-energy sticks (L3 broadening)
     if low_mask.any():
-        y += _convolve_sticks(x, x0[low_mask], amp[low_mask], f, s, n)
+        y = y + _convolve_sticks(x, x0[low_mask], amp[low_mask], f, s, n)
 
     # High-energy sticks (L2 broadening)
     high_mask = ~low_mask
     if high_mask.any():
-        y += _convolve_sticks(x, x0[high_mask], amp[high_mask], f2, s2, n2)
+        y = y + _convolve_sticks(x, x0[high_mask], amp[high_mask], f2, s2, n2)
 
     return y
 
 
-def _pv_params(fwhm_g: float, fwhm_l: float, mode: str):
+def _pv_params(fwhm_g: _Scalar, fwhm_l: _Scalar, mode: str):
     """
     Compute pseudo-Voigt shape parameters f (total FWHM), sigma, eta.
+
+    Supports both plain float and scalar tensor inputs.  When tensors are
+    used, the result stays on the autograd tape.
 
     Thompson et al. (1987) combined FWHM:
       f^5 = fG^5 + 2.69269*fG^4*fL + 2.42843*fG^3*fL^2
@@ -110,7 +130,9 @@ def _pv_params(fwhm_g: float, fwhm_l: float, mode: str):
          + 0.07842 * fwhm_g * fwhm_l**4
          + fwhm_l**5) ** 0.2
 
-    s = f / (2 * math.sqrt(2 * math.log(2)))
+    # FWHM → sigma conversion: σ = FWHM / (2√(2 ln 2))
+    # Use the precomputed constant — works for both float and tensor f.
+    s = f / (2 * _SQRT_2_LN2)
 
     ratio = fwhm_l / f
     if mode == "legacy":
@@ -127,9 +149,9 @@ def _convolve_sticks(
     x: torch.Tensor,        # (N_grid,)
     x0: torch.Tensor,       # (N_sticks,)
     amp: torch.Tensor,      # (N_sticks,)
-    f: float,
-    s: float,
-    n: float,
+    f: _Scalar,
+    s: _Scalar,
+    n: _Scalar,
 ) -> torch.Tensor:
     """
     Sum pseudo-Voigt profiles for all sticks via broadcasting.
@@ -141,14 +163,14 @@ def _convolve_sticks(
 
     # Lorentzian: 1/π * (HWHM / (dx² + HWHM²))
     hwhm = 0.5 * f
-    if hwhm > 0:
+    if _to_float(hwhm) > 0:
         lor = (1.0 / math.pi) * hwhm / (dx**2 + hwhm**2)
     else:
         lor = torch.zeros_like(dx)
 
     # Gaussian: 1/(σ√2π) * exp(-dx²/(2σ²))
-    if s > 0:
-        gau = (1.0 / (s * math.sqrt(2 * math.pi))) * torch.exp(-0.5 * (dx / s)**2)
+    if _to_float(s) > 0:
+        gau = (1.0 / (s * _SQRT_2_PI)) * torch.exp(-0.5 * (dx / s)**2)
     else:
         # Delta function limit
         gau = torch.zeros_like(lor)
@@ -181,7 +203,7 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
     Y : torch.Tensor  shape (N, M)
     """
     n, m = D.shape
-    sigma = fwhm / (2 * math.sqrt(2 * math.log(2)))
+    sigma = fwhm / (2 * _SQRT_2_LN2)
     n2 = n // 2
     E0 = float(E[n2])
     G = _gauss_torch(E, sigma, E0)   # (N,)
@@ -198,6 +220,6 @@ def broaden_gaussian(E: torch.Tensor, D: torch.Tensor, fwhm: float) -> torch.Ten
 
 
 def _gauss_torch(x: torch.Tensor, sigma: float, x0: float) -> torch.Tensor:
-    return (1.0 / (sigma * math.sqrt(2 * math.pi))) * torch.exp(
+    return (1.0 / (sigma * _SQRT_2_PI)) * torch.exp(
         -0.5 * ((x - x0) / sigma) ** 2
     )
