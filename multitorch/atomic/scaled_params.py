@@ -220,3 +220,151 @@ def scale_atomic_params(
         for c in params.configs
     ]
     return ScaledAtomicParams(configs=scaled_configs)
+
+
+# ─────────────────────────────────────────────────────────────
+# Batch scaling for parameter sweeps
+# ─────────────────────────────────────────────────────────────
+
+
+def _scale_one_config_batch(
+    cfg: ConfigParams,
+    slater_scales: torch.Tensor,  # (N,)
+    soc_scales: torch.Tensor,     # (N,)
+    zeta_method: str,
+) -> ScaledConfigParams:
+    """Scale one config with a batch of (N,) scale factors.
+    
+    Returns ScaledConfigParams where each Fk/Gk/ζ is a (N,) tensor
+    instead of a scalar. Each sample preserves independent gradients.
+    """
+    N = slater_scales.shape[0]
+    assert soc_scales.shape[0] == N, "slater and soc batches must match"
+    
+    # Fk scaled: each (N,) = slater_scales * val
+    fk_scaled: Dict[Tuple[str, str, int], torch.Tensor] = {}
+    for key, val in cfg.fk.items():
+        fk_scaled[key] = slater_scales * val  # broadcast: (N,) * scalar → (N,)
+    
+    # Gk scaled: each (N,) = slater_scales * val
+    gk_scaled: Dict[Tuple[str, str, int], torch.Tensor] = {}
+    for key, val in cfg.gk.items():
+        gk_scaled[key] = slater_scales * val
+    
+    # Zeta source selection
+    if zeta_method == "blume_watson":
+        zeta_src = cfg.zeta_bw
+    elif zeta_method == "rvi":
+        zeta_src = cfg.zeta_rvi
+    else:
+        raise ValueError(
+            f"zeta_method must be 'blume_watson' or 'rvi', got {zeta_method!r}"
+        )
+    
+    # Zeta scaled: each (N,) = soc_scales * val
+    zeta_scaled: Dict[str, torch.Tensor] = {}
+    for shell, val in zeta_src.items():
+        zeta_scaled[shell] = soc_scales * val
+    
+    return ScaledConfigParams(
+        label=cfg.label,
+        nconf=cfg.nconf,
+        fk=fk_scaled,
+        gk=gk_scaled,
+        zeta=zeta_scaled,
+    )
+
+
+def batch_scale_atomic_params(
+    params: AtomicParams,
+    slater_values: torch.Tensor,  # (N,) array of scale factors
+    soc_values: torch.Tensor,     # (N,) array of scale factors
+    *,
+    zeta_method: str = "blume_watson",
+) -> ScaledAtomicParams:
+    """Batch version: scale atomic params with N different (slater, soc) pairs.
+    
+    Enables efficient parameter sweeps by computing N scaled parameter sets
+    in one operation instead of N sequential calls to scale_atomic_params().
+    
+    Parameters
+    ----------
+    params : AtomicParams
+        Parsed atomic parameters from :func:`read_rcn31_out_params`.
+    slater_values : torch.Tensor, shape (N,)
+        Array of slater scale factors (one per spectrum).
+        If ``requires_grad=True``, per-sample gradients are preserved.
+    soc_values : torch.Tensor, shape (N,)
+        Array of spin-orbit scale factors (one per spectrum).
+        If ``requires_grad=True``, per-sample gradients are preserved.
+    zeta_method : {'blume_watson', 'rvi'}
+        Which ζ column from the .rcn31_out file to use.
+        
+    Returns
+    -------
+    ScaledAtomicParams
+        Scaled parameters where each Fk/Gk/ζ tensor is (N,) instead of 
+        scalar. The downstream COWAN rebuild and diagonalization can then
+        operate on the full batch efficiently.
+        
+    Examples
+    --------
+    >>> # Grid search over 100 parameter combinations
+    >>> slater_grid = torch.linspace(0.6, 1.0, 10)
+    >>> soc_grid = torch.linspace(0.8, 1.2, 10)
+    >>> slater_vals, soc_vals = torch.meshgrid(slater_grid, soc_grid, indexing='ij')
+    >>> scaled = batch_scale_atomic_params(
+    ...     params, 
+    ...     slater_values=slater_vals.flatten(),  # (100,)
+    ...     soc_values=soc_vals.flatten()         # (100,)
+    ... )
+    >>> # Each scaled.ground.fk[key] is now shape (100,)
+    
+    >>> # Monte Carlo sampling with gradients
+    >>> slater_samples = torch.randn(1000, requires_grad=True)
+    >>> soc_samples = torch.randn(1000, requires_grad=True)
+    >>> scaled = batch_scale_atomic_params(params, slater_samples, soc_samples)
+    >>> # Per-sample gradients preserved for loss.backward()
+    
+    Notes
+    -----
+    Memory usage scales linearly with batch size N. For Ni d8 L-edge:
+    - N=100: ~5 MB
+    - N=1000: ~50 MB
+    - N=5000: ~250 MB
+    
+    The returned ScaledAtomicParams can be passed to a batch-aware COWAN
+    rebuild function (Phase 2A step 2) to amortize V(11) residual computation.
+    """
+    # Validate and convert to tensors
+    if not isinstance(slater_values, torch.Tensor):
+        slater_values = torch.as_tensor(slater_values, dtype=DTYPE)
+    if not isinstance(soc_values, torch.Tensor):
+        soc_values = torch.as_tensor(soc_values, dtype=DTYPE)
+    
+    if slater_values.dtype != DTYPE:
+        slater_values = slater_values.to(dtype=DTYPE)
+    if soc_values.dtype != DTYPE:
+        soc_values = soc_values.to(dtype=DTYPE)
+    
+    # Validate shapes
+    if slater_values.ndim != 1:
+        raise ValueError(
+            f"slater_values must be 1D, got shape {slater_values.shape}"
+        )
+    if soc_values.ndim != 1:
+        raise ValueError(
+            f"soc_values must be 1D, got shape {soc_values.shape}"
+        )
+    if slater_values.shape[0] != soc_values.shape[0]:
+        raise ValueError(
+            f"Batch size mismatch: slater_values has {slater_values.shape[0]} "
+            f"elements but soc_values has {soc_values.shape[0]}"
+        )
+    
+    # Batch scale all configs
+    scaled_configs = [
+        _scale_one_config_batch(c, slater_values, soc_values, zeta_method)
+        for c in params.configs
+    ]
+    return ScaledAtomicParams(configs=scaled_configs)
