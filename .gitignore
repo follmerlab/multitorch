@@ -53,3 +53,15 @@ ENV/
 /private/
 *.tmp
 *.bak
+
+# Claude Code internal files
+.claude/
+.skill_runs/
+
+# Scratch/debug scripts
+tests/scratch_*.py
+
+# Internal audit/planning docs (not part of the package)
+CLAUDE.md
+GPU_ACCELERATION_PLAN.md
+torch-wrapper-guardrails.md

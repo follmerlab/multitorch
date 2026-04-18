@@ -298,7 +298,10 @@ def load_cfp_tables(binpath: Optional[str] = None) -> List[CFPBlock]:
         env_path = os.environ.get('MULTITORCH_BINPATH')
         if env_path:
             search_paths.append(Path(env_path) / 'rcg_cfp72')
-        # Relative to this file: ../../../../ttmult/bin/
+        # Bundled package data: multitorch/data/cfp/
+        pkg_data = Path(__file__).resolve().parent.parent / 'data' / 'cfp' / 'rcg_cfp72'
+        search_paths.append(pkg_data)
+        # Legacy: relative to this file: ../../../../ttmult/bin/
         here = Path(__file__).resolve()
         for _ in range(5):
             here = here.parent
@@ -313,8 +316,8 @@ def load_cfp_tables(binpath: Optional[str] = None) -> List[CFPBlock]:
                 return _cfp_cache
 
     raise FileNotFoundError(
-        "rcg_cfp72 not found. Set binpath or MULTITORCH_BINPATH to the ttmult/bin directory, "
-        "or run gen_cfp from ttmult/scripts/ to generate the CFP tables."
+        "rcg_cfp72 not found. Install multitorch with package data, "
+        "set binpath or MULTITORCH_BINPATH, or place rcg_cfp72 in multitorch/data/cfp/."
     )
 
 
@@ -492,6 +495,10 @@ def load_uk_tables(binpath: Optional[str] = None) -> List[UkBlock]:
         env_path = os.environ.get('MULTITORCH_BINPATH')
         if env_path:
             search_paths.append(Path(env_path) / 'rcg_cfp73')
+        # Bundled package data: multitorch/data/cfp/
+        pkg_data = Path(__file__).resolve().parent.parent / 'data' / 'cfp' / 'rcg_cfp73'
+        search_paths.append(pkg_data)
+        # Legacy: relative to this file: ../../../../ttmult/bin/
         here = Path(__file__).resolve()
         for _ in range(5):
             here = here.parent
@@ -506,7 +513,8 @@ def load_uk_tables(binpath: Optional[str] = None) -> List[UkBlock]:
                 return _uk_cache
 
     raise FileNotFoundError(
-        "rcg_cfp73 not found. Set binpath or MULTITORCH_BINPATH."
+        "rcg_cfp73 not found. Install multitorch with package data, "
+        "set binpath or MULTITORCH_BINPATH, or place rcg_cfp73 in multitorch/data/cfp/."
     )
 
 

@@ -4,11 +4,26 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "multitorch"
-version = "0.1.0.dev0"
+version = "0.1.0"
 description = "PyTorch implementation of multiplet X-ray spectroscopy simulations"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
+authors = [
+    {name = "Follmer Lab"},
+]
+keywords = ["xas", "xes", "rixs", "multiplet", "spectroscopy", "pytorch", "autograd"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Physics",
+    "Topic :: Scientific/Engineering :: Chemistry",
+]
 dependencies = [
     "torch>=2.2.0",
     "numpy>=1.24",
@@ -22,9 +37,16 @@ plot = ["matplotlib>=3.8"]
 notebook = ["matplotlib>=3.8", "jupyter>=1.0", "ipykernel>=6.0"]
 dev = ["pytest>=7.4", "pytest-cov", "sympy>=1.12"]
 
+[project.urls]
+Repository = "https://github.com/follmerlab/multitorch"
+
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["multitorch*"]
+
+[tool.setuptools.package-data]
+"multitorch.data.cfp" = ["rcg_cfp72", "rcg_cfp73"]
+"multitorch.data.fixtures" = ["**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -36,5 +58,6 @@ markers = [
     "phase2: hamiltonian layer tests",
     "phase3: angular momentum tests",
     "phase4: atomic parameter tests",
+    "phase5: Phase 5 in-memory pipeline tests",
     "integration: end-to-end integration tests",
 ]

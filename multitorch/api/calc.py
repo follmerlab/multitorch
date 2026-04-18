@@ -417,15 +417,18 @@ def _find_fixture_dir(element: str, valence: str, sym: str) -> Path:
     """
     from multitorch.atomic.tables import get_d_electrons
 
-    # Resolve fixture root: look for tests/reference_data/ relative to package
+    # Resolve fixture root: look in package data first, then tests/reference_data/
     pkg_dir = Path(__file__).parent.parent  # multitorch/
-    repo_root = pkg_dir.parent             # repo root
-    refdata = repo_root / "tests" / "reference_data"
+    refdata = pkg_dir / "data" / "fixtures"
+    if not refdata.is_dir():
+        # Fallback: tests/reference_data/ (dev/editable install)
+        repo_root = pkg_dir.parent
+        refdata = repo_root / "tests" / "reference_data"
 
     if not refdata.is_dir():
         raise FileNotFoundError(
-            f"Cannot find reference_data directory at {refdata}. "
-            f"The Phase 5 pipeline requires fixture files."
+            f"Cannot find fixture data. Install multitorch with package data "
+            f"or clone the repository for the tests/reference_data/ directory."
         )
 
     elem = element.capitalize()
