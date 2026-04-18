@@ -206,6 +206,6 @@ def test_batch_performance_benefit(ni_d4h_cache):
     
     # Batch should be at least 1.5× faster (conservative check)
     # Real speedup should be 2-3× from V(11) sharing
-   speedup = seq_time_full / batch_time
+    speedup = seq_time_full / batch_time
     print(f"Batch speedup: {speedup:.2f}×")
     assert speedup > 1.5, f"Expected >1.5× speedup, got {speedup:.2f}×"
