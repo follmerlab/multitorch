@@ -32,5 +32,5 @@ for nb in notebooks/*.ipynb; do
 done
 ```
 
-All four notebooks should run to completion against the fixtures committed
-under `tests/reference_data/`.
+All four notebooks should run to completion against the fixtures bundled
+under `multitorch/data/fixtures/`.

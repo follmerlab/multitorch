@@ -65,3 +65,6 @@ tests/scratch_*.py
 CLAUDE.md
 GPU_ACCELERATION_PLAN.md
 torch-wrapper-guardrails.md
+CODE_REVIEW.md
+SCIENTIFIC_AUDIT.md
+_build_notebooks.py
