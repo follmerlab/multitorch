@@ -63,7 +63,7 @@ tests/scratch_*.py
 
 # Internal audit/planning docs (not part of the package)
 CLAUDE.md
-GPU_ACCELERATION_PLAN.md
+# GPU_ACCELERATION_PLAN.md moved to docs/
 torch-wrapper-guardrails.md
 CODE_REVIEW.md
 SCIENTIFIC_AUDIT.md
