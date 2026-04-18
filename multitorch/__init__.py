@@ -17,5 +17,8 @@ from multitorch.api.calc import (
     preload_fixture, calcXAS_cached, CachedFixture,
 )
 from multitorch.api.plot import getXAS, getXES
+from multitorch.device_utils import (
+    get_optimal_device, suggest_device_for_xas, suggest_device_for_rixs,
+)
 
 __version__ = "0.1.0"
