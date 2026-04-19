@@ -38,35 +38,59 @@ def test_calcXAS_batch_basic(ni_d4h_cache):
 
 
 def test_calcXAS_batch_vs_sequential_parity(ni_d4h_cache):
-    """Verify batch matches sequential calcXAS_cached for each sample."""
+    """Verify batch matches sequential calcXAS_cached for each sample.
+
+    Both paths are forced onto the same x-grid by passing explicit
+    ``xmin`` and ``xmax`` — without this, ``calcXAS_batch`` picks a
+    single shared range across all samples (union of stick minima /
+    maxima) while ``calcXAS_cached`` picks a per-sample range. Same
+    sticks on the same grid should give identical y-values.
+    """
     N = 3
     slater_vals = torch.tensor([0.7, 0.8, 0.9])
     soc_vals = torch.tensor([0.9, 1.0, 1.1])
-    
-    # Batch version
+
+    # Pre-pass: derive a shared x-range from each sample's own sticks
+    # so we don't hardcode absolute Ni L-edge energies.
+    xmin_shared = float("inf")
+    xmax_shared = float("-inf")
+    for i in range(N):
+        _, _, sticks = calcXAS_cached(
+            ni_d4h_cache,
+            slater=float(slater_vals[i]),
+            soc=float(soc_vals[i]),
+            return_sticks=True,
+            nbins=500,
+            device="cpu",
+        )
+        E = sticks[:, 0]
+        xmin_shared = min(xmin_shared, float(E.min()) - 5.0)
+        xmax_shared = max(xmax_shared, float(E.max()) + 5.0)
+
+    # Batch on the shared grid
     y_batch = calcXAS_batch(
         ni_d4h_cache,
         slater_values=slater_vals,
         soc_values=soc_vals,
         nbins=500,
+        xmin=xmin_shared, xmax=xmax_shared,
         device="cpu",
     )
-    
-    # Sequential version
+
+    # Sequential on the *same* shared grid
     for i in range(N):
         _, y_seq = calcXAS_cached(
             ni_d4h_cache,
             slater=float(slater_vals[i]),
             soc=float(soc_vals[i]),
             nbins=500,
+            xmin=xmin_shared, xmax=xmax_shared,
             device="cpu",
         )
-        
-        # Should match reasonably well
-        # Note: Small differences expected due to floating point order of operations
-        # and slight differences in x-grid specification per spectrum
         max_diff = (y_batch[i] - y_seq).abs().max()
-        assert max_diff < 1e-3, f"Sample {i}: max difference {max_diff:.2e} exceeds tolerance"
+        assert max_diff < 1e-3, (
+            f"Sample {i}: max difference {max_diff:.2e} exceeds tolerance"
+        )
 
 
 def test_calcXAS_batch_shape_validation(ni_d4h_cache):

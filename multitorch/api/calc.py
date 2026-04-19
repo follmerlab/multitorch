@@ -395,62 +395,64 @@ def calcXAS_batch(
         device=device,
     )
     
-    # Extract individual COWAN stores and process sequentially
-    # TODO: Full batching through diagonalization (Phase 2 future work)
-    y_results = []
-    
+    # Pass 1 — diagonalize and extract sticks for every sample.
+    # We split the loop into two passes so we can derive a *shared*
+    # x-grid from the union of all samples' stick ranges. Doing the
+    # x-grid inside the loop and mutating the xmin/xmax function
+    # arguments (the old behaviour) silently locked every sample to
+    # sample 0's grid, producing large errors on interior samples.
+    all_sticks: List[Tuple[torch.Tensor, torch.Tensor]] = []
     for i in range(N):
-        # Extract i-th COWAN store from batch
-        cowan_i = []
-        for sec_idx, section in enumerate(cowan_batch):
-            sec_i = []
-            for mat in section:
-                if mat.ndim == 3:  # Batched HAMILTONIAN (N, dim, dim)
-                    sec_i.append(mat[i])  # Extract (dim, dim)
-                else:  # Non-batched matrix (dim, dim)
-                    sec_i.append(mat)
-            cowan_i.append(sec_i)
-        
-        # Assemble and diagonalize (sequential for now)
+        cowan_i = [
+            [mat[i] if mat.ndim == 3 else mat for mat in section]
+            for section in cowan_batch
+        ]
         result = assemble_and_diagonalize_in_memory(
             cowan_i, cache.rac, ban, device=device
         )
-        
-        # Extract sticks
         E_sticks, M_sticks, _ = get_sticks_from_banresult(
             result, T=T, max_gs=max_gs, device=device
         )
-        
+        all_sticks.append((E_sticks, M_sticks))
+
+    # Derive the shared x-range. If the caller supplied xmin/xmax we
+    # honour them; otherwise we take the union across all non-empty
+    # samples so no sample gets clipped or shifted.
+    if xmin is None or xmax is None:
+        non_empty = [
+            (float(E.min()), float(E.max()))
+            for E, _ in all_sticks if E.numel() > 0
+        ]
+        if non_empty:
+            global_min = min(p[0] for p in non_empty)
+            global_max = max(p[1] for p in non_empty)
+        else:
+            global_min = global_max = float(med_energy)
+        if xmin is None:
+            xmin = global_min - 5.0
+        if xmax is None:
+            xmax = global_max + 5.0
+
+    x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
+
+    # Pass 2 — broaden each sample on the shared x-grid. med_energy
+    # stays per-sample to match calcXAS_cached's convention (it
+    # affects the Thompson mode switch); the stacked tensor is
+    # meaningful because every row shares x.
+    y_results = []
+    for E_sticks, M_sticks in all_sticks:
         if E_sticks.numel() == 0:
-            # No transitions - return zero spectrum
-            if xmin is None:
-                xmin = med_energy - 5.0
-            if xmax is None:
-                xmax = med_energy + 5.0
             y = torch.zeros(nbins, dtype=DTYPE, device=device)
         else:
-            # Broaden
-            E_min = float(E_sticks.min())
-            E_max = float(E_sticks.max())
-            if xmin is None:
-                xmin = E_min - 5.0
-            if xmax is None:
-                xmax = E_max + 5.0
-            
-            x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
-            med = 0.5 * (E_min + E_max)
-            
+            med = 0.5 * (float(E_sticks.min()) + float(E_sticks.max()))
             y = pseudo_voigt(
                 x, E_sticks, M_sticks,
                 fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
                 med_energy=med, mode=broaden_mode,
             )
-        
         y_results.append(y)
-    
-    # Stack results into (N, nbins) tensor
+
     y_batch = torch.stack(y_results, dim=0)
-    
     return y_batch
 
 
