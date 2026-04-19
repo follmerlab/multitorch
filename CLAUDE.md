@@ -1,5 +1,19 @@
 # multitorch — Project Instructions
 
+## Current status (updated 2026-04-17)
+
+**Public repo:** https://github.com/follmerlab/multitorch
+**Version:** 0.1.0 (MIT license)
+**Tests:** 477/477 passing
+**Audits:** Scientific, code review, and test builder audits all passed — deployment gate PASSED
+
+### Deferred items (pick up here)
+
+- **SCA-001:** Change default `broaden_mode` from `"legacy"` to `"correct"` in `pseudo_voigt` — breaking API change across 6 function signatures, needs a deprecation cycle
+- **GPU acceleration:** Plan at `docs/GPU_ACCELERATION_PLAN.md`
+- Minor: document Eg-only autograd flow in `calcXAS` docstring
+- Minor: add assertion that shell pair is 3D for current scope
+
 ## What this is
 
 PyTorch port of the Fortran ttmult/Cowan multiplet X-ray spectroscopy suite for L-edge XAS of 3d transition metals. Must match Fortran numerically.
@@ -22,23 +36,24 @@ multitorch/
     spectrum/           # sticks, broaden (Voigt/pseudo-Voigt), rixs, background
     io/                 # parsers: read_rme.py, read_ban.py, read_rcf.py, read_oba.py
     api/                # calc.py (calcXAS entry point), plot.py
+    data/
+      cfp/              # bundled CFP tables (rcg_cfp72, rcg_cfp73)
+      fixtures/         # bundled Fortran reference outputs (9 Ti-Ni fixtures)
   tests/
-    reference_data/     # Fortran reference outputs: nid8/, nid8ct/, als1ni2/
+    reference_data/     # symlink/copy of fixtures for test compatibility
     test_angular/       # Wigner, CFP, RME tests
     test_atomic/        # HFS, Slater, mesh tests
     test_hamiltonian/   # assemble, diagonalize, BAN parser tests
     test_integration/   # end-to-end nid8ct XAS tests
     test_spectrum/      # broadening, sticks tests
+  notebooks/            # 4 tutorial notebooks
+  docs/                 # GPU_ACCELERATION_PLAN.md
 ```
 
 Fortran source lives at `../ttmult/src/` (rcn31.f, rcn2.f, ttrcg.f, ttrac.c, ttban_exact.f).
 Fortran binaries at `../ttmult/bin/`.
 Python wrapper at `../pyttmult/`.
 Legacy Python API at `../pyctm/`.
-
-## Test status
-
-398/398 tests pass as of 2026-04-11.
 
 ## Orchestration
 
