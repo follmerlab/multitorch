@@ -1,0 +1,92 @@
+[
+  {
+    "label": "Ti4+ d0 Oh",
+    "element": "Ti",
+    "valence": "iv",
+    "fortran_1": 0.09748,
+    "cached_1_cpu": 0.70744,
+    "cached_1_cuda": 0.02845,
+    "cached_10_cpu": 5.28088,
+    "cached_10_cuda": 0.23396,
+    "cached_100_cpu": "skipped",
+    "cached_100_cuda": 3.12,
+    "scratch_cpu": null,
+    "scratch_cuda": null
+  },
+  {
+    "label": "V3+ d2 Oh",
+    "element": "V",
+    "valence": "iii",
+    "fortran_1": 0.07913,
+    "cached_1_cpu": "timeout",
+    "cached_1_cuda": 1.04173,
+    "cached_10_cpu": null,
+    "cached_10_cuda": 10.26482,
+    "cached_100_cpu": null,
+    "cached_100_cuda": "skipped"
+  },
+  {
+    "label": "Cr3+ d3 Oh",
+    "element": "Cr",
+    "valence": "iii",
+    "fortran_1": 0.11685,
+    "cached_1_cpu": "timeout",
+    "cached_1_cuda": "timeout",
+    "cached_10_cpu": null,
+    "cached_10_cuda": null,
+    "cached_100_cpu": null,
+    "cached_100_cuda": null
+  },
+  {
+    "label": "Mn2+ d5 Oh",
+    "element": "Mn",
+    "valence": "ii",
+    "fortran_1": 0.12996,
+    "cached_1_cpu": "timeout",
+    "cached_1_cuda": 2.40644,
+    "cached_10_cpu": null,
+    "cached_10_cuda": "timeout",
+    "cached_100_cpu": null,
+    "cached_100_cuda": "skipped"
+  },
+  {
+    "label": "Co2+ d7 Oh",
+    "element": "Co",
+    "valence": "ii",
+    "fortran_1": 0.07564,
+    "cached_1_cpu": 4.11014,
+    "cached_1_cuda": 0.34349,
+    "cached_10_cpu": "timeout",
+    "cached_10_cuda": 3.80521,
+    "cached_100_cpu": "skipped",
+    "cached_100_cuda": "timeout",
+    "scratch_cpu": 7.10543,
+    "scratch_cuda": 7.74403
+  },
+  {
+    "label": "Ni2+ d8 Oh",
+    "element": "Ni",
+    "valence": "ii",
+    "fortran_1": 0.07641,
+    "cached_1_cpu": 0.42335,
+    "cached_1_cuda": 0.10985,
+    "cached_10_cpu": 2.72899,
+    "cached_10_cuda": 0.92372,
+    "cached_100_cpu": "timeout",
+    "cached_100_cuda": "timeout",
+    "scratch_cpu": 2.61603,
+    "scratch_cuda": 2.75307
+  },
+  {
+    "label": "Cu2+ d9 Oh",
+    "element": "Cu",
+    "valence": "ii",
+    "fortran_1": null,
+    "cached_1_cpu": null,
+    "cached_1_cuda": null,
+    "cached_10_cpu": null,
+    "cached_10_cuda": null,
+    "cached_100_cpu": null,
+    "cached_100_cuda": null
+  }
+]

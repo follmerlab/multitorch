@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multiplet-bench"
+version = "0.1.0"
+description = "Performance and output-parity benchmark harness for multitorch vs pyctm/pyttmult/ttmult"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [{name = "Follmer Lab"}]
+dependencies = [
+    "numpy>=1.24",
+    "scipy>=1.11",
+    "pandas>=2.0",
+    "matplotlib>=3.8",
+    "pyyaml>=6.0",
+    "psutil>=5.9",
+    "gitpython>=3.1",
+    "torch>=2.2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--tb=short -v"

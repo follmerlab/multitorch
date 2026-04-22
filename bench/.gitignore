@@ -1,0 +1,8 @@
+# Raw results files (large JSONL, sidecar hardware JSON)
+results/*.jsonl
+results/*.hardware.json
+
+# Keep generated report outputs
+!results/report_full/
+!results/report/
+!results/gpu_comparison.md

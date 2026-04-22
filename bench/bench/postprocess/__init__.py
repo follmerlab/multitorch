@@ -1,0 +1,1 @@
+"""JSONL → DataFrame → matplotlib plots."""
