@@ -69,6 +69,10 @@ class PyttmultAdapter(Adapter):
     # ─────────────────────────────────────────────────────────
 
     def cold_start(self) -> None:
+        if not PYCTM_ROOT.exists():
+            raise NotSupported(f"pyctm peer repo not found at {PYCTM_ROOT}")
+        if not PYTTMULT_ROOT.exists():
+            raise NotSupported(f"pyttmult peer repo not found at {PYTTMULT_ROOT}")
         if str(PYCTM_ROOT) not in sys.path:
             sys.path.insert(0, str(PYCTM_ROOT))
         if str(PYTTMULT_ROOT) not in sys.path:
@@ -80,12 +84,15 @@ class PyttmultAdapter(Adapter):
         required = ["ttrcg", "ttrac", "ttban_exact", "rcn31", "rcn2"]
         missing = [b for b in required if not (self._bin_root / b).exists()]
         if missing:
-            raise FileNotFoundError(
+            raise NotSupported(
                 f"Fortran binaries not found at {self._bin_root}: {missing}"
             )
 
-        import pyttmult  # noqa: F401
-        import pyctm     # noqa: F401
+        try:
+            import pyttmult  # noqa: F401
+            import pyctm     # noqa: F401
+        except ImportError as e:
+            raise NotSupported(f"pyctm/pyttmult import failed: {e}") from e
         self._imports_done = True
 
     def warm(self, cell: BenchCell) -> None:

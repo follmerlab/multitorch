@@ -32,18 +32,22 @@ The deliverable is a set of plots (single-spectrum bars, scaling vs batch size, 
 
 ## 2. Workstation layout the suite assumes
 
+`bench/` ships inside the multitorch repo. The Fortran-stack adapters
+need pyctm, pyttmult, and ttmult cloned as peers of multitorch:
+
 ```
 <workspace>/
   multitorch/        # PyTorch port (public: follmerlab/multitorch)
+    bench/           # <-- this directory; what you care about
+    multitorch/      # PyTorch package source
   pyctm/             # legacy Python orchestrator
   pyttmult/          # thin wrapper over Fortran binaries
   ttmult/            # Fortran source + binaries in ttmult/bin/
-  bench/             # <-- this directory; what you care about
 ```
 
-The user confirmed all four upstream repos are already cloned and in place on the workstation. Your first job is to verify that (step 3 below).
+The user confirmed all upstream repos are cloned and in place on the workstation. Your first job is to verify that (step 3 below).
 
-Paths inside `bench/bench/config.py` are derived from `BENCH_ROOT.parent`, so they'll work regardless of where `<workspace>` lives on the workstation — as long as the four peer directories are siblings.
+`bench/bench/config.py` resolves `WORKSPACE_ROOT = BENCH_ROOT.parent.parent` (i.e. `multitorch/bench/` → `multitorch/` → workspace). Override `PYCTM_ROOT`, `PYTTMULT_ROOT`, or `ttmult` env vars if your peers live elsewhere.
 
 ---
 
@@ -52,7 +56,7 @@ Paths inside `bench/bench/config.py` are derived from `BENCH_ROOT.parent`, so th
 ### 3.1 Verify the four-package layout
 
 ```bash
-cd <workspace>/bench
+cd <workspace>/multitorch/bench
 ls ../multitorch/multitorch/api/calc.py  || echo "MISSING multitorch"
 ls ../pyctm/pyctm/calc.py                || echo "MISSING pyctm"
 ls ../pyttmult/pyttmult/ttmult.py        || echo "MISSING pyttmult"
@@ -90,7 +94,7 @@ export ttmult=<absolute path to workspace>/ttmult
 ### 3.5 Run the parity unit tests
 
 ```bash
-cd <workspace>/bench
+cd <workspace>/multitorch/bench
 PYTHONPATH=. python -m pytest tests/test_parity_metrics.py -q
 ```
 
@@ -143,7 +147,7 @@ Expected: prints shape `(500,)` + five intensity values. If CUDA kernel launch f
 ### 4.1 Full matrix — the manuscript run
 
 ```bash
-cd <workspace>/bench
+cd <workspace>/multitorch/bench
 PYTHONPATH=. python -m bench.run_all \
     --preset full \
     --output results/full.jsonl \

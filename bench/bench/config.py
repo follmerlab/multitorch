@@ -6,14 +6,19 @@ from pathlib import Path
 from typing import List, Optional, Tuple
 
 
-# Resolve paths relative to the multiplets workspace so the suite is portable
-# between machines: the user just needs the four repos checked out side by side.
+# Resolve paths relative to the multiplets workspace.
+#
+# bench/ ships inside the multitorch repo (multiplets/multitorch/bench/),
+# so BENCH_ROOT.parent.parent = multiplets/ — where pyctm, pyttmult, and
+# ttmult live as peer repos to multitorch. Each can be overridden by an
+# environment variable for non-standard layouts.
+import os
 BENCH_ROOT = Path(__file__).resolve().parent.parent
-WORKSPACE_ROOT = BENCH_ROOT.parent
-MULTITORCH_ROOT = WORKSPACE_ROOT / "multitorch"
-PYCTM_ROOT = WORKSPACE_ROOT / "pyctm"
-PYTTMULT_ROOT = WORKSPACE_ROOT / "pyttmult"
-TTMULT_ROOT = WORKSPACE_ROOT / "ttmult"
+MULTITORCH_ROOT = BENCH_ROOT.parent
+WORKSPACE_ROOT = MULTITORCH_ROOT.parent
+PYCTM_ROOT = Path(os.environ.get("PYCTM_ROOT", WORKSPACE_ROOT / "pyctm"))
+PYTTMULT_ROOT = Path(os.environ.get("PYTTMULT_ROOT", WORKSPACE_ROOT / "pyttmult"))
+TTMULT_ROOT = Path(os.environ.get("ttmult", WORKSPACE_ROOT / "ttmult"))
 FIXTURES_ROOT = MULTITORCH_ROOT / "multitorch" / "data" / "fixtures"
 
 

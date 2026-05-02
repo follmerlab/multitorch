@@ -1,47 +1,73 @@
 # multiplet-bench
 
-Performance and output-parity harness comparing the PyTorch port
-(**multitorch**) against the legacy Fortran stack (**pyctm →
-pyttmult → ttmult**) across the bundled Ti–Ni L-edge fixture set.
+Internal performance + output-parity harness for the multitorch
+PyTorch port. Two modes:
+
+- **multitorch-only** (default for public users): time the three
+  multitorch entry points (`calcXAS_cached`, `calcXAS_from_scratch`,
+  `calcXAS_batch`) on CPU and CUDA across the bundled Ti–Ni L-edge
+  fixtures.
+- **Fortran-comparison** (development only): also runs the legacy
+  pyctm / pyttmult / ttmult Fortran stack and reports parity. Requires
+  the private dev repos described under *Optional: Fortran comparison*.
 
 ## What you get
 
 - **Timings**: median + IQR wall-clock, CPU-time, and CUDA-event time per cell
-- **Stage breakdown**: setup / Fortran compute / broadening, separated
-- **Parity metrics**: cosine similarity, max-abs-diff, peak-position
-  error, L3/L2 ratio — computed against `ttmult_raw` on a common grid
+- **Stage breakdown**: setup / compute / broadening, separated
+- **Parity metrics** (Fortran mode): cosine similarity, max-abs-diff,
+  peak-position error, L3/L2 ratio — vs `ttmult_raw` on a common grid
   after peak alignment
 - **Plots**: single-spectrum bars, scaling vs batch size, parity
   heatmap, CPU vs CUDA speedup
 
-## Layout assumption
+## Layout
 
-The four packages must be checked out side by side:
+`bench/` ships inside the multitorch repo:
 
 ```
-multiplets/
-  multitorch/        # PyTorch port
-  pyctm/             # legacy Python orchestrator
-  pyttmult/          # thin wrapper over Fortran binaries
-  ttmult/            # Fortran source + binaries in ttmult/bin/
-  bench/             # this package (benchmark harness)
+multitorch/              # the public repo
+  bench/                 # ← this package
+  multitorch/            # PyTorch package source
+  tests/
 ```
 
 ## Environment
 
-Uses the existing `multi` conda env (Python 3.11 + PyTorch 2.5). Plus:
+Uses the `multi` conda env (Python 3.11 + PyTorch 2.5). Plus:
 
 ```
 pip install pandas matplotlib pyyaml psutil gitpython tabulate
 ```
 
-Set the `$ttmult` environment variable to point at the ttmult root:
+Public users running the multitorch-only mode are done at this point.
+
+## Optional: Fortran comparison (dev only)
+
+The Fortran stack (pyctm, pyttmult, ttmult) is the legacy
+implementation that multitorch ports. Comparing against it is useful
+during development but requires the private repos checked out as
+peers of multitorch:
 
 ```
-export ttmult=/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/ttmult
+parent_dir/
+  multitorch/        # this repo, with bench/ inside
+  pyctm/             # legacy Python orchestrator
+  pyttmult/          # thin wrapper over Fortran binaries
+  ttmult/            # Fortran source + binaries in ttmult/bin/
 ```
 
-(On first run the harness defaults this to `<workspace>/ttmult` if unset.)
+bench resolves these via `WORKSPACE_ROOT = BENCH_ROOT.parent.parent`.
+Override with `PYCTM_ROOT`, `PYTTMULT_ROOT`, or `ttmult` env vars if
+your peers live elsewhere. Set `$ttmult` so pyttmult finds the
+binaries:
+
+```
+export ttmult=/abs/path/to/ttmult
+```
+
+Without these peers the Fortran adapters skip cleanly with
+`NotSupported`; the multitorch cells still run.
 
 ## Quick start — MVP smoke (~8 min on CPU)
 

@@ -52,10 +52,21 @@ class PyctmAdapter(Adapter):
     # ─────────────────────────────────────────────────────────
 
     def cold_start(self) -> None:
-        # Make pyctm + pyttmult importable.
+        # The Fortran-stack peers (pyctm/pyttmult/ttmult) are private dev
+        # repos. Public users won't have them — surface that as
+        # NotSupported so the harness records status=skipped, not error.
+        if not PYCTM_ROOT.exists():
+            raise NotSupported(
+                f"pyctm peer repo not found at {PYCTM_ROOT}. Set "
+                f"PYCTM_ROOT or check out pyctm peer to multitorch."
+            )
+        pyttmult_root = PYCTM_ROOT.parent / "pyttmult"
+        if not pyttmult_root.exists():
+            raise NotSupported(
+                f"pyttmult peer repo not found at {pyttmult_root}."
+            )
         if str(PYCTM_ROOT) not in sys.path:
             sys.path.insert(0, str(PYCTM_ROOT))
-        pyttmult_root = PYCTM_ROOT.parent / "pyttmult"
         if str(pyttmult_root) not in sys.path:
             sys.path.insert(0, str(pyttmult_root))
 
@@ -68,13 +79,15 @@ class PyctmAdapter(Adapter):
         required = ["ttrcg", "ttrac", "ttban_exact", "rcn31", "rcn2"]
         missing = [b for b in required if not (self._bin_root / b).exists()]
         if missing:
-            raise FileNotFoundError(
+            raise NotSupported(
                 f"Fortran binaries not found at {self._bin_root}: {missing}. "
                 f"Set $ttmult to the ttmult root, or install the binaries."
             )
 
-        # Trigger the first pyctm import cost explicitly.
-        import pyctm  # noqa: F401
+        try:
+            import pyctm  # noqa: F401
+        except ImportError as e:
+            raise NotSupported(f"pyctm import failed: {e}") from e
         self._imports_done = True
 
     def warm(self, cell: BenchCell) -> None:
