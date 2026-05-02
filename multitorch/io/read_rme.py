@@ -590,6 +590,8 @@ def assemble_matrix_from_adds(
         src = cowan_section[idx]
         if src.ndim < 2 or src.shape[1] == 0:
             continue
+        if device is not None and src.device != torch.device(device):
+            src = src.to(device)
 
         r0 = add.bra - 1
         c0 = add.ket - 1
