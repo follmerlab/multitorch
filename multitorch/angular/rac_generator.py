@@ -627,8 +627,9 @@ def generate_ledge_rac(
     raw_zeta_ex_ry: Optional[Dict[str, float]] = None,
     ry_to_ev: float = RY_TO_EV_FLOAT,
     cf_rank: int = 4,
+    sym: str = 'oh',
 ) -> Tuple[RACFileFull, List[List[torch.Tensor]]]:
-    """Generate angular RME structure for L-edge XAS in Oh symmetry.
+    """Generate angular RME structure for L-edge XAS.
 
     Produces ground state (gerade, d^n) + excited state (ungerade,
     p^5 d^(n+1)) + MULTIPOLE transition blocks.  Single-configuration
@@ -663,6 +664,18 @@ def generate_ledge_rac(
         Rydberg to eV conversion.
     cf_rank : int
         Crystal field operator rank (4 for Oh).
+    sym : {'oh', 'd4h'}, default 'oh'
+        Target symmetry for GROUND/EXCITE blocks.
+
+        - 'oh': single CF operator (10Dq, rank-`cf_rank`); blocks labeled
+          by Oh single-group irreps. This is the historical path; backward
+          compatible.
+        - 'd4h': three CF operators (TENDQ, DT, DS); GROUND/EXCITE blocks
+          labeled by D4h irreps; XHAM emitted by `_build_ban_from_rac`
+          carries `[1.0, tendq, dt, ds]`. **Not yet implemented at the
+          inner-block level** — see plan Phase 1c. The TRANSI/MULTIPOLE
+          blocks are *already* D4h-aware (PERP/PARA splitting via Eu/A2u
+          factors); the gap is the GROUND/EXCITE side.
 
     Returns
     -------
@@ -670,6 +683,25 @@ def generate_ledge_rac(
         rac: RACFileFull with TRANSI (MULTIPOLE), GROUND, and EXCITE blocks.
         cowan_store: List of 4 sections (only section 0 populated for nconf=1).
     """
+    if sym not in ('oh', 'd4h'):
+        raise ValueError(
+            f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h'. "
+            f"For trigonal symmetries see plan Phase 5."
+        )
+    if sym == 'd4h':
+        # The TRANSI/MULTIPOLE block construction below is already D4h-aware
+        # (PERP/PARA splittings via Butler-derived √(2/3) and √(1/3)
+        # factors). Splitting GROUND/EXCITE blocks per D4h irrep + emitting
+        # per-operator CF blocks (TENDQ/DT/DS) is the next chunk of work
+        # tracked in plan Phase 1c. This stub keeps the API surface in place
+        # so downstream callers can be wired and tests can be authored.
+        raise NotImplementedError(
+            "D4h GROUND/EXCITE generation not yet wired in. The Butler "
+            "scaffolding (D4H_BRANCHES_BY_OPERATOR, d4h_branching, "
+            "d4h_cf_operator_recipe) is ready in multitorch.angular.symmetry; "
+            "the dispatcher inside generate_ledge_rac is the missing piece. "
+            "See ~/.claude/plans/lexical-toasting-kahan.md Phase 1c."
+        )
     # ── Term data ──
     gs_terms = _get_terms(l_val, n_val_gs)
     gs_j_sizes = _j_sector_sizes(gs_terms)

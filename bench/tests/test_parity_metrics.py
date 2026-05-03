@@ -189,3 +189,39 @@ def test_compare_peak_align_false_still_sees_shift():
     assert not r.peak_aligned
     assert r.peak_err_max_ev > 0.05
     assert r.cosine < 0.9999
+
+
+# ─────────────────────────────────────────────────────────────
+# passes() helper: assertion-style use in port-phase parity tests
+# ─────────────────────────────────────────────────────────────
+
+
+def test_passes_identical_spectra():
+    """Identical spectra pass the strictest intra-multitorch tolerances."""
+    from bench.parity import (
+        INTRA_COSINE_TOLERANCE, INTRA_MAX_ABS_DIFF_TOLERANCE,
+        INTRA_PEAK_POS_TOLERANCE_EV, INTRA_L3L2_RATIO_TOLERANCE,
+    )
+    x = np.linspace(850.0, 880.0, 6001)
+    y = _ledge_toy(x)
+    r = compare(x, y, x, y, calctype="xas")
+    ok, failures = r.passes(
+        cosine_min=INTRA_COSINE_TOLERANCE,
+        max_abs_diff_max=INTRA_MAX_ABS_DIFF_TOLERANCE,
+        peak_pos_max_ev=INTRA_PEAK_POS_TOLERANCE_EV,
+        l3l2_ratio_tol=INTRA_L3L2_RATIO_TOLERANCE,
+    )
+    assert ok, f"Identical spectra should pass: {failures}"
+
+
+def test_passes_reports_failure_for_lineshape_mismatch():
+    """A real lineshape difference shows up in the failures list."""
+    x = np.linspace(850.0, 880.0, 6001)
+    y_sharp = _ledge_toy(x, width=0.5)
+    y_broad = _ledge_toy(x, width=1.5)
+    r = compare(x, y_sharp, x, y_broad, calctype="xas")
+    ok, failures = r.passes()  # default (cross-impl) tolerances
+    failed_metrics = [name for name, _, _ in failures]
+    assert "max_abs_diff" in failed_metrics, (
+        f"Lineshape mismatch should fail max_abs_diff: {failures}"
+    )

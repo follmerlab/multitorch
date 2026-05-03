@@ -34,9 +34,24 @@ import numpy as np
 
 from bench.config import (
     COMMON_GRID_SPACING_EV,
+    COSINE_TOLERANCE,
+    L3L2_RATIO_TOLERANCE,
+    MAX_ABS_DIFF_TOLERANCE,
+    PEAK_POS_TOLERANCE_EV,
     PEAK_TOP_K_LEDGE,
     PEAK_TOP_K_RIXS,
 )
+
+
+# Tighter tolerances for intra-multitorch parity (from-scratch vs cached).
+# The cross-implementation defaults in bench.config are looser because they
+# accommodate broadening-kernel and energy-zero differences between
+# multitorch, pyctm, and ttmult_raw. When comparing two multitorch paths to
+# each other (Phase 1 D4h port: from-scratch vs nid8 fixture), use these.
+INTRA_COSINE_TOLERANCE = 0.99999
+INTRA_MAX_ABS_DIFF_TOLERANCE = 0.02
+INTRA_PEAK_POS_TOLERANCE_EV = 0.02
+INTRA_L3L2_RATIO_TOLERANCE = 0.005
 
 
 @dataclass
@@ -74,6 +89,39 @@ class ParityResult:
             "peak_shift_ev": self.peak_shift_ev,
             "peak_aligned": self.peak_aligned,
         }
+
+    def passes(
+        self,
+        cosine_min: float = COSINE_TOLERANCE,
+        max_abs_diff_max: float = MAX_ABS_DIFF_TOLERANCE,
+        peak_pos_max_ev: float = PEAK_POS_TOLERANCE_EV,
+        l3l2_ratio_tol: float = L3L2_RATIO_TOLERANCE,
+    ) -> Tuple[bool, list]:
+        """Check whether all metrics fall within the given tolerances.
+
+        Returns ``(ok, failures)`` where ``failures`` is a list of
+        ``(metric_name, expected_relation, actual)`` tuples for any
+        metric that violated its tolerance. ``ok`` is True iff
+        ``failures`` is empty.
+
+        Defaults are the cross-implementation tolerances from
+        ``bench.config``. For intra-multitorch parity (e.g. D4h
+        from-scratch vs nid8 fixture), pass the tighter
+        ``INTRA_*`` constants explicitly.
+        """
+        failures: list = []
+        if self.cosine < cosine_min:
+            failures.append(("cosine", f">= {cosine_min}", self.cosine))
+        if self.max_abs_diff > max_abs_diff_max:
+            failures.append(("max_abs_diff", f"<= {max_abs_diff_max}", self.max_abs_diff))
+        if self.peak_err_max_ev > peak_pos_max_ev:
+            failures.append(("peak_err_max_ev", f"<= {peak_pos_max_ev}", self.peak_err_max_ev))
+        # L3/L2 ratio: compare against reference; tolerance is fractional.
+        if self.l3_l2_ratio_ref != 0.0:
+            l3l2_rel = abs(self.l3_l2_ratio - self.l3_l2_ratio_ref) / abs(self.l3_l2_ratio_ref)
+            if l3l2_rel > l3l2_ratio_tol:
+                failures.append(("l3_l2_ratio_rel", f"<= {l3l2_ratio_tol}", l3l2_rel))
+        return (len(failures) == 0, failures)
 
 
 # ─────────────────────────────────────────────────────────────
