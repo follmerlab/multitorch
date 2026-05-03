@@ -15,8 +15,7 @@
 #   - ETA (rough, based on completed-spectrum average)
 #   - last 5 log lines for context
 
-set -euo pipefail
-
+# Status display — tolerate missing files / no-process gracefully.
 LOG="${V0_SWEEP_LOG:-/home/afollmer/code/multiplets/fits/results/v0_sweep.log}"
 RESULTS_DIR="$(dirname "$LOG")"
 WATCH=0
@@ -49,9 +48,10 @@ show_status() {
     fi
     echo
 
-    # Total spectra count
-    TOTAL=$(ls "$RESULTS_DIR"/../../test-data/Fe*.txt 2>/dev/null | wc -l | tr -d ' ')
-    [[ -z "$TOTAL" ]] && TOTAL="?"
+    # Total spectra count (find avoids glob issues with [] in filenames)
+    TEST_DIR="$RESULTS_DIR/../../test-data"
+    TOTAL=$(find "$TEST_DIR" -maxdepth 1 -name 'Fe*.txt' -type f 2>/dev/null | wc -l | tr -d ' ')
+    [[ -z "$TOTAL" ]] || [[ "$TOTAL" == "0" ]] && TOTAL="?"
 
     # Completed spectra (lines containing "wall=" in log)
     COMPLETED=$(grep -c "wall=" "$LOG" 2>/dev/null || echo 0)
