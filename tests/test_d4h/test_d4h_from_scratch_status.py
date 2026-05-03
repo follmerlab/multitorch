@@ -174,13 +174,94 @@ def test_d4h_branching_half_integer_raises():
         d4h_branching(0.5)
 
 
-@pytest.mark.xfail(reason="Phase 1: D4h Ni parity test pending")
+@pytest.mark.xfail(reason="Task #34: D4h dispatcher emits irreps + ADD entries matching nid8")
+def test_d4h_dispatcher_emits_nid8_irrep_set():
+    """generate_ledge_rac(sym='d4h', l_val=2, n_val_gs=8) should emit a RAC
+    structure whose D4h irreps match the nid8 fixture.
+
+    Per nid8.rme_rac, Ni d8 D4h has these GROUND-side irreps:
+      0+ (A1g, dim=1, mult=9)
+      ^0+ (A2g/B2g via Butler convention, dim=1, mult=4)
+      1+ (Eg, dim=2, mult=10)
+      2+ (B1g, dim=1, mult=6)
+      ^2+ (B2g, dim=1, mult=6)
+
+    And these EXCITE-side irreps:
+      0- (A1u, dim=1, mult=7)
+      ^0- (A2u, dim=1, mult=7)  ← TRANSI-OPERA (PARA)
+      1- (Eu, dim=2, mult=15)   ← TRANSI-OPERA (PERP)
+      2- (B1u, dim=1, mult=8)
+      ^2- (B2u, dim=1, mult=8)
+    """
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    rac, _ = generate_ledge_rac(
+        l_val=2, n_val_gs=8, l_core=1, n_core_gs=6, sym='d4h',
+    )
+    irrep_names = sorted(info.name for info in rac.irreps)
+    expected = sorted([
+        '0+', '^0+', '1+', '2+', '^2+',
+        '0-', '^0-', '1-', '2-', '^2-',
+    ])
+    assert irrep_names == expected, (
+        f"D4h dispatcher emitted irreps {irrep_names}, expected {expected}"
+    )
+
+
+@pytest.mark.xfail(reason="Task #34: D4h dispatcher emits per-operator CF blocks (HAM, 10DQ, DT, DS)")
+def test_d4h_dispatcher_emits_four_cf_operators():
+    """Each D4h GROUND/EXCITE irrep should have 4 blocks: HAMILTONIAN, 10DQ, DT, DS.
+
+    The XHAM consumed by the assembler expects this layout per
+    multitorch/hamiltonian/assemble.py:40 comment:
+      'For D4h: [HAMILTONIAN, 10DQ, DT, DS]  (XHAM has 4 values: 1.0, tendq, dt, ds)'
+    """
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    rac, _ = generate_ledge_rac(
+        l_val=2, n_val_gs=8, l_core=1, n_core_gs=6, sym='d4h',
+    )
+    geometries_per_irrep: dict = {}
+    for b in rac.blocks:
+        if b.kind in ('GROUND',) and b.bra_sym == b.ket_sym:
+            geometries_per_irrep.setdefault(b.bra_sym, set()).add(b.geometry)
+
+    expected_geometries = {'HAMILTONIAN', '10DQ', 'DT', 'DS'}
+    for irrep, geos in geometries_per_irrep.items():
+        assert expected_geometries.issubset(geos), (
+            f"Irrep {irrep} missing CF operators: have {geos}, "
+            f"need {expected_geometries}"
+        )
+
+
+@pytest.mark.xfail(reason="Task #34: end-to-end D4h Ni parity vs nid8 fixture")
 def test_d4h_ni_from_scratch_matches_nid8_fixture():
-    """D4h Ni from-scratch should match the bundled nid8 fixture within tolerances."""
+    """D4h Ni from-scratch must match the bundled nid8 fixture at INTRA tolerances.
+
+    This is the integration parity test for Phase 1. Once the dispatcher
+    emits the right irrep + operator structure, this should pass with:
+      cosine ≥ 0.99999
+      max_abs_diff ≤ 0.02
+      peak position ≤ 0.02 eV
+      L3/L2 ratio within 0.5%
+    """
+    import sys
+    sys.path.insert(0, '/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/multitorch/bench')
+    from bench.parity import (
+        compare,
+        INTRA_COSINE_TOLERANCE, INTRA_MAX_ABS_DIFF_TOLERANCE,
+        INTRA_PEAK_POS_TOLERANCE_EV, INTRA_L3L2_RATIO_TOLERANCE,
+    )
     from multitorch.api.calc import calcXAS_cached, calcXAS_from_scratch, preload_fixture
+
     cf = {"tendq": 1.0, "ds": 0.0, "dt": 0.0}
     cache = preload_fixture("Ni", "ii", "d4h")
-    _, y_ref = calcXAS_cached(cache, cf=cf)
-    _, y_new = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h")
-    # Tolerance check would use bench.parity.compare(...).passes(...)
-    assert y_new.shape == y_ref.shape
+    x_ref, y_ref = calcXAS_cached(cache, cf=cf)
+    x_new, y_new = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h")
+    result = compare(x_new.numpy(), y_new.numpy(),
+                     x_ref.numpy(), y_ref.numpy(), calctype="xas")
+    ok, failures = result.passes(
+        cosine_min=INTRA_COSINE_TOLERANCE,
+        max_abs_diff_max=INTRA_MAX_ABS_DIFF_TOLERANCE,
+        peak_pos_max_ev=INTRA_PEAK_POS_TOLERANCE_EV,
+        l3l2_ratio_tol=INTRA_L3L2_RATIO_TOLERANCE,
+    )
+    assert ok, f"Parity failures: {failures}"
