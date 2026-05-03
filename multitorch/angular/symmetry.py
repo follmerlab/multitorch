@@ -120,6 +120,89 @@ D4H_SHELL_BRANCHES: Dict[Tuple[str, str, str], float] = dict(
 )
 
 
+# ─────────────────────────────────────────────────────────────
+# D4h Butler-label conventions
+# ─────────────────────────────────────────────────────────────
+#
+# The D4h irreps in Butler's notation, as used by ttrac and visible in
+# the bundled `nid8.rme_rac` fixture. Each irrep has a Butler label
+# (without parity suffix) plus a parity sign appended.
+#
+# Mapping derived from inspecting nid8.rme_rac IRREP lines and
+# cross-referencing with the OH_TO_D4H subduction:
+#
+#   A1g (Oh '0+')   → D4h '0+'
+#   A2g (Oh '^0+')  → D4h '^0+'   (starred / "hat" in Butler)
+#   Eg  (Oh '1+')   → D4h '1+'    (dim=2)
+#   B1g (Oh '2+')   → D4h '2+'
+#   B2g (Oh '^2+')  → D4h '^2+'
+# Same pattern with '-' suffix for ungerade.
+
+D4H_TO_BUTLER: Dict[str, str] = {
+    'A1g': '0+',  'A1u': '0-',
+    'A2g': '^0+', 'A2u': '^0-',
+    'Eg':  '1+',  'Eu':  '1-',
+    'B1g': '2+',  'B1u': '2-',
+    'B2g': '^2+', 'B2u': '^2-',
+}
+
+D4H_IRREP_DIM: Dict[str, int] = {
+    'A1g': 1, 'A1u': 1,
+    'A2g': 1, 'A2u': 1,
+    'Eg':  2, 'Eu':  2,
+    'B1g': 1, 'B1u': 1,
+    'B2g': 1, 'B2u': 1,
+}
+
+
+def d4h_butler_label(d4h_irrep: str) -> str:
+    """Return the Butler-style label for a D4h irrep ('A1g' → '0+', etc.).
+
+    Used by the rac_generator dispatcher when emitting GROUND/EXCITE
+    blocks under sym='d4h' to match the labeling convention of the
+    bundled nid8 fixture.
+    """
+    if d4h_irrep not in D4H_TO_BUTLER:
+        raise ValueError(
+            f"Unknown D4h irrep {d4h_irrep!r}; expected one of "
+            f"{sorted(D4H_TO_BUTLER)}"
+        )
+    return D4H_TO_BUTLER[d4h_irrep]
+
+
+def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
+    """Return [(D4h_irrep, multiplicity), ...] for D^J in D4h.
+
+    Composes oh_branching(J) (multitorch.angular.point_group) with
+    OH_TO_D4H. For example, J=2 in Oh gives Eg + T2g; in D4h that's
+    A1g (from Eg) + B1g (from Eg) + B2g (from T2g) + Eg (from T2g).
+
+    Parity is determined by J's natural parity ((-1)^L for orbital).
+    """
+    from multitorch.angular.point_group import oh_branching
+
+    is_half_int = abs(J - round(J)) > 0.1
+    if is_half_int:
+        raise NotImplementedError(
+            "d4h_irreps_for_J for half-integer J requires D4h "
+            "double-group tables (not yet tabulated)."
+        )
+
+    oh_b = oh_branching(int(round(J)))
+    parity_suffix = 'g' if (int(round(J)) % 2 == 0) else 'u'
+
+    result: Dict[str, int] = {}
+    for oh_irrep, mult in oh_b.items():
+        if mult == 0:
+            continue
+        oh_irrep_full = f'{oh_irrep}{parity_suffix}'
+        d4h_irreps = OH_TO_D4H.get(oh_irrep_full, [oh_irrep_full])
+        for d4h_irrep in d4h_irreps:
+            result[d4h_irrep] = result.get(d4h_irrep, 0) + mult
+    # Return as sorted list for determinism
+    return sorted(result.items(), key=lambda kv: list(D4H_TO_BUTLER).index(kv[0]))
+
+
 def d4h_cf_operator_recipe(operator: str) -> List[Tuple[int, str, str, float]]:
     """Return the COWAN-block recipe for one D4h crystal-field operator.
 

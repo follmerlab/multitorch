@@ -342,3 +342,51 @@ gives the right operator-component vectors, the `oh_coupling_coefficients_for_op
 skeleton has the right loop structure, and the test infrastructure is in
 place. The missing piece is the Butler-3jm computation that replaces
 the trace formulation.
+
+---
+
+## Update — D4h labeling gap is bigger than expected too (2026-05-03)
+
+Started Thread 3 (D4h labels per Phase 1c gap #2). Landed:
+
+- `D4H_TO_BUTLER` mapping (`A1g→'0+'`, `A2g→'^0+'`, `Eg→'1+'`,
+  `B1g→'2+'`, `B2g→'^2+'`)
+- `d4h_butler_label(d4h_irrep)` accessor
+- `d4h_irreps_for_J(J)` returning the per-J D4h irrep multiplicities
+  (composes oh_branching with OH_TO_D4H)
+
+These are the foundation for relabeling. But: **the proper relabeling
+needs an `oh_to_d4h_subduction_matrix(oh_irrep)` helper that
+multitorch doesn't have yet.** Required because:
+
+- Each Oh irrep splits into 1 or more D4h irreps per OH_TO_D4H:
+  Oh Eg → D4h A1g + B1g (rotation in 2D Eg space)
+  Oh T1g → D4h A2g + Eg (rotation in 3D T1g space)
+  Oh T2g → D4h B2g + Eg (rotation in 3D T2g space)
+- The subduction matrices specify HOW the Oh-irrep partner basis
+  rotates into D4h-irrep partners. multitorch's existing
+  `oh_subduction_matrix(J)` projects D^J → Oh; we need the next step
+  Oh → D4h.
+
+Implementing requires:
+
+- D4h irrep matrices (for the 8 rotations in D4h's rotation subgroup)
+- D4h character tables
+- Character-projector eigenvectors per D4h irrep within each Oh irrep
+
+Scope estimate: ~3–5 days alone, on top of the Butler-3jm work for
+Gap #1.
+
+**Workaround note**: the current dispatcher uses
+`butler_label('A1', '+') = '0+'` etc., which gives **Oh-Butler labels**
+not D4h-Butler labels. The two coincide only for the 1D irreps
+(A1g/'0+'). For Oh Eg the dispatcher emits label '2+' which the
+nid8 fixture uses for D4h B1g — so a downstream consumer reading
+the RAC structure would see semantically wrong labels.
+
+**This doesn't break the spectrum** (assembler is symmetry-agnostic)
+but it does break parse-time validation against fixtures like nid8.
+
+**Decision**: defer Thread 3 step 2+ (subduction matrices + dispatcher
+relabeling) to a future session. Pivoting to Thread B (Butler 3jm
+implementation) per user's A→B→C ordering.
