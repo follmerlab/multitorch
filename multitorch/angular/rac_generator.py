@@ -688,20 +688,13 @@ def generate_ledge_rac(
             f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h'. "
             f"For trigonal symmetries see plan Phase 5."
         )
-    if sym == 'd4h':
-        # The TRANSI/MULTIPOLE block construction below is already D4h-aware
-        # (PERP/PARA splittings via Butler-derived √(2/3) and √(1/3)
-        # factors). Splitting GROUND/EXCITE blocks per D4h irrep + emitting
-        # per-operator CF blocks (TENDQ/DT/DS) is the next chunk of work
-        # tracked in plan Phase 1c. This stub keeps the API surface in place
-        # so downstream callers can be wired and tests can be authored.
-        raise NotImplementedError(
-            "D4h GROUND/EXCITE generation not yet wired in. The Butler "
-            "scaffolding (D4H_BRANCHES_BY_OPERATOR, d4h_branching, "
-            "d4h_cf_operator_recipe) is ready in multitorch.angular.symmetry; "
-            "the dispatcher inside generate_ledge_rac is the missing piece. "
-            "See ~/.claude/plans/lexical-toasting-kahan.md Phase 1c."
-        )
+    # D4h dispatch is handled inline below: in addition to the existing
+    # rank-4 CF blocks (used as the TENDQ operator), we compute rank-2 CF
+    # blocks (for DS) and emit per-operator GROUND/EXCITE block sets
+    # (HAMILTONIAN, TENDQ, DT, DS) so the assembler's XHAM
+    # [1.0, tendq, dt, ds] composition is satisfied. The block irrep
+    # labels remain Oh in this interim implementation; spectrum parity
+    # against the nid8 D4h fixture is the validation target.
     # ── Term data ──
     gs_terms = _get_terms(l_val, n_val_gs)
     gs_j_sizes = _j_sector_sizes(gs_terms)
@@ -734,6 +727,13 @@ def generate_ledge_rac(
 
     add_k0_ex = oh_coupling_coefficients_full(J_max_ex, 0, l=l_val)
     add_cf_ex = oh_coupling_coefficients_full(J_max_ex, cf_rank, l=l_val)
+
+    # D4h needs a second SHELL operator at rank 2 (for the DS parameter).
+    # Computed only when sym='d4h' to avoid the cost in the Oh path.
+    add_cf_gs_rank2 = (oh_coupling_coefficients_full(J_max_gs, 2, l=l_val)
+                       if sym == 'd4h' else None)
+    add_cf_ex_rank2 = (oh_coupling_coefficients_full(J_max_ex, 2, l=l_val)
+                       if sym == 'd4h' else None)
 
     # MULTIPOLE (dipole, k=1) transition coupling: connects ground → excited
     add_transition = oh_transition_coupling(J_max_gs, J_max_ex, k=1, l=l_val)
@@ -789,6 +789,18 @@ def generate_ledge_rac(
         gs_cf_idx[(Jb, Jk)] = mat_idx
         mat_idx += 1
 
+    # D4h: also build rank-2 CF matrices for the DS operator.
+    gs_cf_idx_rank2: Dict[Tuple[float, float], int] = {}
+    if sym == 'd4h':
+        gs_cf_blocks_rank2 = _build_cf_cowan_matrices(
+            l_val, n_val_gs, 2, gs_j_sizes,
+        )
+        for (Jb, Jk) in sorted(gs_cf_blocks_rank2.keys()):
+            mat = gs_cf_blocks_rank2[(Jb, Jk)]
+            section_0_matrices.append(torch.as_tensor(mat, dtype=DTYPE))
+            gs_cf_idx_rank2[(Jb, Jk)] = mat_idx
+            mat_idx += 1
+
     # --- Excited-state Hamiltonian matrices ---
     if raw_slater_ex_ry is not None and raw_zeta_ex_ry is not None:
         ex_h_blocks = _build_excited_hamiltonian_cowan(
@@ -814,6 +826,18 @@ def generate_ledge_rac(
         section_0_matrices.append(torch.as_tensor(mat, dtype=DTYPE))
         ex_cf_idx[(Jb, Jk)] = mat_idx
         mat_idx += 1
+
+    # D4h: also build rank-2 excited CF matrices for the DS operator.
+    ex_cf_idx_rank2: Dict[Tuple[float, float], int] = {}
+    if sym == 'd4h':
+        ex_cf_blocks_rank2 = _build_excited_cf_cowan(
+            l_val, n_val_gs, l_core, n_core_gs, 2,
+        )
+        for (Jb, Jk) in sorted(ex_cf_blocks_rank2.keys()):
+            mat = ex_cf_blocks_rank2[(Jb, Jk)]
+            section_0_matrices.append(torch.as_tensor(mat, dtype=DTYPE))
+            ex_cf_idx_rank2[(Jb, Jk)] = mat_idx
+            mat_idx += 1
 
     # ── Build RAC blocks and irrep infos ──
     blocks: List[RACBlockFull] = []
@@ -921,7 +945,8 @@ def generate_ledge_rac(
             add_entries=ham_adds,
         ))
 
-        # 10DQ block (CF, k=cf_rank)
+        # 10DQ block (CF, k=cf_rank). For Oh this is the only CF operator.
+        # For D4h this is renamed to TENDQ (operator slot 2 in xham).
         cf_adds = _make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep)
         blocks.append(RACBlockFull(
             kind='GROUND',
@@ -933,6 +958,42 @@ def generate_ledge_rac(
             n_ket=block_dim,
             add_entries=cf_adds,
         ))
+
+        if sym == 'd4h':
+            # DT block (CF, k=cf_rank, scaled by per-Oh-irrep DT Butler ratio).
+            # See multitorch/angular/symmetry.py:D4H_BRANCHES_BY_OPERATOR['DT']
+            # and the strength-equality note in the rac_generator docstring
+            # (sqrt(54/5) = 3*sqrt(30)/5 = TENDQ-A1 Butler factor).
+            dt_a1_scale = -7.0 / 2.0 * math.sqrt(30.0) / (6.0 * math.sqrt(30.0) / 10.0)
+            dt_e_scale = -5.0 / 2.0 * math.sqrt(42.0) / (6.0 * math.sqrt(30.0) / 10.0)
+            ds_e_scale = -math.sqrt(70.0)  # rank-2 has no shared strength prefactor
+            dt_scale = {'A1': dt_a1_scale, 'E': dt_e_scale}.get(irrep, 0.0)
+            if dt_scale != 0.0:
+                dt_adds_raw = _make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep)
+                dt_adds = [ADDEntry(
+                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
+                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * dt_scale,
+                ) for a in dt_adds_raw]
+                blocks.append(RACBlockFull(
+                    kind='GROUND', bra_sym=gs_butler,
+                    op_sym=butler_label('A1', '+'), ket_sym=gs_butler,
+                    geometry='DT', n_bra=block_dim, n_ket=block_dim,
+                    add_entries=dt_adds,
+                ))
+            if irrep == 'E' and add_cf_gs_rank2 is not None:
+                ds_adds_raw = _make_cf_adds(
+                    gs_j_order, add_cf_gs_rank2, gs_cf_idx_rank2, irrep,
+                )
+                ds_adds = [ADDEntry(
+                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
+                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * ds_e_scale,
+                ) for a in ds_adds_raw]
+                blocks.append(RACBlockFull(
+                    kind='GROUND', bra_sym=gs_butler,
+                    op_sym=butler_label('A1', '+'), ket_sym=gs_butler,
+                    geometry='DS', n_bra=block_dim, n_ket=block_dim,
+                    add_entries=ds_adds,
+                ))
 
     # --- EXCITE blocks (ungerade, p^5 d^(n+1)) ---
     for irrep in oh_irreps_ex:
@@ -975,6 +1036,39 @@ def generate_ledge_rac(
             n_ket=block_dim,
             add_entries=cf_adds,
         ))
+
+        if sym == 'd4h':
+            # DT/DS blocks for excited state, mirroring the ground-state path.
+            dt_a1_scale = -7.0 / 2.0 * math.sqrt(30.0) / (6.0 * math.sqrt(30.0) / 10.0)
+            dt_e_scale = -5.0 / 2.0 * math.sqrt(42.0) / (6.0 * math.sqrt(30.0) / 10.0)
+            ds_e_scale = -math.sqrt(70.0)
+            dt_scale = {'A1': dt_a1_scale, 'E': dt_e_scale}.get(irrep, 0.0)
+            if dt_scale != 0.0:
+                dt_adds_raw = _make_cf_adds(ex_j_order, add_cf_ex, ex_cf_idx, irrep)
+                dt_adds = [ADDEntry(
+                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
+                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * dt_scale,
+                ) for a in dt_adds_raw]
+                blocks.append(RACBlockFull(
+                    kind='GROUND', bra_sym=ex_butler,
+                    op_sym=butler_label('A1', '+'), ket_sym=ex_butler,
+                    geometry='DT', n_bra=block_dim, n_ket=block_dim,
+                    add_entries=dt_adds,
+                ))
+            if irrep == 'E' and add_cf_ex_rank2 is not None:
+                ds_adds_raw = _make_cf_adds(
+                    ex_j_order, add_cf_ex_rank2, ex_cf_idx_rank2, irrep,
+                )
+                ds_adds = [ADDEntry(
+                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
+                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * ds_e_scale,
+                ) for a in ds_adds_raw]
+                blocks.append(RACBlockFull(
+                    kind='GROUND', bra_sym=ex_butler,
+                    op_sym=butler_label('A1', '+'), ket_sym=ex_butler,
+                    geometry='DS', n_bra=block_dim, n_ket=block_dim,
+                    add_entries=ds_adds,
+                ))
 
     # ── Assemble COWAN store ──
     cowan_store = [

@@ -102,6 +102,32 @@ This was caught by `test_d4h_cf_operator_recipe_ds` failing because
 `d4h_cf_operator_recipe('DS')` returned `oh='A1'` when pyctm says it
 should go via Oh E.
 
+### Follow-up gap: DS block silently empty
+
+After the D4h dispatcher landed (commit pending), DS blocks emit
+correctly-shaped RACBlockFull entries but with **zero ADD entries**
+because `oh_coupling_coefficients_full(J_max, k=2, l=2)` returns
+no couplings — rank-2 in Oh is E + T2, not A1, and the existing
+helper only computes A1-projected (scalar) couplings.
+
+DT works partially because rank-4 has both A1 and E components in
+Oh, so `oh_coupling_coefficients_full(J_max, k=4)` returns A1
+couplings; the E path is also questionable but at least produces
+some output.
+
+The proper fix requires computing matrix elements of the rank-2
+operator within the Oh E irrep and projecting via Butler subduction
+to D4h A1g. This is the kind of work the deferred ttrac.c port
+handles; multitorch's current angular helpers don't expose it
+directly. A `multitorch/angular/non_scalar_oh_couplings.py` helper
+that computes per-irrep matrix elements for rank-K operators that
+aren't scalar in Oh would close this gap.
+
+Verified: `ds=0` and `ds=0.2` give the same spectrum, confirming
+DS doesn't propagate. `dt=0.2` does change the spectrum (2.12
+max diff) because rank-4 has an A1 component the existing helper
+can compute.
+
 ### Lesson
 
 Scaffolding-without-consumers is high-risk: when a table or function

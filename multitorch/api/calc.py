@@ -1037,11 +1037,17 @@ def _hfs_to_slater_params(
     return gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
 
 
-def _build_ban_from_rac(rac, tendq: float = 1.0):
-    """Build a minimal BanData from a generated RAC for single-config Oh.
+def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.0,
+                         sym: str = 'oh'):
+    """Build a minimal BanData from a generated RAC for single-config calcs.
 
-    Extracts triads from TRANSI blocks and constructs XHAM entries
-    for the HAMILTONIAN (k=0) + 10DQ (CF) operators.
+    Extracts triads from TRANSI blocks and constructs XHAM entries.
+
+    For sym='oh':  XHAM = [1.0, tendq]            (HAMILTONIAN, 10DQ)
+    For sym='d4h': XHAM = [1.0, tendq, dt, ds]    (HAMILTONIAN, 10DQ, DT, DS)
+
+    The D4h layout matches the assembler's expectation noted in
+    multitorch/hamiltonian/assemble.py:40.
     """
     from multitorch.io.read_ban import BanData, XHAMEntry
 
@@ -1052,12 +1058,16 @@ def _build_ban_from_rac(rac, tendq: float = 1.0):
             if triad not in triads:
                 triads.append(triad)
 
-    # XHAM: operator 1 = HAMILTONIAN (weight 1.0), operator 2 = 10DQ (weight tendq)
-    # combos: (config, operator) pairs — for single config, config=1
-    xham = [XHAMEntry(
-        values=[1.0, tendq],
-        combos=[(1, 1), (1, 2)],
-    )]
+    if sym == 'd4h':
+        xham = [XHAMEntry(
+            values=[1.0, tendq, dt, ds],
+            combos=[(1, 1), (1, 2), (1, 3), (1, 4)],
+        )]
+    else:
+        xham = [XHAMEntry(
+            values=[1.0, tendq],
+            combos=[(1, 1), (1, 2)],
+        )]
 
     return BanData(
         nconf_gs=1,
@@ -1089,6 +1099,7 @@ def calcXAS_from_scratch(
     return_sticks: bool = False,
     device: str = "cpu",
     zeta_method: str = "blume_watson",
+    sym: str = "oh",
 ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Calculate an L-edge XAS spectrum from scratch — no Fortran fixture files.
 
@@ -1172,11 +1183,14 @@ def calcXAS_from_scratch(
         raw_zeta_gs_ry=gs_zeta,
         raw_slater_ex_ry=ex_slater,
         raw_zeta_ex_ry=ex_zeta,
+        sym=sym,
     )
 
-    # Step 4: Build BanData from RAC
+    # Step 4: Build BanData from RAC (D4h carries 4 XHAM operators).
     tendq = cf.get('tendq', 1.0)
-    ban = _build_ban_from_rac(rac, tendq=tendq)
+    dt = cf.get('dt', 0.0)
+    ds = cf.get('ds', 0.0)
+    ban = _build_ban_from_rac(rac, tendq=tendq, dt=dt, ds=ds, sym=sym)
 
     # Step 5: Assemble and diagonalize
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
