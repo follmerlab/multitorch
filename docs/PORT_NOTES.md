@@ -235,3 +235,41 @@ Headline priority order:
 v0 fitter (`fits/fe_xas_fit.py`) demonstrates the differentiable
 fitting machinery on Fe(II)Pc only (~30 sec/200-step fit). Fe(III)
 fits deferred. Documented in `fits/results/v0_diagnostics.md`.
+
+---
+
+## Update — narrow ttrac port assessment (2026-05-03)
+
+`CODE_REVIEW.md` Addendum 2 scopes a NARROW port to close BUG-001's
+follow-up DS gap and the Oh-vs-D4h labeling gap.
+
+**Headline**: ttrac.c is NOT a viable port target for these gaps because:
+
+1. ttrac.c uses Butler-tabulated 3jm/6j symbols loaded from data files
+   (F6/Oh, F3/SO3O, F6/D4, F3/OD4). Those tables aren't in the
+   workspace; the binary embeds them.
+2. multitorch's existing `point_group.py` (1886 LOC) computes Oh
+   subduction from scratch via SO(3) Wigner D-matrices + character
+   theory. This is mathematically equivalent to Butler's approach but
+   doesn't depend on tabulated data.
+3. The DS gap is a *one-line* generalization: `_a1_vector(k)` (line 924)
+   only works for operator irreps containing an A1 component (k=0, k=4).
+   Generalizing to `_irrep_vector(k, op_irrep)` for non-scalar
+   operators (k=2 → E or T2) is the focused fix.
+
+**Recommended path**: Path B — extend multitorch from-scratch
+infrastructure with `_irrep_vector` + `oh_coupling_coefficients_for_op`.
+~310 LOC, ~4.5 days. Pure Python (no autograd implications since ADD
+coefficients are constants per Track C scoping).
+
+**Gap #2 (D4h labels)**: separate ~150 LOC, 2-3 days. Needs a new
+`oh_to_d4h_subduction_matrix` helper to rotate basis vectors from
+Oh-irrep blocks to D4h-irrep blocks. Independent of Gap #1; can be
+done after.
+
+**Total to close both gaps**: ~1 week, all in multitorch (no upstream
+ttrac dependency, no Butler-table dependency).
+
+The Track C "defer ttrac" scoping decision still holds for the
+WHOLESALE port (~7000 LOC). It does NOT preclude this narrow extension
+because the foundational angular-algebra infrastructure already exists.
