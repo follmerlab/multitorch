@@ -170,6 +170,163 @@ def d4h_butler_label(d4h_irrep: str) -> str:
     return D4H_TO_BUTLER[d4h_irrep]
 
 
+# ─────────────────────────────────────────────────────────────
+# D4 (proper-rotation subgroup of D4h) character table
+# ─────────────────────────────────────────────────────────────
+#
+# Conjugacy classes (in order): E, C2_z, 2C4_z, 2C2'_axis, 2C2''_diag
+# Irreps: A1, A2, B1, B2, E (all also exist as A1g/A1u etc. in D4h
+# via the parity index; for proper rotations we just use D4).
+
+_D4_CONJ_CLASS_ORDER = ['E', 'C2_z', 'C4_z', 'C2_axis', 'C2_diag']
+
+D4_CHARACTERS: Dict[str, Dict[str, float]] = {
+    'A1': {'E': 1, 'C2_z': 1,  'C4_z': 1,  'C2_axis': 1,  'C2_diag': 1},
+    'A2': {'E': 1, 'C2_z': 1,  'C4_z': 1,  'C2_axis': -1, 'C2_diag': -1},
+    'B1': {'E': 1, 'C2_z': 1,  'C4_z': -1, 'C2_axis': 1,  'C2_diag': -1},
+    'B2': {'E': 1, 'C2_z': 1,  'C4_z': -1, 'C2_axis': -1, 'C2_diag': 1},
+    'E':  {'E': 2, 'C2_z': -2, 'C4_z': 0,  'C2_axis': 0,  'C2_diag': 0},
+}
+
+
+def _classify_d4_rotation(R) -> str:
+    """Classify a rotation R (3x3) into one of D4's 5 conjugacy classes.
+
+    Assumes R has been pre-filtered to be in the D4_z subgroup (preserves
+    z-axis up to sign). Returns one of: 'E', 'C2_z', 'C4_z', 'C2_axis',
+    'C2_diag'.
+    """
+    import numpy as _np
+    tr = _np.trace(R)
+    if abs(tr - 3.0) < 0.1:
+        return 'E'
+    if abs(tr - 1.0) < 0.1:
+        return 'C4_z'   # rotation by ±π/2 about z
+    if abs(tr + 1.0) < 0.1:
+        # C2 — distinguish C2_z (z fixed) from C2_axis (x or y fixed)
+        # from C2_diag (diagonal in xy fixed)
+        diag = _np.diag(R)
+        if abs(diag[2] - 1.0) < 0.1:
+            return 'C2_z'    # z-component is +1 → z-axis is rotation axis
+        if abs(diag[0] - 1.0) < 0.1 or abs(diag[1] - 1.0) < 0.1:
+            return 'C2_axis'  # rotation about x or y
+        return 'C2_diag'      # diagonal axis in xy plane
+    raise ValueError(f"Unexpected D4 trace: {tr}")
+
+
+def _is_d4z_rotation(R) -> bool:
+    """Check if a 3x3 rotation R preserves the z-axis up to sign.
+
+    R is in the D4_z subgroup of Oh iff R @ (0,0,1) = ±(0,0,1).
+    """
+    import numpy as _np
+    z_image = R @ _np.array([0.0, 0.0, 1.0])
+    return abs(abs(z_image[2]) - 1.0) < 0.05 and abs(z_image[0]) < 0.05 and abs(z_image[1]) < 0.05
+
+
+def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
+    """Return D4h subduction of an Oh single-group irrep.
+
+    For each Oh irrep, computes the unitary rotation that takes the
+    Oh-irrep partner basis into D4h-irrep partner basis. Result is
+    keyed by D4h irrep (with parity matching the Oh input — Oh g
+    irrep maps to D4h g irreps, Oh u maps to D4h u).
+
+    Algorithm:
+      1. Identify the 8 D4_z rotations within Oh's 24 (those that
+         preserve the z-axis up to sign)
+      2. Restrict the Oh irrep matrices to those 8 rotations
+      3. For each D4h irrep that appears in the OH_TO_D4H reduction:
+         build the D4 character projector and find the eigenvectors
+         with eigenvalue 1 — those are the partner basis vectors
+
+    Parameters
+    ----------
+    oh_irrep : str
+        Oh irrep label with parity, e.g. 'A1g', 'Eg', 'T2u'.
+
+    Returns
+    -------
+    Dict[d4h_irrep, partner_matrix]
+        partner_matrix has shape (dim_Oh, mult × dim_D4h) where
+        each column is a partner basis vector in the original
+        Oh-irrep's basis.
+
+    For Oh single-group irreps only (A1, A2, E, T1, T2 with g/u).
+    Half-integer (double-group) irreps are not handled here; they
+    require D4h double-group tables.
+    """
+    import numpy as _np
+    from multitorch.angular.point_group import (
+        OH_IRREP_DIM,
+        _oh_irrep_matrices_real_std,
+        octahedral_rotations,
+    )
+
+    # Strip parity suffix to look up Oh single-group matrices
+    if oh_irrep.endswith('g') or oh_irrep.endswith('u'):
+        oh_label = oh_irrep[:-1]
+        parity = oh_irrep[-1]
+    else:
+        raise ValueError(f"oh_irrep must include g/u suffix; got {oh_irrep!r}")
+
+    if oh_label not in OH_IRREP_DIM:
+        raise ValueError(
+            f"Unsupported Oh irrep {oh_irrep!r}; expected A1g/A2g/Eg/T1g/T2g "
+            f"(or _u variants)"
+        )
+
+    # 1. Identify the 8 D4_z rotations
+    rotations = octahedral_rotations()
+    d4_indices = [i for i, R in enumerate(rotations) if _is_d4z_rotation(R)]
+    if len(d4_indices) != 8:
+        raise RuntimeError(
+            f"Expected 8 D4 rotations within Oh's 24, got {len(d4_indices)}"
+        )
+
+    # 2. Restrict Oh irrep matrices to D4 rotations
+    oh_mats = _oh_irrep_matrices_real_std()[oh_label]
+    d4_mats = [oh_mats[i] for i in d4_indices]
+    d4_classes = [_classify_d4_rotation(rotations[i]) for i in d4_indices]
+
+    # 3. Build projectors and find partner vectors per D4h irrep
+    target_d4h_irreps = OH_TO_D4H.get(oh_irrep, [])
+    if not target_d4h_irreps:
+        raise ValueError(f"OH_TO_D4H has no entry for {oh_irrep}")
+
+    result: Dict[str, _np.ndarray] = {}
+    dim_oh = OH_IRREP_DIM[oh_label]
+    for d4h_irrep in target_d4h_irreps:
+        d4_irrep = d4h_irrep[:-1]  # strip parity (g/u match Oh's)
+        if d4_irrep not in D4_CHARACTERS:
+            raise ValueError(f"D4 irrep {d4_irrep!r} not in character table")
+        chars = D4_CHARACTERS[d4_irrep]
+        dim_d4 = D4H_IRREP_DIM[d4h_irrep]
+
+        # P^Γ = (dim_Γ / |G|) Σ χ^Γ(R)* Γ(R)
+        # For D4 |G|=8, characters are real, so χ* = χ
+        P = _np.zeros((dim_oh, dim_oh), dtype=_np.float64)
+        for i in range(8):
+            P += chars[d4_classes[i]] * d4_mats[i]
+        P *= dim_d4 / 8.0
+
+        # Eigenvectors with eigenvalue ≈ 1 are the partner vectors
+        eigvals, eigvecs = _np.linalg.eigh(P)
+        mask = eigvals > 0.5
+        partners = eigvecs[:, mask]  # (dim_oh, mult * dim_d4)
+
+        # Verify dimension matches expected mult × dim_d4
+        expected_n = OH_TO_D4H[oh_irrep].count(d4h_irrep) * dim_d4
+        if partners.shape[1] != expected_n:
+            raise RuntimeError(
+                f"Partner extraction failed for {oh_irrep} → {d4h_irrep}: "
+                f"got {partners.shape[1]} partners, expected {expected_n}"
+            )
+        result[d4h_irrep] = partners
+
+    return result
+
+
 def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
     """Return [(D4h_irrep, multiplicity), ...] for D^J in D4h.
 

@@ -173,6 +173,60 @@ def test_d4h_cf_operator_recipe_unknown_raises():
         d4h_cf_operator_recipe('NOPE')
 
 
+def test_oh_to_d4h_subduction_matrix_dimensions():
+    """Check that subduction matrices have the right dimensions per OH_TO_D4H."""
+    import numpy as np
+    from multitorch.angular.symmetry import (
+        D4H_IRREP_DIM, OH_TO_D4H, oh_to_d4h_subduction_matrix,
+    )
+    from multitorch.angular.point_group import OH_IRREP_DIM
+
+    for oh_irrep in ['A1g', 'A2g', 'Eg', 'T1g', 'T2g']:
+        sub = oh_to_d4h_subduction_matrix(oh_irrep)
+        oh_label = oh_irrep[:-1]
+        dim_oh = OH_IRREP_DIM[oh_label]
+
+        # Sum of partner dimensions across D4h irreps must equal dim_oh
+        total_d4h = sum(mat.shape[1] for mat in sub.values())
+        assert total_d4h == dim_oh, (
+            f"{oh_irrep}: subduced partners sum to {total_d4h}, "
+            f"expected dim_oh={dim_oh}"
+        )
+
+        # Each partner matrix must be orthonormal (columns)
+        for d4h_irrep, mat in sub.items():
+            gram = mat.T @ mat
+            assert np.allclose(gram, np.eye(mat.shape[1]), atol=1e-9), (
+                f"{oh_irrep} → {d4h_irrep}: not orthonormal"
+            )
+
+        # Set of D4h irreps must match OH_TO_D4H
+        assert sorted(sub.keys()) == sorted(set(OH_TO_D4H[oh_irrep])), (
+            f"{oh_irrep}: subduction keys {sorted(sub.keys())} != "
+            f"OH_TO_D4H {sorted(set(OH_TO_D4H[oh_irrep]))}"
+        )
+
+
+def test_oh_to_d4h_subduction_matrix_eg_to_a1g_b1g():
+    """Specific case: Oh Eg → D4h A1g + B1g.
+
+    The two Eg partners (in the d-orbital basis: |z²> and |x²-y²>)
+    rotate into A1g (totally symmetric) and B1g (transforms as x²-y²).
+    Both partner matrices are 2×1.
+    """
+    from multitorch.angular.symmetry import oh_to_d4h_subduction_matrix
+
+    sub = oh_to_d4h_subduction_matrix('Eg')
+    assert 'A1g' in sub and 'B1g' in sub
+    assert sub['A1g'].shape == (2, 1)
+    assert sub['B1g'].shape == (2, 1)
+
+    # The two D4h partners must be orthogonal to each other
+    import numpy as np
+    overlap = float((sub['A1g'].T @ sub['B1g']).item())
+    assert abs(overlap) < 1e-9, f"A1g and B1g not orthogonal: {overlap}"
+
+
 def test_d4h_branching_half_integer_raises():
     """d4h_branching should explicitly fail for half-integer J (Phase 1c)."""
     from multitorch.angular.symmetry import d4h_branching
