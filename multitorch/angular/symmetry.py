@@ -327,6 +327,95 @@ def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
     return result
 
 
+def d4h_partner_basis_per_J(J, d4h_irrep: str) -> "np.ndarray":
+    """Return partner-basis matrix (2J+1, n_partners) for D^J → D4h irrep.
+
+    Builds the basis by composing two subductions:
+
+      1. ``_real_subduction_matrix(J, oh_irrep)`` projects D^J onto each
+         contributing Oh irrep.
+      2. ``oh_to_d4h_subduction_matrix(oh_irrep)[d4h_irrep]`` rotates
+         each Oh-irrep partner basis into D4h-irrep partners.
+
+    The returned matrix has columns ordered by:
+    (oh_irrep contributing this d4h_irrep) → (multiplicity copy of oh
+    irrep in D^J) → (D4h partner index).
+
+    For example, J=2 → D4h A1g:
+    - Oh Eg subduces (1× in J=2) → A1g (1× in Eg) = 1 partner from Eg-A1g path
+    - Oh T2g subduces (1× in J=2) → no A1g (T2g → B2g + Eg only)
+    Total: 1 A1g partner from J=2.
+
+    Parameters
+    ----------
+    J : int
+        Angular momentum (integer; half-integer raises NotImplementedError
+        per d4h_irreps_for_J).
+    d4h_irrep : str
+        Target D4h irrep ('A1g', 'A2g', 'B1g', 'B2g', 'Eg' and 'u' variants).
+
+    Returns
+    -------
+    np.ndarray of shape (2J+1, n_partners)
+        Each column is an orthonormal basis vector in the real spherical
+        harmonic basis of D^J. n_partners = mult × dim(d4h_irrep) where
+        mult is the number of times d4h_irrep appears in the
+        D^J → D4h reduction.
+    """
+    import numpy as _np
+    from multitorch.angular.point_group import (
+        OH_IRREP_DIM, _real_subduction_matrix, oh_branching,
+    )
+
+    is_half_int = abs(J - round(J)) > 0.1
+    if is_half_int:
+        raise NotImplementedError(
+            "d4h_partner_basis_per_J for half-integer J needs D4h "
+            "double-group tables (not yet tabulated)."
+        )
+
+    J_int = int(round(J))
+    parity_suffix = 'g' if (J_int % 2 == 0) else 'u'
+
+    # Strip parity to compare against d4h_irrep's parity
+    d4h_parity = d4h_irrep[-1]
+    if d4h_parity != parity_suffix:
+        # Wrong-parity D4h irrep can't appear in D^J
+        return _np.zeros((2 * J_int + 1, 0), dtype=_np.float64)
+
+    # For each Oh irrep that subduces to this d4h_irrep, collect partners
+    cols: List[_np.ndarray] = []
+    for oh_label, dim_oh in OH_IRREP_DIM.items():
+        oh_irrep_full = f'{oh_label}{parity_suffix}'
+        d4h_targets = OH_TO_D4H.get(oh_irrep_full, [])
+        if d4h_irrep not in d4h_targets:
+            continue
+        mult_oh = oh_branching(J_int).get(oh_label, 0)
+        if mult_oh == 0:
+            continue
+
+        # B_oh has shape (2J+1, dim_oh * mult_oh) with columns ordered by
+        # (copy_index, partner). For our purposes we want the partners
+        # of each copy, then rotate via oh_to_d4h_subduction_matrix.
+        B_oh = _real_subduction_matrix(J_int, oh_label)
+        # B_oh columns are grouped per copy: copy_0_partner_0, copy_0_partner_1,
+        # ..., copy_1_partner_0, ...
+        sub = oh_to_d4h_subduction_matrix(oh_irrep_full)[d4h_irrep]
+        # sub has shape (dim_oh, n_d4h_partners_in_this_oh_irrep)
+
+        for copy_i in range(mult_oh):
+            B_oh_copy = B_oh[:, copy_i * dim_oh:(copy_i + 1) * dim_oh]
+            # Rotate this copy's partners into D4h basis
+            # Result shape: (2J+1, n_d4h_partners_in_this_oh_irrep)
+            rotated = B_oh_copy @ sub
+            cols.append(rotated)
+
+    if not cols:
+        return _np.zeros((2 * J_int + 1, 0), dtype=_np.float64)
+
+    return _np.column_stack(cols)
+
+
 def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
     """Return [(D4h_irrep, multiplicity), ...] for D^J in D4h.
 

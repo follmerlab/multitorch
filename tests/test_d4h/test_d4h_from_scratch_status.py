@@ -207,6 +207,96 @@ def test_oh_to_d4h_subduction_matrix_dimensions():
         )
 
 
+def test_d4h_partner_basis_completeness():
+    """Sum of D4h-irrep partner counts must equal 2J+1 for each J."""
+    import numpy as np
+    from multitorch.angular.symmetry import (
+        D4H_IRREP_DIM, d4h_irreps_for_J, d4h_partner_basis_per_J,
+    )
+    for J in [0, 1, 2, 3, 4]:
+        irreps = d4h_irreps_for_J(J)
+        total = 0
+        for d4h_irrep, mult in irreps:
+            B = d4h_partner_basis_per_J(J, d4h_irrep)
+            assert B.shape == (2 * J + 1, mult * D4H_IRREP_DIM[d4h_irrep])
+            assert np.allclose(B.T @ B, np.eye(B.shape[1]), atol=1e-9), (
+                f"J={J} {d4h_irrep}: not orthonormal"
+            )
+            total += B.shape[1]
+        assert total == 2 * J + 1, (
+            f"J={J}: D4h partner total {total} != 2J+1 = {2*J+1}"
+        )
+
+
+def test_ds_operator_is_diagonal_in_d4h_basis():
+    """The DS operator (rank-2 → Oh-Eg → D4h-A1g component) becomes
+    diagonal when matrix elements are computed in the D4h-partner basis.
+
+    This is the validation that closes Phase 1c gap #1: the Oh-Eg basis
+    that the original dispatcher used has DS appearing off-diagonal
+    between partners; rotating to D4h via oh_to_d4h_subduction_matrix
+    makes it diagonal as the D4h A1g selection rule requires.
+
+    Concrete check on J=2 → J=2 coupling for d-shell:
+      <A1g | DS | A1g> ≠ 0  (diagonal)
+      <B1g | DS | B1g> ≠ 0  (diagonal, opposite sign)
+      <Eg  | DS | Eg>  ≠ 0  (diagonal × I_2)
+      <A1g | DS | B1g> = 0  (selection rule)
+      <A1g | DS | Eg>  = 0  (selection rule)
+      <B1g | DS | Eg>  = 0  (selection rule)
+    """
+    import numpy as np
+    from multitorch.angular.point_group import (
+        _build_coupling_operator, _c2r_unitary, _real_subduction_matrix,
+    )
+    from multitorch.angular.symmetry import (
+        d4h_partner_basis_per_J, oh_to_d4h_subduction_matrix,
+    )
+
+    k = 2  # rank-2 (DS)
+    J = 2
+
+    # Build the D4h-A1g component of rank-2 (the DS direction)
+    B_oh_eg = _real_subduction_matrix(k, 'E')              # (5, 2)
+    sub_eg_to_a1g = oh_to_d4h_subduction_matrix('Eg')['A1g']  # (2, 1)
+    op_vec_real = (B_oh_eg @ sub_eg_to_a1g).flatten()
+    U_k = _c2r_unitary(k)
+    op_vec_complex = U_k.conj().T @ op_vec_real
+
+    # Build operator in real basis
+    O_complex = _build_coupling_operator(J, J, k, op_vec_complex)
+    U_J = _c2r_unitary(J)
+    O_real = (U_J @ O_complex @ U_J.conj().T).real
+
+    # Project into D4h partner basis
+    B_a1g = d4h_partner_basis_per_J(J, 'A1g')
+    B_b1g = d4h_partner_basis_per_J(J, 'B1g')
+    B_eg = d4h_partner_basis_per_J(J, 'Eg')
+
+    # Diagonal couplings: must be non-zero
+    me_a1g = float((B_a1g.T @ O_real @ B_a1g).flatten()[0])
+    me_b1g = float((B_b1g.T @ O_real @ B_b1g).flatten()[0])
+    me_eg = B_eg.T @ O_real @ B_eg
+    assert abs(me_a1g) > 0.1, f"<A1g|DS|A1g> = {me_a1g:.4e}, expected non-zero"
+    assert abs(me_b1g) > 0.1, f"<B1g|DS|B1g> = {me_b1g:.4e}, expected non-zero"
+    assert np.linalg.norm(me_eg.diagonal()) > 0.1, (
+        f"Eg diagonal: {me_eg.diagonal()}, expected non-zero"
+    )
+    # Eg block should be diagonal (the 2 partners decouple)
+    assert abs(me_eg[0, 1]) < 1e-9, f"Eg off-diagonal {me_eg[0,1]:.4e} != 0"
+
+    # Off-diagonal cross-irrep couplings: must be zero (D4h A1g selection rule)
+    me_a1g_b1g = (B_a1g.T @ O_real @ B_b1g).flatten()
+    me_a1g_eg = (B_a1g.T @ O_real @ B_eg).flatten()
+    me_b1g_eg = (B_b1g.T @ O_real @ B_eg).flatten()
+    for label, mat in [('A1g-B1g', me_a1g_b1g), ('A1g-Eg', me_a1g_eg),
+                        ('B1g-Eg', me_b1g_eg)]:
+        assert np.linalg.norm(mat) < 1e-9, (
+            f"<{label.split('-')[0]}|DS|{label.split('-')[1]}> = {mat}, "
+            f"expected 0 (selection rule violation)"
+        )
+
+
 def test_oh_to_d4h_subduction_matrix_eg_to_a1g_b1g():
     """Specific case: Oh Eg → D4h A1g + B1g.
 
