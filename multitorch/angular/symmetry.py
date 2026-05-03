@@ -416,6 +416,88 @@ def d4h_partner_basis_per_J(J, d4h_irrep: str) -> "np.ndarray":
     return _np.column_stack(cols)
 
 
+def d4h_basis_layout(
+    j_sizes: Dict[float, int],
+    parity: str = 'g',
+) -> Dict[str, List[Tuple[float, str, int, int, int]]]:
+    """Compute the per-D4h-irrep basis layout from a J-sector size dict.
+
+    For the rac_generator dispatcher refactor (Phase 1c unified Threads
+    2+3): given the d^n term-counted basis (j_sizes maps J → number of
+    LS terms with that J), produce the basis ordering grouped by D4h
+    irrep instead of per-Oh-irrep.
+
+    Each D4h irrep block lists the contributions:
+    ``(J, oh_irrep, copy_idx, partner_idx, n_states)`` where
+    n_states = j_sizes[J] is the number of LS terms with that J.
+
+    Parameters
+    ----------
+    j_sizes : dict {J: int}
+        Number of LS terms with each J value (from
+        ``_j_sector_sizes``).
+    parity : 'g' or 'u'
+        Parity suffix for the D4h irreps. d^n ground states are 'g',
+        excited p^5 d^(n+1) are 'u'.
+
+    Returns
+    -------
+    dict {d4h_irrep_with_parity: list of contributions}
+        Each contribution tuple: (J, oh_irrep_label, copy_idx,
+        d4h_partner_idx, n_states).
+        ``oh_irrep_label`` is single-group ('A1', 'E', etc., no parity);
+        ``copy_idx`` is the copy index of the Oh irrep within D^J
+        (0-based); ``d4h_partner_idx`` is the partner index within the
+        D4h irrep (0-based, for multi-D irreps); ``n_states`` is the
+        per-state degeneracy from j_sizes[J].
+
+    The total dimension within a D4h irrep block is
+    ``sum(n_states)`` over all entries.
+    """
+    from multitorch.angular.point_group import OH_IRREP_DIM, oh_branching
+
+    if parity not in ('g', 'u'):
+        raise ValueError(f"parity must be 'g' or 'u', got {parity!r}")
+
+    layout: Dict[str, List[Tuple[float, str, int, int, int]]] = {}
+
+    # Iterate J in sorted order for deterministic block ordering
+    for J in sorted(j_sizes.keys()):
+        n_states = j_sizes[J]
+        is_half = abs(J - round(J)) > 0.1
+        if is_half:
+            # Double-group D4h not yet supported (matches d4h_irreps_for_J)
+            raise NotImplementedError(
+                "d4h_basis_layout for half-integer J needs D4h "
+                "double-group tables (not yet tabulated)."
+            )
+
+        # NOTE: parity is determined by the BASIS (e.g. d^n is always
+        # gerade regardless of J because all electrons are in even-parity
+        # d-orbitals), not by J's L-parity. The caller specifies parity
+        # via the kwarg; we apply it uniformly to all Oh→D4h subductions
+        # below.
+
+        # For each Oh irrep that subduces to D^J:
+        for oh_label, dim_oh in OH_IRREP_DIM.items():
+            mult = oh_branching(int(round(J))).get(oh_label, 0)
+            if mult == 0:
+                continue
+            oh_irrep_full = f'{oh_label}{parity}'
+
+            # For each D4h irrep this Oh irrep splits into (per OH_TO_D4H):
+            for d4h_irrep in OH_TO_D4H[oh_irrep_full]:
+                # For each copy of the Oh irrep within D^J:
+                for copy_idx in range(mult):
+                    # For each D4h partner within the Oh→D4h split:
+                    n_partners = D4H_IRREP_DIM[d4h_irrep]
+                    for partner_idx in range(n_partners):
+                        layout.setdefault(d4h_irrep, []).append(
+                            (J, oh_label, copy_idx, partner_idx, n_states)
+                        )
+    return layout
+
+
 def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
     """Return [(D4h_irrep, multiplicity), ...] for D^J in D4h.
 

@@ -207,6 +207,41 @@ def test_oh_to_d4h_subduction_matrix_dimensions():
         )
 
 
+def test_d4h_basis_layout_matches_nid8():
+    """d4h_basis_layout for d8 ground (Ni d8 d4h) must match nid8 fixture's
+    IRREP MULT counts.
+
+    nid8.rme_rac IRREP lines say:
+      A1g(0+):  MULT=9
+      A2g(^0+): MULT=4
+      Eg(1+):   MULT=10  (2D irrep, 20 partner-entries)
+      B1g(2+):  MULT=6
+      B2g(^2+): MULT=6
+
+    where MULT = number of independent copies of that D4h irrep in
+    the d8 basis. Each Eg copy has 2 partners, so partner-entries = 20.
+    """
+    from multitorch.angular.rac_generator import _get_terms, _j_sector_sizes
+    from multitorch.angular.symmetry import D4H_IRREP_DIM, d4h_basis_layout
+
+    gs_terms = _get_terms(l=2, n=8)
+    j_sizes = _j_sector_sizes(gs_terms)
+
+    layout = d4h_basis_layout(j_sizes, parity='g')
+
+    expected_mult = {
+        'A1g': 9, 'A2g': 4, 'B1g': 6, 'B2g': 6, 'Eg': 10,
+    }
+    for d4h_irrep, expected in expected_mult.items():
+        partner_dim_sum = sum(e[4] for e in layout.get(d4h_irrep, []))
+        # partner_dim_sum = MULT × dim(d4h_irrep)
+        actual_mult = partner_dim_sum // D4H_IRREP_DIM[d4h_irrep]
+        assert actual_mult == expected, (
+            f"{d4h_irrep}: layout has MULT={actual_mult}, "
+            f"nid8 fixture says MULT={expected}"
+        )
+
+
 def test_d4h_partner_basis_completeness():
     """Sum of D4h-irrep partner counts must equal 2J+1 for each J."""
     import numpy as np
