@@ -184,3 +184,54 @@ creates `rme_out.dat`, so `pyttmult.runrac()`'s
 
 Fixture-bootstrap pathway deferred. Phase 6 fitting proceeds with
 option (3) — Oh approximation v0.
+
+---
+
+## Perf-001 — Fe(III) calcXAS_cached eigh bottleneck (2026-05-03)
+
+**File:** `multitorch/hamiltonian/diagonalize.py:25` `safe_eigh`
+**Found:** 2026-05-03 (during Phase 6 v0 fitter diagnostics)
+**Runtime impact:** Fe(III) d5 calcXAS_cached takes 25.4 s/forward
+vs Fe(II)'s 0.32 s — 80× slowdown. Makes 200-step Adam fits ~3 hours
+per Fe(III) spectrum.
+
+### Root cause
+
+cProfile (single no_grad call): 89 % of wall time is inside one
+`torch.linalg.eigh` call (LAPACK `dsyevd`) on dense float64 Hermitian
+blocks. 16 calls × avg 2.92 s each. Largest block 190×190 (Fe(III) d5
+high-spin has 12 LS terms vs d6's 5, producing larger Hamiltonian
+blocks per J-sector after symmetry reduction).
+
+NOT a Python overhead, NOT autograd graph size, NOT Hamiltonian
+assembly, NOT deepcopy of cache.ban. Just dense CPU eigendecomposition.
+
+### Refactor plan
+
+Full review in `multitorch/CODE_REVIEW.md` (gitignored, local artifact).
+Headline priority order:
+
+1. **P0: GPU eigh** — confirmed 10–50× speedup achievable via
+   torch.linalg.eigh on user's NVIDIA workstation. 1–2 hours, zero
+   physics risk. Single change unblocks all Fe(III) fitting work.
+2. **P1: Drop `torch.allclose` Hermiticity check** in `safe_eigh` —
+   1.68 s of pure overhead per Fe(III) forward. 15-min change.
+3. **P3: Lanczos partial eigh** for Boltzmann-bounded eigenpairs —
+   5–20× additional speedup for blocks where N >> k_relevant.
+   1–2 days, requires custom autograd.Function.
+
+### De-risking (do BEFORE any refactor)
+
+- Add Fe(III) regression bench cell to `bench/` (record 10 lowest
+  stick energies + L3/L2 ratio + wall time)
+- Add autograd parity test (finite-diff vs autograd grad on slater
+  for Fe(III) at the from-scratch level — currently only Fe(II) and
+  Ni(II) are tested per `tests/test_atomic/test_scaled_params.py:250`)
+- Confirm P0 on the user's workstation with a 5-line `device='cuda'`
+  smoke test before committing to the refactor
+
+### Workaround until P0 lands
+
+v0 fitter (`fits/fe_xas_fit.py`) demonstrates the differentiable
+fitting machinery on Fe(II)Pc only (~30 sec/200-step fit). Fe(III)
+fits deferred. Documented in `fits/results/v0_diagnostics.md`.
