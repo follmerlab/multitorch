@@ -390,3 +390,66 @@ but it does break parse-time validation against fixtures like nid8.
 **Decision**: defer Thread 3 step 2+ (subduction matrices + dispatcher
 relabeling) to a future session. Pivoting to Thread B (Butler 3jm
 implementation) per user's A→B→C ordering.
+
+---
+
+## Update — Threads 2 (DS) and 3 (D4h labels) are the same problem (2026-05-03)
+
+Empirical test (full output saved as commit message reference): for
+the DS-relevant case (rank-2 Oh-E operator, Eg→Eg basis coupling),
+the matrix elements in the Oh-Eg complex basis are:
+
+```
+<Eg, partner0 | O^E | Eg, partner1> = +0.485 + 0.225i  (non-zero!)
+<Eg, partner1 | O^E | Eg, partner0> = +0.485 - 0.225i  (conjugate)
+diagonal trace = 0                                       (what trace approach computes)
+```
+
+The DS coupling DOES exist — but the Oh-Eg basis is the wrong basis
+to express it. In the **rotated D4h basis** (A1g + B1g, obtained by
+diagonalizing the off-diagonal partner-coupling), the DS operator
+becomes diagonal and the matrix element is non-zero.
+
+**Crucial implication**: closing the DS gap (Thread B) and emitting
+proper D4h-labeled blocks (Thread 3) are **the same problem**. Both
+require the Oh→D4h subduction matrix. Once that lands:
+
+- Block labels switch from Oh-Butler ('0+', '2+', etc.) to D4h-Butler
+  with correct D4h irrep semantics
+- DS matrix elements appear naturally as diagonal couplings in the
+  D4h basis (no Butler 3jm computation needed — the basis change
+  IS the rotation)
+- The dispatcher's per-Oh-irrep block emission becomes per-D4h-irrep
+  block emission
+
+**Revised estimate**: ~5-7 days for the unified Thread 2+3 fix.
+Better return on investment than the two separate ~7-10 day estimates.
+
+**Implementation sketch (for the future session)**:
+
+1. Add `oh_to_d4h_subduction_matrix(oh_irrep)` returning a unitary
+   that rotates the dim_oh-dimensional Oh-irrep partner basis into
+   the D4h-irrep partners. For Oh A1g: trivial 1×1 identity. For
+   Oh Eg: 2×2 (A1g + B1g). For Oh T1g: 3×3 (A2g + Eg). Etc.
+
+2. Build D4h irrep matrices for the D4h rotation subgroup (8 elements:
+   E, 2C4, C2_z, 2C2', 2C2''), matching multitorch's existing Oh
+   character-projector approach.
+
+3. Use the subduction matrix to transform the per-Oh-irrep coupling
+   blocks (currently 2x2 for Eg etc.) into per-D4h-irrep coupling
+   blocks (1x1 each for A1g, B1g; the previous off-diagonal becomes
+   the new diagonal).
+
+4. Refactor `generate_ledge_rac` (sym='d4h' branch) to enumerate
+   per-D4h-irrep instead of per-Oh-irrep. Use `d4h_irreps_for_J(J)`
+   (already landed) to walk the basis.
+
+5. Update DS emission to use the new diagonal matrix elements.
+
+Validation against `nid8` fixture becomes the natural integration test:
+the from-scratch RAC output should match nid8's IRREP+block structure
+exactly.
+
+This is the right unified path. Pause Thread 2 / Thread 3 here.
+Continue with Thread 1 (GPU on exxa) per user's A→B→C ordering.
