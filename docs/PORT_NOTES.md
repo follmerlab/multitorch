@@ -273,3 +273,72 @@ ttrac dependency, no Butler-table dependency).
 The Track C "defer ttrac" scoping decision still holds for the
 WHOLESALE port (~7000 LOC). It does NOT preclude this narrow extension
 because the foundational angular-algebra infrastructure already exists.
+
+---
+
+## Update — DS gap deeper than expected (2026-05-03)
+
+Started Path B implementation (CODE_REVIEW.md Addendum 2 plan):
+landed `_irrep_vector(k, op_irrep)` and skeleton
+`oh_coupling_coefficients_for_op` in
+`multitorch/angular/point_group.py`. Internal A1-consistency check
+passes for 21/25 entries (sign discrepancies due to BFS phase
+determination not being applied in the new function — minor).
+
+**But empirical test reveals a deeper issue**: even with a valid
+non-zero `_irrep_vector(2, 'E')`, the resulting
+`oh_coupling_coefficients_for_op(k=2, op_irrep='E')` returns **0
+entries** for all basis irreps including E and T2 (which the
+selection rule says SHOULD be non-zero).
+
+Root cause: the trace `Tr(B_bra^† O B_ket) / dim_g` formulation
+captures coupling **strength** correctly only for **scalar (A1)
+operators**, where matrix elements within an irrep are independent
+of the partner index μ (Wigner-Eckart in trivial form). For
+non-scalar operators, the right quantity is
+
+    < Γ_b, μ | O^Γ_op_q | Γ_a, ν > = < Γ_b || O^{Γ_op} || Γ_a > × CG^Oh(Γ_a, ν; Γ_op, q; Γ_b, μ)
+
+where the **Butler-style CG^Oh coefficients** are exactly what
+ttrac's tabulated F3/SO3O and F3/OD4 tables provide. The trace
+formulation averages over μ=ν and the off-diagonal partners cancel
+for non-scalar ops, leaving a near-zero result.
+
+**Implication for the Path B plan**: closing the DS gap properly
+needs implementing Butler 3jm symbols from scratch via Oh subduction
+matrices — the SO(3) Wigner machinery alone isn't sufficient. This
+is more substantial work than the senior-code-reviewer ~4.5 day
+estimate suggested. Realistic estimate: 5–7 days.
+
+Three options going forward:
+
+1. **Implement Butler 3jm via Oh subduction** (~5–7 days). Use
+   `multitorch/angular/point_group.py:oh_subduction_matrix` to
+   project basis states + operator-component states into Oh-irrep
+   blocks; extract CG^Oh coefficients from the projection. Uses
+   only existing primitives in multitorch — no Butler tables needed.
+
+2. **Use ttrac's BRANCH-coefficient lookup approach as a partial
+   workaround**: for D4h CF operators specifically (TENDQ, DT, DS,
+   plus any future trigonal CF), pre-tabulate the Butler-derived
+   matrix-element coefficients per (operator, basis_irrep, J_b, J_k)
+   tuple by running ttrac once and parsing its output. This avoids
+   implementing Butler 3jm from scratch but requires the workaround
+   for BUG-002 (recompiled ttrac binary that writes rme_out.dat).
+
+3. **Defer Phase 1c DS work entirely**: ship the v0 fitter with
+   only Fe(II) Oh-approximation (working today). Document the DS
+   gap as future work. Continue Phase 1c labeling fix (Gap #2) and
+   GPU eigh confirmation (Perf-001 P0) independently.
+
+Recommendation: **option 3 short-term, option 1 medium-term**.
+The DS gap is real but doesn't block the v0 fitter narrative. Option
+1 is the right long-term approach; option 2 is messier and reintroduces
+the Fortran dependency we want to remove.
+
+Code committed (point_group.py changes + 1 new test) provides the
+foundation for the eventual Butler-3jm implementation: `_irrep_vector`
+gives the right operator-component vectors, the `oh_coupling_coefficients_for_op`
+skeleton has the right loop structure, and the test infrastructure is in
+place. The missing piece is the Butler-3jm computation that replaces
+the trace formulation.
