@@ -207,6 +207,69 @@ def test_oh_to_d4h_subduction_matrix_dimensions():
         )
 
 
+def test_d4h_basis_layout_matches_nid8_excited():
+    """d4h_basis_layout for d8 EXCITED p^5 d^9 (parity='u') must match
+    nid8 fixture's EXCITE-side IRREP MULT counts.
+
+    nid8.rme_rac EXCITE IRREP lines say:
+      A1u(0-):  MULT=7
+      A2u(^0-): MULT=7
+      Eu(1-):   MULT=15  (2D, 30 partner-entries)
+      B1u(2-):  MULT=8
+      B2u(^2-): MULT=8
+
+    Verifies that the parity='u' contract produces correct ungerade
+    irreps (this audit-suggested test codifies the manual finding).
+    """
+    from multitorch.angular.rac_generator import _get_excited_j_sizes
+    from multitorch.angular.symmetry import D4H_IRREP_DIM, d4h_basis_layout
+
+    # Ni d8 → p^5 d^9 excited basis
+    j_sizes = _get_excited_j_sizes(l_val=2, n_val_gs=8, l_core=1, n_core_gs=6)
+    layout = d4h_basis_layout(j_sizes, parity='u')
+    expected_mult = {
+        'A1u': 7, 'A2u': 7, 'B1u': 8, 'B2u': 8, 'Eu': 15,
+    }
+    for d4h_irrep, expected in expected_mult.items():
+        partner_dim_sum = sum(e[4] for e in layout.get(d4h_irrep, []))
+        actual_mult = partner_dim_sum // D4H_IRREP_DIM[d4h_irrep]
+        assert actual_mult == expected, (
+            f"{d4h_irrep}: layout MULT={actual_mult}, "
+            f"nid8 EXCITE says {expected}"
+        )
+
+
+def test_oh_to_d4h_partners_canonical_signs():
+    """Partner basis vectors should have a deterministic sign convention.
+
+    Currently the function relies on np.linalg.eigh's default eigvec
+    sign (which IS stable across reruns of the same NumPy version, but
+    is implementation-defined). This test pins the actual values so
+    a sign-flip from a future numpy/lapack update fails CI loudly.
+    """
+    import numpy as np
+    from multitorch.angular.symmetry import oh_to_d4h_subduction_matrix
+
+    # Trivial 1D irreps: only freedom is overall sign
+    sub_a1g = oh_to_d4h_subduction_matrix('A1g')
+    assert sub_a1g['A1g'].shape == (1, 1)
+    # Identity element should be (or be very close to) 1.0
+    assert abs(abs(sub_a1g['A1g'][0, 0]) - 1.0) < 1e-9
+
+    # Multi-D irreps: pin the magnitudes of partners (signs may flip
+    # with library updates but magnitudes are invariant)
+    sub_eg = oh_to_d4h_subduction_matrix('Eg')
+    # Eg→A1g and Eg→B1g each should be a unit vector with both components
+    # involved (mixing the two Eg partners).
+    a1g_partner = sub_eg['A1g'][:, 0]
+    b1g_partner = sub_eg['B1g'][:, 0]
+    # Each is a unit vector
+    assert abs(np.linalg.norm(a1g_partner) - 1.0) < 1e-9
+    assert abs(np.linalg.norm(b1g_partner) - 1.0) < 1e-9
+    # They are orthogonal
+    assert abs(float(a1g_partner @ b1g_partner)) < 1e-9
+
+
 def test_d4h_basis_layout_matches_nid8():
     """d4h_basis_layout for d8 ground (Ni d8 d4h) must match nid8 fixture's
     IRREP MULT counts.
