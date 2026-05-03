@@ -137,3 +137,50 @@ references it immediately, even if no production code path uses it
 yet. The xfail-sentinel pattern in `tests/test_d4h/`,
 `tests/test_ct/`, `tests/test_rixs_from_scratch/` is the structural
 fix.
+
+---
+
+## BUG-002 — D4h Fe fixture bootstrap blocked by commented disktrnsform
+
+**File (upstream):** `ttmult/src/ttrac.c` line 7027
+**Found:** 2026-05-03 (during Phase 0-bootstrap attempt)
+**Runtime impact:** Cannot generate new D4h fixtures via the Fortran
+toolchain. The bundled `nid8`/`nid8ct` fixtures must have been
+generated with a different ttrac build that had this call enabled.
+
+### Symptom
+
+Running `pyctm.calcXAS(element='Fe', valence='ii', sym='d4h', ...)`
+or invoking `pyttmult.runrac(filename)` directly produces all the
+expected files (`.rac`, `.rcg`, `.m14`, `.ora`, `.rcn31_out`, etc.)
+EXCEPT the critical `.m15` file (= `rme_rac` in multitorch's
+fixture naming convention).
+
+### Root cause
+
+In `ttmult/src/ttrac.c:7027`:
+```c
+printtrnsform(a);
+/* disktrnsform(a); */    ← commented out
+```
+
+`disktrnsform()` is the function that calls `open_out_disk()` →
+`fopen("rme_out.dat", "w")`. With it commented out, ttrac never
+creates `rme_out.dat`, so `pyttmult.runrac()`'s
+`if exists('rme_out.dat'): move(..., '.m15')` is a no-op.
+
+### Workarounds
+
+1. **Recompile ttrac.c** with line 7027 uncommented and rebuild
+   the `ttrac` binary in `ttmult/bin/`. Out of scope this session.
+2. **Use the in-multitorch D4h dispatcher** (Phase 1c interim) for
+   D4h work — accepts the from-scratch-path accuracy ceiling
+   (~0.97 cos vs 0.99999) and the documented DS-block gap.
+3. **Fit in Oh approximation** for D4h experimental data using the
+   bundled Oh Fe fixtures (`fe2_d6_oh`, `fe3_d5_oh`) as a v0 step
+   while the proper D4h path matures.
+
+### Status
+
+Fixture-bootstrap pathway deferred. Phase 6 fitting proceeds with
+option (3) — Oh approximation v0.
