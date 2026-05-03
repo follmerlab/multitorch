@@ -209,3 +209,63 @@ characteristics and might still help.
 - D4h dispatcher (Phase 1c interim): committed at `e3c39c4`. Cosine
   0.978 vs nid8; DS block silently empty (BUG follow-up in PORT_NOTES)
 - Test data: `multiplets/test-data/Fe*.txt` (5 spectra, 240 pts each)
+
+---
+
+## RESULTS — exxa run, 2026-05-03
+
+**Workstation:** AMD Ryzen Threadripper, 2× NVIDIA GeForce RTX 4090 (24 GB each)
+**Torch:** 2.5.1+cu121 | CUDA: 12.1 | Driver: 535.288.01
+
+### Step 2 — eigh microbenchmark (190×190 fp64, 10 runs)
+
+| Backend | Avg time |
+|---------|----------|
+| CPU (MKL) | **5.25 ms** |
+| GPU (RTX 4090) | **4.79 ms** |
+| **Speedup** | **1.10×** |
+
+Takeaway: MKL on Threadripper solves a 190×190 fp64 symmetric
+eigenproblem in ~5 ms — ~400× faster than the Mac CPU baseline that
+motivated the handoff. No advantage from GPU at this matrix size.
+
+### Step 3 — Fe(III) calcXAS_cached end-to-end (warmup + 1 timed call)
+
+| Backend | Wall time |
+|---------|-----------|
+| CPU (MKL) | **7.366 s** |
+| GPU (RTX 4090) | **1.927 s** |
+| **Speedup** | **3.82×** |
+
+Note: Mac baseline was 25.4 s (89% in eigh). On this workstation the
+full forward is only 7.4 s on CPU — MKL already dominates.
+
+### Step 4 — Autograd GPU sanity check
+
+SKIP / BLOCKED: `calcXAS_cached` does not preserve the autograd graph
+even on CPU (`y.grad_fn is None` when `slater.requires_grad=True`).
+The graph is severed somewhere in `build_cowan_store_in_memory` or
+`assemble_and_diagonalize_in_memory` (likely a `.detach()` / `.numpy()`
+conversion in the Hamiltonian assembly path). This is independent of
+the GPU speedup question but is worth tracking as a separate bug.
+
+### Step 5 — End-to-end fit
+
+NOT RUN. Speedup is 3.82× (<5× threshold) so step 5 is not warranted.
+
+### Decision
+
+**P0 does NOT confirm. Do not land `device=None` cuda default.**
+
+Per section 8: bottleneck is LAPACK/MKL which is near-optimal for
+these matrix sizes on this hardware. Move to **Perf-001 P3 (Lanczos
+partial eigh)** which has different scaling characteristics.
+
+Relevant context for next agent:
+- At batch=1, the full bench suite shows GPU helps only for larger-dim
+  fixtures: fe3_d5_oh 3.64×, mn2_d5_oh 3.62×, v3_d2_oh 3.13×.
+  GPU hurts small-dim fixtures (ni2, co2, fe2, ti4).
+- `suggest_device_for_xas()` already exists in `device_utils.py` and
+  could be used for auto-selection once P3 or another optimization
+  makes the GPU path universally faster.
+- autograd broken in calcXAS_cached (see step 4) — track as separate bug.
