@@ -242,24 +242,48 @@ full forward is only 7.4 s on CPU — MKL already dominates.
 
 ### Step 4 — Autograd GPU sanity check
 
-SKIP / BLOCKED: `calcXAS_cached` does not preserve the autograd graph
-even on CPU (`y.grad_fn is None` when `slater.requires_grad=True`).
-The graph is severed somewhere in `build_cowan_store_in_memory` or
-`assemble_and_diagonalize_in_memory` (likely a `.detach()` / `.numpy()`
-conversion in the Hamiltonian assembly path). This is independent of
-the GPU speedup question but is worth tracking as a separate bug.
+**CORRECTION (2026-05-03, follow-up SSH session):** The original report
+that "calcXAS_cached does not preserve the autograd graph" was a
+**false alarm**. Re-running the focused diagnostic
+`bench/diag_cuda_autograd.py` (committed b6377c6, results saved at
+`bench/results_cuda_autograd_diag.txt`) confirms autograd works
+correctly on all four tested configurations:
+
+- CPU cache + CPU inputs + no device kwarg: y.grad_fn=AddBackward0,
+  slater.grad=6.1212 (finite)
+- CPU cache + CPU inputs + device='cpu': identical to above
+- **CPU cache + CUDA inputs + device='cuda'**: y.grad_fn=AddBackward0,
+  slater.grad=6.1212 (matches CPU to 1e-9)
+- CPU cache + CPU inputs + device='cuda' (mismatch): handled
+  gracefully, autograd intact
+
+The GPU autograd path is FULLY FUNCTIONAL.
+
+GPU configs ran ~3× faster than CPU at the full-fit level (2.79s vs
+8.0s) — consistent with the 3.82× full-pipeline speedup measured
+earlier. So GPU IS useful for fitting workloads even if the eigh
+microbench was only 1.10×.
 
 ### Step 5 — End-to-end fit
 
 NOT RUN. Speedup is 3.82× (<5× threshold) so step 5 is not warranted.
 
-### Decision
+### Decision (revised 2026-05-03)
 
-**P0 does NOT confirm. Do not land `device=None` cuda default.**
+**P0 partially confirms. GPU is worth using EXPLICITLY for Fe(III)
+fits (3.8× full-pipeline speedup), but DON'T change the global
+`device='cpu'` default** — small fixtures (Ni d8, Co d7) are slower
+on GPU than CPU.
 
-Per section 8: bottleneck is LAPACK/MKL which is near-optimal for
-these matrix sizes on this hardware. Move to **Perf-001 P3 (Lanczos
-partial eigh)** which has different scaling characteristics.
+Per `device_utils.suggest_device_for_xas()` already exists in
+multitorch — it picks GPU only when matrix dim is large enough to
+benefit. The right move is to wire `device=None` → suggest_device_for_xas
+default in `calcXAS_cached`, NOT to hard-code device='cuda'.
+
+For the v0 fitter sweep (`bench/AGENT_HANDOFF_V0_FITS.md`): the
+runbook now passes `device='cuda'` explicitly because we know all
+5 spectra in the test set are large-fixture cases. ~30 min total
+sweep wall on workstation GPU vs ~80 min CPU.
 
 Relevant context for next agent:
 - At batch=1, the full bench suite shows GPU helps only for larger-dim

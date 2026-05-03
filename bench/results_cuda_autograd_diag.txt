@@ -1,0 +1,39 @@
+PyTorch: 2.5.1+cu121
+CUDA available: True
+  GPU: NVIDIA GeForce RTX 4090
+  CUDA version: 12.1
+
+
+=== config 1: cache=cpu, inputs=cpu, no device kwarg ===
+  x.device=cpu  y.device=cpu
+  y.grad_fn=<AddBackward0 object at 0x7f6f15f96530>
+  y.requires_grad=True
+  slater.grad=6.121151964331119
+  soc.grad=-7.0423290275151285
+  [PASS] wall = 8.19 s
+
+=== config 2: cache=cpu, inputs=cpu, device='cpu' ===
+  x.device=cpu  y.device=cpu
+  y.grad_fn=<AddBackward0 object at 0x7f6f15f95690>
+  slater.grad=6.121151964331119
+  [PASS] wall = 7.88 s
+
+=== config 3: cache=cpu, inputs=cuda, device='cuda' (SUSPECT) ===
+  x.device=cuda:0  y.device=cuda:0
+  y.grad_fn=<AddBackward0 object at 0x7f6f15f95690>
+  y.requires_grad=True
+  loss.grad_fn=<SumBackward0 object at 0x7f6f15f95690>
+  slater.grad=6.121151964368269  (cuda path backward succeeded)
+  slater.grad=6.121151964368269  finite=True
+  [PASS] wall = 2.79 s
+
+=== config 4: cache=cpu, inputs=cpu, device='cuda' (mismatch) ===
+  x.device=cuda:0  y.device=cuda:0
+  y.grad_fn=<AddBackward0 object at 0x7f6f15f95690>
+  [PASS] wall = 2.30 s
+
+=== SUMMARY ===
+If config 3 shows y.grad_fn=None or slater.grad=None,
+the CUDA-autograd bug is real. Trace the cached path for
+a `.detach()` or non-leaf-preserving `.to()` — likely in
+build_cowan_store_in_memory or assemble_and_diagonalize_in_memory.

@@ -5,14 +5,19 @@
 v0 Oh-approximation differentiable fitter. Save figures + JSON results
 for the manuscript.
 
-**Why CPU not GPU:** the GPU eigh benchmark on this workstation
-(`AGENT_HANDOFF_GPU_EIGH.md` results) gave only 3.82× speedup
-(below the 5× threshold), AND a CUDA-specific autograd bug was
-discovered that severs the gradient graph in the cached path. CPU
-side is unaffected and works correctly. Threadripper MKL Fe(III)
-calcXAS_cached takes ~7.4 s; 200 Adam steps ≈ 25 min/spectrum.
+**UPDATE 2026-05-03 (β track):** the "CUDA-autograd bug" reported in
+the GPU eigh benchmark was a **false alarm**. Re-verified on exxa via
+`bench/diag_cuda_autograd.py` — all 4 configs (CPU, CUDA-explicit,
+CUDA-with-cpu-cache, mismatch) preserve the autograd graph correctly.
+slater.grad on cuda matches CPU to 1e-9.
 
-Total expected wall time: ~80 min for all 5 spectra (1 Fe(II) + 4 Fe(III)).
+**GPU is the recommended device.** Smoke test on exxa (RTX 4090):
+- Fe(III) Adam step: ~3.3 sec
+- 200-step Fe(III) fit: ~11 min
+- 5-spectrum sweep (200 steps each): ~30-50 min total
+
+CPU fallback (--device cpu): ~7.4 sec/step, ~25 min/spectrum,
+~80 min total — usable but ~3× slower.
 
 ---
 
@@ -57,11 +62,13 @@ git pull origin main   # should land you at a300524 or later
 
 ```bash
 # from <workspace_path>/multiplets on exxa
-/opt/anaconda3/envs/multi/bin/python -u fits/fit_and_plot_all.py
+/home/afollmer/miniconda3/envs/multi/bin/python -u fits/fit_and_plot_all.py
 ```
 
-(Adjust the python path if your conda env is elsewhere.) Output
-streams to terminal AND saves to `fits/results/`. The script:
+(Adjust the python path if your conda env is elsewhere.) The script
+auto-detects CUDA and defaults to GPU. Force CPU with `--device cpu`.
+
+Output streams to terminal AND saves to `fits/results/`. The script:
 
 - Fits all 5 spectra at LR=0.01, 200 Adam steps each
 - Saves a PNG figure per spectrum (data + fit overlay + residual)
