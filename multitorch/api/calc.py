@@ -68,6 +68,12 @@ class CachedFixture:
     plan: object         # SectionPlan
     cowan_template: list  # List[List[torch.Tensor]]
     cowan_metadata: list  # List[List[CowanBlockMeta]]
+    # Element/valence stamped at preload time so calcXAS_cached can
+    # auto-select device when device='auto' (via
+    # multitorch.device_utils.suggest_device_for_xas).
+    element: Optional[str] = None
+    valence: Optional[str] = None
+    sym: Optional[str] = None
 
 
 def preload_fixture(
@@ -126,6 +132,9 @@ def preload_fixture(
         plan=plan,
         cowan_template=cowan_template,
         cowan_metadata=cowan_metadata,
+        element=element,
+        valence=valence,
+        sym=sym,
     )
 
 
@@ -153,6 +162,12 @@ def calcXAS_cached(
     sweeps. Create a cache with :func:`preload_fixture`, then call
     this function in a loop with varying physics parameters.
 
+    Pass ``device='auto'`` to route via
+    :func:`multitorch.device_utils.suggest_device_for_xas` based on
+    the cache's element/valence (CUDA for d4/d5/d6 high-spin and rare
+    earths if available, else CPU). Default remains ``'cpu'`` for
+    backwards compatibility.
+
     Parameters
     ----------
     cache : CachedFixture
@@ -174,6 +189,7 @@ def calcXAS_cached(
     """
     import copy
     from multitorch.atomic.scaled_params import scale_atomic_params
+    from multitorch.device_utils import suggest_device_for_xas
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
@@ -181,6 +197,12 @@ def calcXAS_cached(
 
     if cf is None:
         cf = {}
+
+    # Resolve device='auto' via the cache's element/valence stamp.
+    if device == "auto":
+        device = suggest_device_for_xas(
+            element=cache.element, valence=cache.valence,
+        )
 
     # Apply parameter overrides to a copy of the cached BAN
     ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)

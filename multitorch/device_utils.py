@@ -104,6 +104,22 @@ def suggest_device_for_xas(
     """
     Suggest optimal device for XAS calculation.
 
+    Empirical guidance from a 2026-05-03 RTX 4090 vs Threadripper-MKL
+    bench (`bench/AGENT_HANDOFF_GPU_EIGH.md` results, full-pipeline
+    `calcXAS_cached`):
+
+    | Configuration             | Max H block | GPU vs CPU |
+    |---------------------------|-------------|------------|
+    | Ni d8 oh                  | 4           | slower (overhead) |
+    | Co d7 oh                  | small       | slower       |
+    | Fe d6 oh                  | 81          | ~tied       |
+    | Cr d3, Mn d5, V d2, Fe d5 | 100–200     | 3-4× faster |
+    | Rare earths (4f)          | > 500       | 5-20× faster |
+
+    Threshold heuristic: max H block ≥ ~100 → GPU pays off.
+    For 3d transition metals, this maps to d4/d5/d6 (high-spin
+    configurations with many LS terms).
+
     Parameters
     ----------
     element : str or None
@@ -111,25 +127,46 @@ def suggest_device_for_xas(
     valence : str or None
         Oxidation state ('ii', 'iii', etc.)
     force_device : str or None
-        If provided, overrides automatic selection
+        If provided, overrides automatic selection. Use 'auto' to
+        re-trigger heuristic (same as None).
 
     Returns
     -------
     device : str
-        Recommended device string
-
-    Notes
-    -----
-    - 3d transition metals (Ti-Cu): CPU optimal (small matrices, dim < 200)
-    - 4f rare earths (Ce, Pr, etc.): GPU beneficial (large matrices, dim > 500)
-    - Default: CPU (conservative, always works)
+        'cuda' if GPU expected to help and available; 'cpu' otherwise.
     """
-    if force_device is not None:
+    if force_device is not None and force_device != "auto":
         return force_device
 
-    # Most 3d transition metal L-edge calculations use small matrices
-    # where CPU outperforms GPU due to kernel launch overhead
-    # Rare earth systems may benefit from GPU (future enhancement)
+    # Need CUDA to even consider GPU
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return "cpu"
+    except ImportError:
+        return "cpu"
+
+    # Element/valence lookup for empirically GPU-favorable cases.
+    # All 3d high-spin d4/d5/d6 (large LS-term count → large blocks).
+    GPU_FAVORS_3D = {
+        ("V",  "iii"),  # d2 — moderate
+        ("Cr", "iii"),  # d3
+        ("Mn", "ii"),   # d5
+        ("Mn", "iii"),  # d4
+        ("Fe", "ii"),   # d6 — borderline
+        ("Fe", "iii"),  # d5
+    }
+    # 4f rare earths: GPU always wins
+    RARE_EARTHS = {"Ce", "Pr", "Nd", "Pm", "Sm", "Eu", "Gd",
+                   "Tb", "Dy", "Ho", "Er", "Tm", "Yb"}
+
+    if element in RARE_EARTHS:
+        return "cuda"
+    if element is not None and valence is not None:
+        if (element, valence.lower()) in GPU_FAVORS_3D:
+            return "cuda"
+
+    # Default: small/unknown systems use CPU (avoids overhead)
     return "cpu"
 
 
