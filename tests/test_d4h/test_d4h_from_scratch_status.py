@@ -956,3 +956,47 @@ def test_d4h_dispatcher_transi_singular_values_match_nid8():
         + "\n  ".join(mismatches[:20])
         + (f"\n  ... and {len(mismatches) - 20} more" if len(mismatches) > 20 else "")
     )
+
+
+def test_d4h_dispatcher_emits_all_nid8ct_transi_blocks():
+    """Every symmetry-allowed TRANSI block must be emitted (issue #2 cont.).
+
+    The post-Wigner-Eckart-prefactor V2 dispatcher under-emits 5 of the 13
+    expected single-config TRANSI blocks because their (p_gs=0, p_op=0,
+    p_ex=0) matrix elements happen to be zero by partner-orthogonality.
+    The fix iterates partner combinations and uses one with a nonzero
+    me, ensuring every Γ_gs × Γ_op × Γ_ex selection-rule-allowed block
+    gets at least one ADD entry.
+    """
+    from multitorch.angular.rac_generator import generate_ledge_rac
+
+    rac, _ = generate_ledge_rac(
+        l_val=2, n_val_gs=8, l_core=1, n_core_gs=6, sym='d4h',
+    )
+    transi_blocks = {
+        (b.bra_sym, b.op_sym, b.ket_sym, b.geometry)
+        for b in rac.blocks if b.kind == 'TRANSI'
+    }
+    expected = {
+        # PERP (Eu op, '1-')
+        ('0+',  '1-',  '1-',  'PERP'),  # A1g→Eu
+        ('^0+', '1-',  '1-',  'PERP'),  # A2g→Eu
+        ('1+',  '1-',  '0-',  'PERP'),  # Eg→A1u
+        ('1+',  '1-',  '^0-', 'PERP'),  # Eg→A2u
+        ('1+',  '1-',  '2-',  'PERP'),  # Eg→B1u
+        ('1+',  '1-',  '^2-', 'PERP'),  # Eg→B2u
+        ('2+',  '1-',  '1-',  'PERP'),  # B1g→Eu
+        ('^2+', '1-',  '1-',  'PERP'),  # B2g→Eu
+        # PARA (A2u op, '^0-')
+        ('0+',  '^0-', '^0-', 'PARA'),  # A1g→A2u
+        ('^0+', '^0-', '0-',  'PARA'),  # A2g→A1u
+        ('1+',  '^0-', '1-',  'PARA'),  # Eg→Eu
+        ('2+',  '^0-', '^2-', 'PARA'),  # B1g→B2u
+        ('^2+', '^0-', '2-',  'PARA'),  # B2g→B1u
+    }
+    missing = expected - transi_blocks
+    extra = transi_blocks - expected
+    assert not missing and not extra, (
+        f"TRANSI block emission diverges from expected single-config Ni d8 set.\n"
+        f"  missing: {sorted(missing)}\n  extra:   {sorted(extra)}"
+    )
