@@ -468,13 +468,13 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     Strict intra-multitorch tolerances (cosine 0.99999) are NOT met by the
     current from-scratch path — the Oh-from-scratch baseline only achieves
     ~0.89 cosine vs the bundled Oh fixture, so D4h-from-scratch achieves
-    similar ~0.97-0.98 cosine vs nid8. The remaining gap is in the
-    underlying from-scratch path (HFS Slater accuracy, F2_pd direct-Coulomb
-    correction) — independent of the D4h dispatcher.
+    similar ~0.978 cosine vs nid8. The remaining gap is in the underlying
+    from-scratch path (HFS Slater accuracy, F2_pd direct-Coulomb correction)
+    — independent of the D4h dispatcher.
 
-    This test asserts the *workable* tolerance (cosine ≥ 0.95) so it
-    catches regressions in the D4h dispatcher without being blocked by
-    the unrelated from-scratch limitations.
+    Tightened from 0.95 → 0.97 on the issue #2 reconciliation (the V2
+    dispatcher already met 0.95; the post-#2 dispatcher routinely scores
+    ~0.978).
     """
     import sys
     sys.path.insert(0, '/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/multitorch/bench')
@@ -491,11 +491,10 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     x_new, y_new = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h")
     result = compare(x_new.detach().numpy(), y_new.detach().numpy(),
                      x_ref.detach().numpy(), y_ref.detach().numpy(), calctype="xas")
-    # Loose dispatcher-regression tolerance, not strict intra-multitorch parity.
-    assert result.cosine >= 0.95, (
-        f"D4h Ni from-scratch cosine = {result.cosine:.4f}, expected ≥ 0.95. "
-        f"This catches regressions in the D4h dispatcher itself; tightening "
-        f"requires fixing the underlying from-scratch path accuracy."
+    assert result.cosine >= 0.97, (
+        f"D4h Ni from-scratch cosine = {result.cosine:.4f}, expected ≥ 0.97. "
+        f"This catches regressions in the D4h dispatcher; tightening to "
+        f"≥ 0.99 requires also fixing HFS Slater / F2_pd accuracy."
     )
 
 
