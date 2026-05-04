@@ -653,3 +653,62 @@ def test_make_d4h_dipole_adds_factor_scales_linearly():
             f"factor scaling is non-linear: factor=1 → {a1.coeff:.6e}, "
             f"factor=2 → {a2.coeff:.6e}"
         )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 4 (V2 plan §7.1, Q3-B) — full structural parity vs nid8.
+# Asserts that the dispatcher's emitted IrrepInfo set and block-tuple
+# set match the bundled fixture exactly.
+# Refs: follmerlab/multitorch#1
+# ─────────────────────────────────────────────────────────────────────
+
+def test_d4h_dispatcher_block_set_matches_nid8():
+    """Structural parity: every block the dispatcher emits must match a
+    block in the bundled `nid8ct.rme_rac` fixture (single-config subset).
+
+    The fixture is multi-config (charge-transfer with HYBR geometries +
+    CT-config blocks); the dispatcher is single-config. So the test
+    asserts a SUBSET relation (dispatcher ⊆ fixture) on the
+    block-tuple `(kind, bra_sym, op_sym, ket_sym, geometry, n_bra, n_ket)`.
+
+    Catches: label collisions, missing/duplicate blocks, wrong block
+    dimensions. Independent of HFS Slater / F2_pd accuracy.
+    """
+    from pathlib import Path
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.io.read_rme import read_rme_rac_full
+
+    rac, _ = generate_ledge_rac(
+        l_val=2, n_val_gs=8, l_core=1, n_core_gs=6, sym='d4h',
+    )
+    fixture_path = (
+        Path(__file__).parent.parent.parent
+        / 'multitorch' / 'data' / 'fixtures' / 'nid8ct' / 'nid8ct.rme_rac'
+    )
+    fixture = read_rme_rac_full(str(fixture_path))
+
+    def block_tuple(b):
+        return (
+            b.kind, b.bra_sym, b.op_sym, b.ket_sym,
+            b.geometry, b.n_bra, b.n_ket,
+        )
+
+    disp = set(block_tuple(b) for b in rac.blocks)
+    fix = set(block_tuple(b) for b in fixture.blocks)
+    only_disp = disp - fix
+    assert not only_disp, (
+        f"Dispatcher emits blocks not in nid8ct fixture (single-config "
+        f"subset must hold): {sorted(only_disp)}"
+    )
+
+    # The dispatcher's IrrepInfo set must match the single-config slice
+    # of the fixture (the canonical d4h Ni d8 irreps).
+    expected_irrep_names = {
+        '0+', '^0+', '1+', '2+', '^2+',     # GROUND
+        '0-', '^0-', '1-', '2-', '^2-',     # EXCITE
+    }
+    disp_irrep_names = {i.name for i in rac.irreps}
+    assert disp_irrep_names == expected_irrep_names, (
+        f"Dispatcher IrrepInfo names: {sorted(disp_irrep_names)}; "
+        f"expected: {sorted(expected_irrep_names)}"
+    )

@@ -1008,12 +1008,13 @@ def generate_ledge_rac(
         - 'oh': single CF operator (10Dq, rank-`cf_rank`); blocks labeled
           by Oh single-group irreps. This is the historical path; backward
           compatible.
-        - 'd4h': three CF operators (TENDQ, DT, DS); GROUND/EXCITE blocks
-          labeled by D4h irreps; XHAM emitted by `_build_ban_from_rac`
-          carries `[1.0, tendq, dt, ds]`. **Not yet implemented at the
-          inner-block level** — see plan Phase 1c. The TRANSI/MULTIPOLE
-          blocks are *already* D4h-aware (PERP/PARA splitting via Eu/A2u
-          factors); the gap is the GROUND/EXCITE side.
+        - 'd4h': three CF operators (TENDQ, DT, DS); GROUND/EXCITE/TRANSI
+          blocks labeled by D4h-Butler irreps matching the
+          `nid8.rme_rac` fixture; XHAM emitted by `_build_ban_from_rac`
+          carries `[1.0, tendq, dt, ds]`. Implemented via the
+          per-D4h-irrep dispatcher (`_make_d4h_op_adds`,
+          `_make_d4h_dipole_adds`); see `docs/D4H_DISPATCHER_PLAN_V2.md`.
+          Half-integer J (odd-electron metals) is not yet supported.
 
     Returns
     -------
@@ -1207,10 +1208,9 @@ def generate_ledge_rac(
     PERP_FACTOR = math.sqrt(2.0 / 3.0)  # √(dim_Eu / dim_T1u)
     PARA_FACTOR = math.sqrt(1.0 / 3.0)  # √(dim_A2u / dim_T1u)
 
-    # V2 commit 3 — per-D4h-irrep TRANSI emission via _make_d4h_dipole_adds.
-    # Operates on the D4h-Butler labels emitted by commit 2 above.
-    # The OLD per-Oh-irrep TRANSI loop below is gated to `sym == 'oh'`
-    # by an empty-list swap; deleted in V2 commit 4.
+    # Per-D4h-irrep TRANSI emission via _make_d4h_dipole_adds.
+    # Operates on the D4h-Butler labels emitted by the per-D4h-irrep
+    # GROUND/EXCITE block above.
     if sym == 'd4h':
         layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
         layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
@@ -1249,9 +1249,10 @@ def generate_ledge_rac(
                         add_entries=transi_adds,
                     ))
 
-    # OLD per-Oh-irrep TRANSI loop (sym='oh' only after V2 commit 3).
-    _legacy_transi_gs_irreps = oh_irreps_gs if sym == 'oh' else []
-    for gs_irrep in _legacy_transi_gs_irreps:
+    # Per-Oh-irrep TRANSI loop (sym='oh' only; the d4h dispatcher above
+    # emits TRANSI blocks for sym='d4h').
+    legacy_transi_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+    for gs_irrep in legacy_transi_gs_irreps:
         gs_butler = butler_label(gs_irrep, '+')
         gs_j_order = irrep_j_ordering(gs_j_sizes, gs_irrep)
         if not gs_j_order:
@@ -1315,11 +1316,9 @@ def generate_ledge_rac(
                         add_entries=transi_adds,
                     ))
 
-    # --- D4h dispatcher (V2) — per-D4h-irrep GROUND + EXCITE emission ---
-    # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The OLD per-Oh-irrep
-    # GROUND/EXCITE loops below are gated to `sym == 'oh'` and will be
-    # deleted in V2 commit 4. TRANSI is still handled by the OLD path
-    # (above this block); V2 commit 3 replaces it.
+    # --- D4h dispatcher — per-D4h-irrep GROUND + EXCITE emission ---
+    # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The per-Oh-irrep
+    # GROUND/EXCITE loops below are gated to `sym == 'oh'`.
     if sym == 'd4h':
         # GROUND blocks (gerade, parity='g')
         layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
@@ -1397,12 +1396,12 @@ def generate_ledge_rac(
                     add_entries=op_adds,
                 ))
 
-    # --- GROUND blocks (gerade, d^n) [OLD per-Oh-irrep path; sym='oh' only] ---
-    # The d4h GROUND emission lives in the new dispatcher above; iterating
-    # an empty list for d4h cleanly disables the OLD path without changing
-    # the loop body's indentation. Deleted in V2 commit 4.
-    _legacy_gs_irreps = oh_irreps_gs if sym == 'oh' else []
-    for irrep in _legacy_gs_irreps:
+    # --- GROUND blocks (gerade, d^n) [Oh path] ---
+    # For sym='d4h' the GROUND emission lives in the per-D4h-irrep
+    # dispatcher above; iterating an empty list disables this Oh-only
+    # loop without re-indenting its body.
+    legacy_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+    for irrep in legacy_gs_irreps:
         gs_butler = butler_label(irrep, '+')
         gs_j_order = irrep_j_ordering(gs_j_sizes, irrep)
         if not gs_j_order:
@@ -1430,8 +1429,7 @@ def generate_ledge_rac(
             add_entries=ham_adds,
         ))
 
-        # 10DQ block (CF, k=cf_rank). For Oh this is the only CF operator.
-        # For D4h this is renamed to TENDQ (operator slot 2 in xham).
+        # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
         cf_adds = _make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep)
         blocks.append(RACBlockFull(
             kind='GROUND',
@@ -1444,47 +1442,9 @@ def generate_ledge_rac(
             add_entries=cf_adds,
         ))
 
-        if sym == 'd4h':
-            # DT block (CF, k=cf_rank, scaled by per-Oh-irrep DT Butler ratio).
-            # See multitorch/angular/symmetry.py:D4H_BRANCHES_BY_OPERATOR['DT']
-            # and the strength-equality note in the rac_generator docstring
-            # (sqrt(54/5) = 3*sqrt(30)/5 = TENDQ-A1 Butler factor).
-            dt_a1_scale = -7.0 / 2.0 * math.sqrt(30.0) / (6.0 * math.sqrt(30.0) / 10.0)
-            dt_e_scale = -5.0 / 2.0 * math.sqrt(42.0) / (6.0 * math.sqrt(30.0) / 10.0)
-            ds_e_scale = -math.sqrt(70.0)  # rank-2 has no shared strength prefactor
-            dt_scale = {'A1': dt_a1_scale, 'E': dt_e_scale}.get(irrep, 0.0)
-            if dt_scale != 0.0:
-                dt_adds_raw = _make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep)
-                dt_adds = [ADDEntry(
-                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
-                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * dt_scale,
-                ) for a in dt_adds_raw]
-                blocks.append(RACBlockFull(
-                    kind='GROUND', bra_sym=gs_butler,
-                    op_sym=butler_label('A1', '+'), ket_sym=gs_butler,
-                    geometry='DT', n_bra=block_dim, n_ket=block_dim,
-                    add_entries=dt_adds,
-                ))
-            if irrep == 'E' and add_cf_gs_rank2 is not None:
-                ds_adds_raw = _make_cf_adds(
-                    gs_j_order, add_cf_gs_rank2, gs_cf_idx_rank2, irrep,
-                )
-                ds_adds = [ADDEntry(
-                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
-                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * ds_e_scale,
-                ) for a in ds_adds_raw]
-                blocks.append(RACBlockFull(
-                    kind='GROUND', bra_sym=gs_butler,
-                    op_sym=butler_label('A1', '+'), ket_sym=gs_butler,
-                    geometry='DS', n_bra=block_dim, n_ket=block_dim,
-                    add_entries=ds_adds,
-                ))
-
-    # --- EXCITE blocks (ungerade, p^5 d^(n+1)) [OLD path; sym='oh' only] ---
-    # The d4h EXCITE emission lives in the new dispatcher above. Same
-    # gating pattern as the GROUND loop. Deleted in V2 commit 4.
-    _legacy_ex_irreps = oh_irreps_ex if sym == 'oh' else []
-    for irrep in _legacy_ex_irreps:
+    # --- EXCITE blocks (ungerade, p^5 d^(n+1)) [Oh path] ---
+    legacy_ex_irreps = oh_irreps_ex if sym == 'oh' else []
+    for irrep in legacy_ex_irreps:
         ex_butler = butler_label(irrep, '-')
         ex_j_order = irrep_j_ordering(ex_j_sizes, irrep)
         if not ex_j_order:
@@ -1524,39 +1484,6 @@ def generate_ledge_rac(
             n_ket=block_dim,
             add_entries=cf_adds,
         ))
-
-        if sym == 'd4h':
-            # DT/DS blocks for excited state, mirroring the ground-state path.
-            dt_a1_scale = -7.0 / 2.0 * math.sqrt(30.0) / (6.0 * math.sqrt(30.0) / 10.0)
-            dt_e_scale = -5.0 / 2.0 * math.sqrt(42.0) / (6.0 * math.sqrt(30.0) / 10.0)
-            ds_e_scale = -math.sqrt(70.0)
-            dt_scale = {'A1': dt_a1_scale, 'E': dt_e_scale}.get(irrep, 0.0)
-            if dt_scale != 0.0:
-                dt_adds_raw = _make_cf_adds(ex_j_order, add_cf_ex, ex_cf_idx, irrep)
-                dt_adds = [ADDEntry(
-                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
-                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * dt_scale,
-                ) for a in dt_adds_raw]
-                blocks.append(RACBlockFull(
-                    kind='GROUND', bra_sym=ex_butler,
-                    op_sym=butler_label('A1', '+'), ket_sym=ex_butler,
-                    geometry='DT', n_bra=block_dim, n_ket=block_dim,
-                    add_entries=dt_adds,
-                ))
-            if irrep == 'E' and add_cf_ex_rank2 is not None:
-                ds_adds_raw = _make_cf_adds(
-                    ex_j_order, add_cf_ex_rank2, ex_cf_idx_rank2, irrep,
-                )
-                ds_adds = [ADDEntry(
-                    matrix_idx=a.matrix_idx, bra=a.bra, ket=a.ket,
-                    nbra=a.nbra, nket=a.nket, coeff=a.coeff * ds_e_scale,
-                ) for a in ds_adds_raw]
-                blocks.append(RACBlockFull(
-                    kind='GROUND', bra_sym=ex_butler,
-                    op_sym=butler_label('A1', '+'), ket_sym=ex_butler,
-                    geometry='DS', n_bra=block_dim, n_ket=block_dim,
-                    add_entries=ds_adds,
-                ))
 
     # ── Assemble COWAN store ──
     cowan_store = [
