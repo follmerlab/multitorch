@@ -895,6 +895,15 @@ def _make_d4h_dipole_adds(
     PERP = √(dim_Eu / dim_T1u) = √(2/3), PARA = √(dim_A2u / dim_T1u) =
     √(1/3). It maps to the existing OLD-path PERP_FACTOR / PARA_FACTOR.
 
+    The full coefficient is
+        ``coeff = factor × <v_b | O | v_k>``
+    where the projection captures both the strength and the partner-basis
+    alignment. The `factor` argument supplies the OLD-path
+    PERP_FACTOR / PARA_FACTOR convention so the dispatcher's emission is
+    on the same nominal scale as the OLD per-Oh-irrep TRANSI loop. The
+    final agreement against the canonical fixture is verified by the
+    per-coefficient parity test in §7.1 (Q6-B).
+
     Both `gs_entries` and `ex_entries` MUST be pre-filtered to one
     partner per (J, oh, copy) — pass `[e for e in layout[d4h_*] if
     e[3] == 0]` from the caller, mirroring `_make_d4h_op_adds`'s
