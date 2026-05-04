@@ -959,14 +959,14 @@ def test_d4h_dispatcher_transi_singular_values_match_nid8():
 
 
 def test_d4h_dispatcher_emits_all_nid8ct_transi_blocks():
-    """Every symmetry-allowed TRANSI block must be emitted (issue #2 cont.).
+    """Every symmetry-allowed TRANSI block must be emitted (issue #2).
 
-    The post-Wigner-Eckart-prefactor V2 dispatcher under-emits 5 of the 13
-    expected single-config TRANSI blocks because their (p_gs=0, p_op=0,
-    p_ex=0) matrix elements happen to be zero by partner-orthogonality.
-    The fix iterates partner combinations and uses one with a nonzero
-    me, ensuring every Γ_gs × Γ_op × Γ_ex selection-rule-allowed block
-    gets at least one ADD entry.
+    The pre-fix V2 dispatcher under-emitted 5 of the 13 expected
+    single-config TRANSI blocks because their (p_gs=0, p_op=0, p_ex=0)
+    matrix elements happen to be zero by partner-orthogonality. The
+    partner-summed reduced-matrix-element formula in
+    `_make_d4h_dipole_adds` captures all selection-rule-allowed
+    couplings, including off-diagonal partner pairings.
     """
     from multitorch.angular.rac_generator import generate_ledge_rac
 
