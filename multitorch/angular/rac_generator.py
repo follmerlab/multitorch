@@ -886,9 +886,8 @@ def _make_d4h_dipole_adds(
     The dipole operator T1u (rank-1, ungerade) subduces to D4h-Eu (PERP,
     dim 2) + D4h-A2u (PARA, dim 1). For a given choice of `op_d4h_target`
     (one of 'Eu', 'A2u'), this helper builds the operator vector for
-    that sub-irrep's partner 0 (partners are degenerate in the spectrum
-    via the BAN's standard scaling) and projects matrix elements onto
-    the GROUND/EXCITE D4h-partner basis vectors.
+    each sub-irrep partner and projects matrix elements onto the
+    GROUND/EXCITE D4h-partner basis vectors.
 
     The `factor` argument is the conventional prefactor that scales the
     matrix element relative to the multipole_blocks reference matrix:
@@ -903,34 +902,71 @@ def _make_d4h_dipole_adds(
     matrix elements are asymmetric under (J_b, J_k) swap (the helper's
     raw me for (J_b=0, J_k=1) is 1/√3 vs (J_b=1, J_k=0) which is 1).
 
+    PARTNER-SUMMED REDUCED MATRIX ELEMENT: this helper computes the
+    block coefficient as
+
+        ``coeff = factor × √((2k+1)/(2J_b+1)) × sign × RME``
+
+    where ``RME = √(Σ |me_{p_a, p_op, p_b}|² / dim_Γ_op_d4h)`` sums
+    over D4h partners on the bra, op, and ket sides, with ``sign``
+    picked from the first non-zero ``me_{p_a=0, p_op, p_b}``. This
+    reproduces the nid8 fixture's per-coefficient magnitudes uniformly:
+
+    * Triples whose A1g-content sits on the (p_a=0, p_op=0, p_b=0)
+      diagonal (e.g., A1g→Eu via Eu, A1g→A2u via A2u) collapse to the
+      pre-V2 single-projection formula because only the diagonal me
+      is non-zero.
+    * Triples whose A1g-content sits on off-diagonal partner pairings
+      (e.g., A2g→Eu via Eu, Eg→A2u via Eu, Eg→Eu via A2u) — the 5
+      blocks the V2 helper under-emitted — pick up the
+      ``√(dim_Γ_ex/dim_Γ_op_d4h)`` correction implicit in summing both
+      sides.
+
     Both `gs_entries` and `ex_entries` MUST be pre-filtered to one
     partner per (J, oh, copy) — pass `[e for e in layout[d4h_*] if
     e[3] == 0]` from the caller, mirroring `_make_d4h_op_adds`'s
     SCOPE LIMITATION.
     """
-    # Build the dipole operator vector (rank-1, complex basis) for the
-    # target D4h sub-irrep of T1u.
+    # Build the dipole operator vectors (rank-1, complex basis) for each
+    # partner of the target D4h sub-irrep of T1u.
     sub = oh_to_d4h_subduction_matrix('T1u')[op_d4h_target]
-    op_vec_real = np.ascontiguousarray(sub[:, 0]).astype(np.float64)
+    n_op_partners = sub.shape[1]
     U_1 = _c2r_unitary(1)
-    op_vec_complex = U_1.conj().T @ op_vec_real.astype(np.complex128)
+    op_vecs_complex = [
+        U_1.conj().T @ np.ascontiguousarray(sub[:, p]).astype(np.complex128)
+        for p in range(n_op_partners)
+    ]
+    n_gs_partners = D4H_IRREP_DIM[d4h_gs]
+    n_ex_partners = D4H_IRREP_DIM[d4h_ex]
+    rme_op_norm = math.sqrt(float(n_op_partners))   # √dim_Γ_op_d4h
 
-    O_cache: Dict[Tuple[float, float], np.ndarray] = {}
-    v_gs_cache: Dict[Tuple[float, str, int], np.ndarray] = {}
-    v_ex_cache: Dict[Tuple[float, str, int], np.ndarray] = {}
+    O_cache: Dict[Tuple[float, float, int], np.ndarray] = {}
+    v_gs_cache: Dict[Tuple[float, str, int, int], np.ndarray] = {}
+    v_ex_cache: Dict[Tuple[float, str, int, int], np.ndarray] = {}
 
-    def get_O(Jb: float, Jk: float) -> np.ndarray:
-        key = (Jb, Jk)
+    def get_O(Jb: float, Jk: float, p_op: int) -> np.ndarray:
+        key = (Jb, Jk, p_op)
         if key not in O_cache:
-            O_cache[key] = _operator_real_matrix(Jb, Jk, 1, op_vec_complex)
+            O_cache[key] = _operator_real_matrix(
+                Jb, Jk, 1, op_vecs_complex[p_op],
+            )
         return O_cache[key]
 
-    def get_v(d4h_irrep: str, J: float, oh_label: str, copy: int,
-              cache: Dict[Tuple[float, str, int], np.ndarray]) -> np.ndarray:
-        key = (J, oh_label, copy)
-        if key not in cache:
-            cache[key] = _d4h_partner_vector(J, oh_label, copy, d4h_irrep, 0)
-        return cache[key]
+    def get_v_gs(J: float, oh_label: str, copy: int, p_gs: int) -> np.ndarray:
+        key = (J, oh_label, copy, p_gs)
+        if key not in v_gs_cache:
+            v_gs_cache[key] = _d4h_partner_vector(
+                J, oh_label, copy, d4h_gs, p_gs,
+            )
+        return v_gs_cache[key]
+
+    def get_v_ex(J: float, oh_label: str, copy: int, p_ex: int) -> np.ndarray:
+        key = (J, oh_label, copy, p_ex)
+        if key not in v_ex_cache:
+            v_ex_cache[key] = _d4h_partner_vector(
+                J, oh_label, copy, d4h_ex, p_ex,
+            )
+        return v_ex_cache[key]
 
     adds: List[ADDEntry] = []
     bra_pos = 1
@@ -946,18 +982,32 @@ def _make_d4h_dipole_adds(
             if (Jb, Jk) not in multipole_idx:
                 ket_pos += nk
                 continue
-            v_b = get_v(d4h_gs, Jb, oh_b, cb, v_gs_cache)
-            v_k = get_v(d4h_ex, Jk, oh_k, ck, v_ex_cache)
-            O_real = get_O(Jb, Jk)
-            me = float(v_b @ O_real @ v_k)
-            if abs(me) < 1e-13:
+            sum_sq = 0.0
+            sign_me = 0.0
+            for p_gs in range(n_gs_partners):
+                v_b = get_v_gs(Jb, oh_b, cb, p_gs)
+                for p_op in range(n_op_partners):
+                    O_real = get_O(Jb, Jk, p_op)
+                    for p_ex in range(n_ex_partners):
+                        v_k = get_v_ex(Jk, oh_k, ck, p_ex)
+                        me_p = float(v_b @ O_real @ v_k)
+                        sum_sq += me_p * me_p
+                        # Pick sign from the first nonzero me at p_gs=0;
+                        # downstream sign-modulo-comparisons against
+                        # nid8 verify the convention.
+                        if (p_gs == 0 and abs(sign_me) < 1e-13
+                                and abs(me_p) > 1e-13):
+                            sign_me = me_p
+            if sum_sq < 1e-26:
                 ket_pos += nk
                 continue
+            sign = 1.0 if sign_me >= 0 else -1.0
+            rme = sign * math.sqrt(sum_sq) / rme_op_norm
             adds.append(ADDEntry(
                 matrix_idx=multipole_idx[(Jb, Jk)],
                 bra=bra_pos, ket=ket_pos,
                 nbra=nb, nket=nk,
-                coeff=factor * rme_prefactor * me,
+                coeff=factor * rme_prefactor * rme,
             ))
             ket_pos += nk
         bra_pos += nb
