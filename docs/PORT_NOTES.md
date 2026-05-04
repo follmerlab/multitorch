@@ -508,3 +508,45 @@ on merge):
 The downstream symptom — the sharp ~714 eV residual visible in the v0
 manuscript fits in `bench/v0_fitter_results/` — should now drop
 substantially once those fits are re-run with the V2 dispatcher.
+
+## Update — TRANSI normalization reconciliation (2026-05-04)
+
+**Status: PARTIAL** for follmerlab/multitorch#2. Implemented on the
+feature branch `d4h-transi-normalization` (3 commits, squash-merge ready).
+
+The deferred V2 relaxation traced to a Wigner-Eckart convention
+mismatch: `_build_coupling_operator` returns the raw-CG matrix without
+the `(2J_b+1)^{-1/2}` reduced factor, so direct
+`<v_b | T1u_partner | v_k>` projections are asymmetric under
+(J_b, J_k) swap. Fixed by multiplying inside `_make_d4h_dipole_adds`
+by `√((2k+1)/(2J_b+1))`. Empirical validation:
+
+- `test_d4h_dispatcher_transi_singular_values_match_nid8` — every
+  TRANSI block's `Σ |coeff|² × nbra × nket` per matrix_idx now matches
+  `nid8ct.rme_rac` to 1e-6 (layout-invariant version of the original
+  per-coefficient parity proposal; raw add_key parity is blocked by the
+  iteration-order differences flagged in the V2 closure note above).
+- `test_make_d4h_dipole_adds_perp_para_factor` — synthetic
+  A1g→Eu vs A1g→A2u PERP/PARA ratio is now √2 (was √(3/2) before).
+- `test_d4h_collapses_to_oh_when_dt_ds_zero` — energy-aligned cosine
+  ≥ 0.99 (currently ~0.997, replaces the V2 peak-position-only relax).
+- `test_d4h_ni_from_scratch_runs_and_matches_oh_baseline` — tightened
+  from 0.95 → 0.97 (currently ~0.978).
+
+**What this does NOT close:**
+
+- Strict cosine ≥ 0.99999 between d4h(ds=dt=0) and oh(10dq=*). The
+  residual ~0.3% gap reflects the orthogonal HFS Slater / F2_pd
+  direct-Coulomb accuracy floor; both from-scratch paths come in at
+  ~0.978 vs the cached fixture, so the upper bound on agreement is
+  driven by that shared floor, not the TRANSI convention.
+- The 5 missing TRANSI blocks the V2 dispatcher under-emitted (e.g.,
+  `^0+ 1- 1- PERP`, `1+ 1- ^0- PERP`) remain absent — the helper still
+  selects `partner_idx=0` only, and those blocks have all-zero
+  matrix elements at that partner choice. Closing that gap requires
+  either summing over partner combinations or selecting a different
+  partner per block. Out of scope for #2's primary normalization fix.
+
+The user-visible payoff (re-running the 5 Fe v0 manuscript fits in
+`bench/v0_fitter_results/` with the corrected dispatcher) is tracked
+as the remaining bullet in #2.
