@@ -422,7 +422,6 @@ def test_d4h_branching_half_integer_raises():
         d4h_branching(0.5)
 
 
-@pytest.mark.xfail(reason="Task #34: D4h dispatcher emits irreps + ADD entries matching nid8")
 def test_d4h_dispatcher_emits_nid8_irrep_set():
     """generate_ledge_rac(sym='d4h', l_val=2, n_val_gs=8) should emit a RAC
     structure whose D4h irreps match the nid8 fixture.

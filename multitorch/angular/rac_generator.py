@@ -944,13 +944,10 @@ def generate_ledge_rac(
             f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h'. "
             f"For trigonal symmetries see plan Phase 5."
         )
-    # D4h dispatch is handled inline below: in addition to the existing
-    # rank-4 CF blocks (used as the TENDQ operator), we compute rank-2 CF
-    # blocks (for DS) and emit per-operator GROUND/EXCITE block sets
-    # (HAMILTONIAN, TENDQ, DT, DS) so the assembler's XHAM
-    # [1.0, tendq, dt, ds] composition is satisfied. The block irrep
-    # labels remain Oh in this interim implementation; spectrum parity
-    # against the nid8 D4h fixture is the validation target.
+    # D4h dispatch (Phase 1c V2): per-D4h-irrep emission via
+    # `_make_d4h_op_adds` and `_make_d4h_dipole_adds`. Blocks carry
+    # D4h-Butler labels matching the nid8.rme_rac fixture exactly.
+    # See `docs/D4H_DISPATCHER_PLAN_V2.md`.
     # ── Term data ──
     gs_terms = _get_terms(l_val, n_val_gs)
     gs_j_sizes = _j_sector_sizes(gs_terms)
@@ -962,6 +959,26 @@ def generate_ledge_rac(
     J_max_ex = max(ex_j_sizes.keys())
     is_half_gs = abs(J_max_gs - round(J_max_gs)) > 0.1
     is_half_ex = abs(J_max_ex - round(J_max_ex)) > 0.1
+
+    # V2 plan §4: gate sym='d4h' on integer J + cf_rank == 4.
+    # Half-integer J would require D4h double-group tables (not yet
+    # tabulated). cf_rank is fixed at 4 because the d4h dispatcher uses
+    # rank-4 (TENDQ/DT) and rank-2 (DS) operators by construction.
+    if sym == 'd4h':
+        if is_half_gs or is_half_ex:
+            raise NotImplementedError(
+                "sym='d4h' currently supports only even-electron-count "
+                "configurations (integer J in both ground and excited "
+                "manifolds). Got half-integer J — likely an odd "
+                "electron count (Fe d5, Cu d9, etc.). Use sym='oh' or "
+                "wait for D4h double-group support."
+            )
+        if cf_rank != 4:
+            raise ValueError(
+                f"sym='d4h' uses fixed rank-4 (TENDQ/DT) and rank-2 (DS) "
+                f"operators; cf_rank={cf_rank} is ignored on this path. "
+                f"Pass cf_rank=4 (default) to silence this."
+            )
 
     if is_half_gs:
         oh_irreps_gs = ['E1/2', 'E5/2', 'G3/2']
@@ -1172,8 +1189,94 @@ def generate_ledge_rac(
                         add_entries=transi_adds,
                     ))
 
-    # --- GROUND blocks (gerade, d^n) ---
-    for irrep in oh_irreps_gs:
+    # --- D4h dispatcher (V2) — per-D4h-irrep GROUND + EXCITE emission ---
+    # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The OLD per-Oh-irrep
+    # GROUND/EXCITE loops below are gated to `sym == 'oh'` and will be
+    # deleted in V2 commit 4. TRANSI is still handled by the OLD path
+    # (above this block); V2 commit 3 replaces it.
+    if sym == 'd4h':
+        # GROUND blocks (gerade, parity='g')
+        layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
+        for d4h_irrep, entries in sorted(layout_gs.items()):
+            if not entries:
+                continue
+            butler = D4H_TO_BUTLER[d4h_irrep]
+            block_dim = (
+                sum(e[4] for e in entries) // D4H_IRREP_DIM[d4h_irrep]
+            )
+            irrep_infos.append(IrrepInfo(
+                name=butler, kind='GROUND',
+                multiplicity=block_dim,
+                dim=D4H_IRREP_DIM[d4h_irrep],
+            ))
+            for op_name, geometry in (
+                ('HAMILTONIAN', 'HAMILTONIAN'),
+                ('TENDQ',       '10DQ'),
+                ('DT',          'DT'),
+                ('DS',          'DS'),
+            ):
+                op_adds = _make_d4h_op_adds(
+                    d4h_irrep, entries, op_name,
+                    ham_idx_map=gs_ham_idx,
+                    cf_idx_map=gs_cf_idx,
+                    cf_idx_map_rank2=gs_cf_idx_rank2,
+                )
+                if not op_adds:
+                    continue
+                blocks.append(RACBlockFull(
+                    kind='GROUND',
+                    bra_sym=butler,
+                    op_sym='0+',                # D4h-A1g (scalar CF)
+                    ket_sym=butler,
+                    geometry=geometry,
+                    n_bra=block_dim, n_ket=block_dim,
+                    add_entries=op_adds,
+                ))
+
+        # EXCITE blocks (ungerade, parity='u')
+        layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
+        for d4h_irrep, entries in sorted(layout_ex.items()):
+            if not entries:
+                continue
+            butler = D4H_TO_BUTLER[d4h_irrep]
+            block_dim = (
+                sum(e[4] for e in entries) // D4H_IRREP_DIM[d4h_irrep]
+            )
+            irrep_infos.append(IrrepInfo(
+                name=butler, kind='EXCITE',
+                multiplicity=block_dim,
+                dim=D4H_IRREP_DIM[d4h_irrep],
+            ))
+            for op_name, geometry in (
+                ('HAMILTONIAN', 'HAMILTONIAN'),
+                ('TENDQ',       '10DQ'),
+                ('DT',          'DT'),
+                ('DS',          'DS'),
+            ):
+                op_adds = _make_d4h_op_adds(
+                    d4h_irrep, entries, op_name,
+                    ham_idx_map=ex_ham_idx,
+                    cf_idx_map=ex_cf_idx,
+                    cf_idx_map_rank2=ex_cf_idx_rank2,
+                )
+                if not op_adds:
+                    continue
+                blocks.append(RACBlockFull(
+                    kind='GROUND',          # assembler config-1 convention
+                    bra_sym=butler,
+                    op_sym='0+',
+                    ket_sym=butler,
+                    geometry=geometry,
+                    n_bra=block_dim, n_ket=block_dim,
+                    add_entries=op_adds,
+                ))
+
+    # --- GROUND blocks (gerade, d^n) [OLD per-Oh-irrep path; sym='oh' only] ---
+    # The d4h GROUND emission lives in the new dispatcher above; iterating
+    # an empty list for d4h cleanly disables the OLD path without changing
+    # the loop body's indentation. Deleted in V2 commit 4.
+    _legacy_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+    for irrep in _legacy_gs_irreps:
         gs_butler = butler_label(irrep, '+')
         gs_j_order = irrep_j_ordering(gs_j_sizes, irrep)
         if not gs_j_order:
@@ -1251,8 +1354,11 @@ def generate_ledge_rac(
                     add_entries=ds_adds,
                 ))
 
-    # --- EXCITE blocks (ungerade, p^5 d^(n+1)) ---
-    for irrep in oh_irreps_ex:
+    # --- EXCITE blocks (ungerade, p^5 d^(n+1)) [OLD path; sym='oh' only] ---
+    # The d4h EXCITE emission lives in the new dispatcher above. Same
+    # gating pattern as the GROUND loop. Deleted in V2 commit 4.
+    _legacy_ex_irreps = oh_irreps_ex if sym == 'oh' else []
+    for irrep in _legacy_ex_irreps:
         ex_butler = butler_label(irrep, '-')
         ex_j_order = irrep_j_ordering(ex_j_sizes, irrep)
         if not ex_j_order:
