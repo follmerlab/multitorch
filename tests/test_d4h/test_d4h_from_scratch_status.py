@@ -528,3 +528,58 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
         f"This catches regressions in the D4h dispatcher itself; tightening "
         f"requires fixing the underlying from-scratch path accuracy."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 1 (V2 plan §3) — helper-level regression test
+# Closes BUG-001 (DS empty) and pins partner-filter behavior (Bug B/C).
+# Refs: follmerlab/multitorch#1
+# ─────────────────────────────────────────────────────────────────────
+
+def test_make_d4h_op_adds_DS_eg_block_nonzero():
+    """Phase 1c regression: DS Eg block in Ni d8 must be well-formed.
+
+    Three guarantees for the dispatcher helper, all of which broke in the
+    pre-V2 Session-2 helpers:
+      (BUG-001)   DS ADDs must be nonzero (legacy d4h path emitted empty).
+      (Bug B/C)   Bra/ket positions must fit the block matrix dimension
+                  MULT = sum(n_states) // dim_d4h, not the
+                  partner-summed entry count.
+      (Bug A)     Helper signature must accept gerade-by-construction
+                  operator builds without a `parity` kwarg.
+    """
+    from multitorch.angular.rac_generator import (
+        _get_terms, _j_sector_sizes, _make_d4h_op_adds,
+    )
+    from multitorch.angular.symmetry import D4H_IRREP_DIM, d4h_basis_layout
+
+    gs_terms = _get_terms(2, 8)
+    j_sizes = _j_sector_sizes(gs_terms)
+    layout = d4h_basis_layout(j_sizes, parity='g')
+    eg_entries = layout['Eg']
+    expected_mult = sum(e[4] for e in eg_entries) // D4H_IRREP_DIM['Eg']
+
+    cf_idx_rank2 = {
+        (2.0, 2.0): 1, (2.0, 4.0): 2, (4.0, 2.0): 3, (4.0, 4.0): 4,
+    }
+    adds = _make_d4h_op_adds(
+        'Eg', eg_entries, 'DS',
+        ham_idx_map={J: 0 for J in j_sizes},
+        cf_idx_map={},
+        cf_idx_map_rank2=cf_idx_rank2,
+    )
+
+    assert adds, "DS Eg block must have nonzero ADDs (BUG-001 regression)"
+    assert all(abs(a.coeff) > 0 for a in adds), (
+        "all DS ADDs must have nonzero coefficients"
+    )
+    max_bra = max(a.bra + a.nbra - 1 for a in adds)
+    max_ket = max(a.ket + a.nket - 1 for a in adds)
+    assert max_bra <= expected_mult, (
+        f"DS Eg ADD bra position {max_bra} exceeds MULT={expected_mult}; "
+        f"likely partner_idx duplication (Bug B/C regression)"
+    )
+    assert max_ket <= expected_mult, (
+        f"DS Eg ADD ket position {max_ket} exceeds MULT={expected_mult}; "
+        f"likely partner_idx duplication (Bug B/C regression)"
+    )

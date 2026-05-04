@@ -54,6 +54,16 @@ from multitorch.angular.point_group import (
     oh_coupling_coefficients,
     oh_coupling_coefficients_full,
     oh_transition_coupling,
+    _build_coupling_operator,
+    _c2r_unitary,
+    _real_subduction_matrix,
+)
+from multitorch.angular.symmetry import (
+    D4H_BRANCHES_BY_OPERATOR,
+    D4H_IRREP_DIM,
+    D4H_TO_BUTLER,
+    d4h_basis_layout,
+    oh_to_d4h_subduction_matrix,
 )
 from multitorch.io.read_rme import (
     ADDEntry,
@@ -614,6 +624,252 @@ def generate_ground_state_rac(
     )
 
     return rac, cowan_store
+
+
+# ─────────────────────────────────────────────────────────────
+# D4h dispatcher helpers (Phase 1c — unified Threads 2+3)
+# ─────────────────────────────────────────────────────────────
+#
+# These helpers replace the per-Oh-irrep block emission for `sym='d4h'`
+# with a per-D4h-irrep dispatcher. The key idea: each entry in the
+# `d4h_basis_layout` is a single D4h-partner basis vector (computed by
+# composing `_real_subduction_matrix` with `oh_to_d4h_subduction_matrix`),
+# and operator matrix elements between entries are computed by direct
+# projection in real-SH basis. Cf. PORT_NOTES.md and
+# `docs/D4H_DISPATCHER_PLAN.md` for the closing-of-BUG-001/-002 narrative.
+
+
+def _d4h_partner_vector(
+    J: float, oh_irrep_label: str, copy_idx: int,
+    d4h_irrep: str, partner_idx: int,
+) -> np.ndarray:
+    """Build one D4h-partner basis vector (real-SH, length 2J+1).
+
+    Composes ``_real_subduction_matrix(J, oh_irrep_label)`` (which
+    splits ``D^J`` into ``Oh`` partners) with
+    ``oh_to_d4h_subduction_matrix(oh_irrep_full)[d4h_irrep]`` (which
+    rotates each Oh-partner triplet into D4h-partner pieces). The result
+    is the basis vector keyed by
+    ``(J, oh_irrep_label, copy_idx, d4h_irrep, partner_idx)``, an
+    orthonormal column. Used inside ``_make_d4h_op_adds`` to project
+    operators onto the per-D4h-irrep block.
+    """
+    parity = d4h_irrep[-1]
+    oh_irrep_full = oh_irrep_label + parity
+    J_int = int(round(J))
+    B_oh = _real_subduction_matrix(J_int, oh_irrep_label)
+    dim_oh = OH_IRREP_DIM[oh_irrep_label]
+    B_copy = B_oh[:, copy_idx * dim_oh:(copy_idx + 1) * dim_oh]
+    sub = oh_to_d4h_subduction_matrix(oh_irrep_full)[d4h_irrep]
+    rotated = B_copy @ sub
+    return np.ascontiguousarray(rotated[:, partner_idx])
+
+
+# Map operator name -> (rank k, list of (Oh_route_label, butler_coeff)).
+# These reproduce ``D4H_BRANCHES_BY_OPERATOR`` but in the form the
+# dispatcher consumes directly: each operator's m-basis vector in
+# ``D^k`` is the sum over its Oh-routes of
+# ``butler_coeff × (B_oh_route @ sub_to_d4h_a1g)``.
+_BUTLER_OH_TO_LABEL = {'0+': 'A1', '2+': 'E'}
+_O3_TO_RANK = {'0+': 0, '2+': 2, '4+': 4}
+
+
+def _d4h_op_routes(
+    operator: str, target_d4h_irrep: str = 'A1g',
+) -> List[Tuple[int, str, float]]:
+    """Decode ``D4H_BRANCHES_BY_OPERATOR[operator]`` into (rank, oh, butler) tuples.
+
+    Each operator in `D4H_BRANCHES_BY_OPERATOR` targets a single D4h irrep
+    (currently always A1g — all CF operators are scalar in D4h). The
+    `target_d4h_irrep` kwarg is plumbed through for future-proofing
+    (non-A1g operators would change which D4h-Butler key is asserted)
+    but in the scope of the V2 dispatcher only `'A1g'` is exercised.
+    """
+    target_butler = D4H_TO_BUTLER[target_d4h_irrep]
+    branches = D4H_BRANCHES_BY_OPERATOR[operator]
+    routes = []
+    for (o3_irr, oh_butler, d4h_butler), coeff in branches.items():
+        if d4h_butler != target_butler:
+            raise RuntimeError(
+                f"{operator}: branch target {d4h_butler!r} != "
+                f"{target_butler!r} (target {target_d4h_irrep}); "
+                "this dispatcher assumes a single target D4h irrep "
+                "per operator."
+            )
+        rank = _O3_TO_RANK[o3_irr]
+        oh_label = _BUTLER_OH_TO_LABEL[oh_butler]
+        routes.append((rank, oh_label, coeff))
+    return routes
+
+
+def _d4h_operator_vector_complex(
+    operator: str, rank: int, target_d4h_irrep: str = 'A1g',
+) -> np.ndarray:
+    """Build the operator's m-basis vector in ``D^k`` (complex basis).
+
+    Sums Butler-weighted Oh-route contributions. Each contribution is the
+    real-SH-basis target-partner (``B_oh_route @ sub_to_target``)
+    multiplied by the Butler coefficient. Returns the COMPLEX-basis
+    vector after applying the inverse real-SH unitary.
+
+    OPERATOR PARITY INVARIANT: CF operators are intrinsically gerade.
+    The Oh-route subduction is always looked up with parity 'g'; the
+    helper does NOT take a manifold-parity kwarg. The basis vectors
+    used by callers (`_d4h_partner_vector`) carry their own parity via
+    the d4h_irrep label they reference.
+    """
+    op_vec_real = np.zeros(2 * rank + 1, dtype=np.float64)
+    for r_k, oh_label, coeff in _d4h_op_routes(operator, target_d4h_irrep):
+        if r_k != rank:
+            continue
+        oh_irrep_full = oh_label + 'g'   # CF operators are gerade by construction
+        B_oh = _real_subduction_matrix(rank, oh_label)
+        sub = oh_to_d4h_subduction_matrix(oh_irrep_full)[target_d4h_irrep]
+        route_vec = (B_oh @ sub).flatten()
+        op_vec_real += coeff * route_vec
+    U_k = _c2r_unitary(rank)
+    return U_k.conj().T @ op_vec_real.astype(np.complex128)
+
+
+def _operator_real_matrix(
+    J_b: float, J_k: float, k: int, op_vec_complex: np.ndarray,
+) -> np.ndarray:
+    """Build the operator matrix in real-SH basis: O_real(J_b, J_k).
+
+    ``_build_coupling_operator`` returns the m-basis representation
+    in complex basis; we unitarily rotate to real basis. By the parity
+    rule, the rotated matrix is real when ``J_b + J_k + k`` is even and
+    purely imaginary otherwise; we extract the real-valued payload.
+    """
+    O_complex = _build_coupling_operator(J_b, J_k, k, op_vec_complex)
+    U_b = _c2r_unitary(int(round(J_b)))
+    U_k = _c2r_unitary(int(round(J_k)))
+    O_t = U_b @ O_complex @ U_k.conj().T
+    if (int(round(J_b)) + int(round(J_k)) + k) % 2 == 0:
+        return O_t.real
+    return -O_t.imag
+
+
+def _make_d4h_op_adds(
+    d4h_irrep: str,
+    entries: List[Tuple[float, str, int, int, int]],
+    operator: str,
+    ham_idx_map: Dict[float, int],
+    cf_idx_map: Dict[Tuple[float, float], int],
+    cf_idx_map_rank2: Dict[Tuple[float, float], int],
+    *,
+    target_d4h_irrep: str = 'A1g',
+) -> List[ADDEntry]:
+    """Build ADD entries for one (D4h irrep, operator) pair.
+
+    SCOPE LIMITATION: assumes the operator targets a 1D / partner-symmetric
+    D4h irrep (currently always A1g — all CF operators are scalar in
+    D4h). The first-line filter ``entries = [e for e in entries if e[3]
+    == 0]`` drops all but partner_idx=0; this is sound by Schur's
+    lemma for an A1g-target operator (matrix elements are partner-
+    independent), but INVALID for non-scalar targets where partners
+    couple non-trivially. Pass `target_d4h_irrep != 'A1g'` only after
+    auditing this assumption.
+
+    OPERATOR PARITY INVARIANT: CF operators are gerade by construction;
+    `_d4h_operator_vector_complex` hardcodes the gerade Oh subduction.
+    The MANIFOLD parity comes in via `d4h_irrep` (e.g., 'A1g' for
+    GROUND, 'A1u' for EXCITE) and propagates to the partner basis
+    vectors through `_d4h_partner_vector`.
+
+    Behaviour:
+      - For HAMILTONIAN, uses identity (k=0); coeff
+        is `sqrt(dim_d4h / (2J_b+1))` along the entry diagonal.
+        Cross-(oh, copy) HAMILTONIAN matrix elements are zero by
+        partner-basis orthogonality, so same_entry is necessary AND
+        sufficient.
+      - For TENDQ/DT/DS, computes the operator matrix in real-SH basis
+        from a Butler-weighted operator vector and projects:
+        ``coeff = sqrt(dim_d4h / (2J_b+1)) × <v_b | O_real | v_k>``.
+    """
+    # Filter to partner_idx=0 only — see SCOPE LIMITATION.
+    entries = [e for e in entries if e[3] == 0]
+
+    dim_d4h = D4H_IRREP_DIM[d4h_irrep]
+    adds: List[ADDEntry] = []
+
+    if operator == 'HAMILTONIAN':
+        bra_pos = 1
+        for ib, (Jb, oh_b, cb, pb, nb) in enumerate(entries):
+            ket_pos = 1
+            for ik, (Jk, oh_k, ck, pk, nk) in enumerate(entries):
+                # Cross-(oh, copy) couplings are zero in the partner
+                # basis by orthogonality; same_entry is correct.
+                same_entry = (ib == ik)
+                if same_entry and Jb in ham_idx_map:
+                    coeff = math.sqrt(dim_d4h / (2.0 * Jb + 1.0))
+                    if abs(coeff) > 1e-15:
+                        adds.append(ADDEntry(
+                            matrix_idx=ham_idx_map[Jb],
+                            bra=bra_pos, ket=ket_pos,
+                            nbra=nb, nket=nk,
+                            coeff=coeff,
+                        ))
+                ket_pos += nk
+            bra_pos += nb
+        return adds
+
+    rank_map = {'TENDQ': 4, 'DT': 4, 'DS': 2}
+    if operator not in rank_map:
+        raise ValueError(
+            f"_make_d4h_op_adds: unknown operator {operator!r}; "
+            f"expected HAMILTONIAN/TENDQ/DT/DS"
+        )
+    k = rank_map[operator]
+    matrix_idx_map = cf_idx_map_rank2 if k == 2 else cf_idx_map
+    op_vec_complex = _d4h_operator_vector_complex(operator, k, target_d4h_irrep)
+
+    # Cache per (J_b, J_k) and per partner vector
+    O_cache: Dict[Tuple[float, float], np.ndarray] = {}
+    v_cache: Dict[Tuple[float, str, int, int], np.ndarray] = {}
+
+    def get_O(Jb: float, Jk: float) -> np.ndarray:
+        key = (Jb, Jk)
+        if key not in O_cache:
+            O_cache[key] = _operator_real_matrix(Jb, Jk, k, op_vec_complex)
+        return O_cache[key]
+
+    def get_v(J: float, oh_label: str, copy: int, partner: int) -> np.ndarray:
+        key = (J, oh_label, copy, partner)
+        if key not in v_cache:
+            v_cache[key] = _d4h_partner_vector(
+                J, oh_label, copy, d4h_irrep, partner,
+            )
+        return v_cache[key]
+
+    bra_pos = 1
+    for ib, (Jb, oh_b, cb, pb, nb) in enumerate(entries):
+        ket_pos = 1
+        for ik, (Jk, oh_k, ck, pk, nk) in enumerate(entries):
+            # Triangle selection: |J_b - J_k| ≤ k ≤ J_b + J_k
+            if abs(Jb - Jk) > k or Jb + Jk < k:
+                ket_pos += nk
+                continue
+            if (Jb, Jk) not in matrix_idx_map:
+                ket_pos += nk
+                continue
+            v_b = get_v(Jb, oh_b, cb, pb)
+            v_k = get_v(Jk, oh_k, ck, pk)
+            O_real = get_O(Jb, Jk)
+            me = float(v_b @ O_real @ v_k)
+            if abs(me) < 1e-13:
+                ket_pos += nk
+                continue
+            coeff = math.sqrt(dim_d4h / (2.0 * Jb + 1.0)) * me
+            adds.append(ADDEntry(
+                matrix_idx=matrix_idx_map[(Jb, Jk)],
+                bra=bra_pos, ket=ket_pos,
+                nbra=nb, nket=nk,
+                coeff=coeff,
+            ))
+            ket_pos += nk
+        bra_pos += nb
+    return adds
 
 
 def generate_ledge_rac(
