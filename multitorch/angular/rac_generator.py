@@ -896,13 +896,12 @@ def _make_d4h_dipole_adds(
     √(1/3). It maps to the existing OLD-path PERP_FACTOR / PARA_FACTOR.
 
     The full coefficient is
-        ``coeff = factor × <v_b | O | v_k>``
-    where the projection captures both the strength and the partner-basis
-    alignment. The `factor` argument supplies the OLD-path
-    PERP_FACTOR / PARA_FACTOR convention so the dispatcher's emission is
-    on the same nominal scale as the OLD per-Oh-irrep TRANSI loop. The
-    final agreement against the canonical fixture is verified by the
-    per-coefficient parity test in §7.1 (Q6-B).
+        ``coeff = factor × √((2k+1)/(2J_b+1)) × <v_b | O | v_k>``
+    where ``√((2k+1)/(2J_b+1))`` is the Wigner-Eckart RME prefactor that
+    reconciles ``_build_coupling_operator``'s raw-CG convention with the
+    nid8 fixture's reduced-matrix-element convention. Without it,
+    matrix elements are asymmetric under (J_b, J_k) swap (the helper's
+    raw me for (J_b=0, J_k=1) is 1/√3 vs (J_b=1, J_k=0) which is 1).
 
     Both `gs_entries` and `ex_entries` MUST be pre-filtered to one
     partner per (J, oh, copy) — pass `[e for e in layout[d4h_*] if
@@ -936,6 +935,8 @@ def _make_d4h_dipole_adds(
     adds: List[ADDEntry] = []
     bra_pos = 1
     for (Jb, oh_b, cb, _, nb) in gs_entries:
+        # Wigner-Eckart RME prefactor (k=1 dipole). See docstring.
+        rme_prefactor = math.sqrt(3.0 / (2.0 * Jb + 1.0))
         ket_pos = 1
         for (Jk, oh_k, ck, _, nk) in ex_entries:
             # Triangle selection for k=1
@@ -956,7 +957,7 @@ def _make_d4h_dipole_adds(
                 matrix_idx=multipole_idx[(Jb, Jk)],
                 bra=bra_pos, ket=ket_pos,
                 nbra=nb, nket=nk,
-                coeff=factor * me,
+                coeff=factor * rme_prefactor * me,
             ))
             ket_pos += nk
         bra_pos += nb
