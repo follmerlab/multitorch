@@ -66,5 +66,7 @@ CLAUDE.md
 # GPU_ACCELERATION_PLAN.md moved to docs/
 torch-wrapper-guardrails.md
 CODE_REVIEW.md
+CODE_REVIEW_*.md
+UBIQUITOUS_LANGUAGE.md
 SCIENTIFIC_AUDIT.md
 _build_notebooks.py

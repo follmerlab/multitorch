@@ -1,8 +1,62 @@
 # D4h dispatcher refactor — implementation plan
 
-**Status as of:** 2026-05-03 (commit `9f45702`)
-**Next session pickup:** read this file + `CODE_REVIEW.md` Addendum 3 first.
+**Status as of:** 2026-05-03 — Helpers landed (uncommitted), TRANSI scope expanded
+**Next session pickup:** read this file's "Session 2 progress" first, then jump to "Step 4 — TRANSI per-D4h-irrep emission" below.
 **Context bridge:** `~/.claude/projects/.../memory/project_d4h_dispatcher.md`
+
+---
+
+## Session 2 progress (2026-05-03, uncommitted)
+
+The four-operator dispatcher helpers were implemented in
+`multitorch/angular/rac_generator.py` (changes uncommitted; baseline
+`pytest tests/test_d4h tests/test_angular -q` still passes 116 + 1 xfail
+because the helpers aren't wired into `generate_ledge_rac` yet).
+Specifically added (between `generate_ground_state_rac` and
+`generate_ledge_rac`):
+
+- `_d4h_partner_vector(J, oh_irrep_label, copy_idx, d4h_irrep, partner_idx)`
+  composes `_real_subduction_matrix` with `oh_to_d4h_subduction_matrix`.
+- `_d4h_op_routes` and `_d4h_operator_vector_complex` decode
+  `D4H_BRANCHES_BY_OPERATOR` and build the rank-K m-basis vector
+  with Butler coefficients folded in.
+- `_operator_real_matrix(J_b, J_k, k, op_vec_complex)` handles the
+  parity-rule real/imag extraction.
+- `_make_d4h_op_adds(d4h_irrep, entries, operator, ham_idx_map,
+  cf_idx_map, cf_idx_map_rank2, parity)` emits ADD entries with
+  `coeff = sqrt(dim_d4h / (2J_b+1)) × <v_b | O_real | v_k>`.
+
+**Hand-verified numbers:** TENDQ at (D4h-A1g, J_b=0, J_k=4)
+reproduces the existing Oh-A1 path's `1.095445`. HAMILTONIAN at
+(D4h-A1g, J=4, Oh-A1 route) gives `0.333` matching `sqrt(1/9)`.
+Operator-vector L2 norms equal the Butler coefficients
+(TENDQ → `sqrt(54/5) ≈ 3.286`, DS → `sqrt(70) ≈ 8.367`,
+DT → `sqrt(630) ≈ 25.10`).
+
+**SCOPE EXPANSION discovered in Session 2:** The plan's claim that
+"TRANSI/MULTIPOLE blocks are already partially D4h-aware (PERP/PARA
+splitting). Verify no regression but probably no change needed" is
+**wrong**. Inspection of the current `sym='d4h'` output and the bundled
+`nid8` fixture shows:
+
+- The existing TRANSI emission uses **Oh-Butler labels** for `bra_sym`
+  and `ket_sym` (e.g., `'2+'` = Oh-Eg dim 2 mult 5,
+  `'1+'` = Oh-T1g dim 3 mult 4).
+- The `nid8.rme_rac` fixture has **D4h-Butler labels** with the SAME
+  string (`'2+'` = D4h-B1g dim 1 mult 6, `'1+'` = D4h-Eg dim 2 mult 10).
+- This collision is why the existing `sym='d4h'` from-scratch path only
+  achieves cosine ≈ 0.95 against `nid8` — the labels are wrong AND the
+  matrix elements aren't projected onto D4h-partner basis on either
+  bra (GS) or ket (EX) side.
+- The assembler matches triads `(gs_sym, act_sym, fs_sym)` by symbol;
+  for the dispatcher refactor to be coherent, GROUND, EXCITE, AND
+  TRANSI must all use D4h-Butler labels with consistent matrix elements.
+
+So the gate test `test_calcXAS_from_scratch_d4h_ni_matches_nid8_strict`
+(cosine ≥ 0.9999) requires both pieces:
+1. Per-D4h-irrep GROUND/EXCITE blocks (the helpers are ready, see
+   "Wiring Step 3" below).
+2. Per-D4h-irrep TRANSI blocks (NOT yet implemented; see Step 4).
 
 This is the unified Threads 2+3 work — it closes BOTH the DS coupling
 gap (BUG-001 follow-up, "DS gap deeper than expected") AND the D4h
@@ -200,16 +254,84 @@ else:
 
 Same shape for EXCITE (line ~999), with parity='u' and `_ex_*` indices.
 
-The TRANSI/MULTIPOLE blocks (lines 791–917) are already partially
-D4h-aware (PERP/PARA splitting). Verify no regression but probably no
-change needed — the PERP/PARA labels are valid D4h Butler labels.
+**Caveat (Session 2 finding):** the helper signature actually
+implemented in `rac_generator.py` is
 
-### Step 4 — Update `_build_ban_from_rac` (no change expected)
+```python
+_make_d4h_op_adds(
+    d4h_irrep, entries, operator,
+    ham_idx_map, cf_idx_map, cf_idx_map_rank2,
+    parity,                      # 'g' for GROUND, 'u' for EXCITE
+)
+```
+
+i.e., positional order differs slightly from the plan's draft, and the
+`l_val` argument was removed (`_d4h_operator_vector_complex` builds the
+operator vector directly from `D4H_BRANCHES_BY_OPERATOR` so does not
+need `l`). Use the actual signature when wiring.
+
+### Step 4 — TRANSI per-D4h-irrep emission (~150 LOC, NEW in Session 2)
+
+The existing `if sym == 'd4h':` TRANSI loop (lines ~855–917) does
+PERP/PARA splitting BUT keeps Oh-Butler labels for `bra_sym`/`ket_sym`,
+which collide with D4h-Butler labels in the `nid8` fixture. Replace
+with per-D4h-irrep TRANSI emission so the assembler matches triads
+correctly.
+
+Recipe:
+
+```python
+if sym == 'd4h':
+    layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
+    layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
+    for d4h_gs, gs_entries in sorted(layout_gs.items()):
+        if not gs_entries:
+            continue
+        n_bra = sum(e[4] for e in gs_entries)
+        for d4h_ex, ex_entries in sorted(layout_ex.items()):
+            if not ex_entries:
+                continue
+            n_ket = sum(e[4] for e in ex_entries)
+            for op_name, op_d4h_irrep, op_butler, geom in [
+                ('PERP', 'Eu', '1-', 'PERP'),
+                ('PARA', 'A2u', '^0-', 'PARA'),
+            ]:
+                # Compute per (gs_entry, ex_entry) the dipole matrix
+                # element <v_b_d4h | T1u (D4h-component) | v_k_d4h>.
+                # Use multipole_blocks (rank-1 transition coupling) as
+                # the SHELL matrix; project both sides onto D4h-partner
+                # basis. Skip if all couplings are below 1e-15.
+                ...
+```
+
+Implementation notes for Step 4:
+
+- The dipole `T1u` projects onto `Eu` (PERP, dim=2) and `A2u` (PARA,
+  dim=1) of D4h. So the "operator vector" for PERP is the
+  `oh_to_d4h_subduction_matrix('T1u')['Eu']` and for PARA is the
+  `oh_to_d4h_subduction_matrix('T1u')['A2u']`. Pick one partner
+  (the dipole magnitude is partner-symmetric within each D4h sub-irrep
+  due to the BAN's standard scaling).
+- The SHELL block is `multipole_idx[(J_gs, J_ex)]` (rank-1 transition
+  matrix). Same store as the existing path.
+- For each `(gs_entry, ex_entry)` pair, compute
+  `<v_b_d4h_gs | O_dipole | v_k_d4h_ex>` and emit an ADD entry with
+  `coeff = sqrt(dim_d4h_op / sqrt((2J_gs+1)(2J_ex+1))) × <…>` (verify
+  the prefactor empirically — the existing PERP/PARA `sqrt(2/3)` and
+  `sqrt(1/3)` factors map to `dim_Eu/dim_T1u` and `dim_A2u/dim_T1u`).
+
+Validate Step 4 against the bundled `nid8.rme_rac` fixture: the
+TRANSI block headers must match (`bra_sym`, `op_sym`, `ket_sym`,
+`PERP/PARA`, `n_bra`, `n_ket`).
+
+### Step 5 — Update `_build_ban_from_rac` (no change expected)
 
 The 4-operator XHAM `[1.0, tendq, dt, ds]` is already correct (commit
-`e3c39c4`). No change.
+`e3c39c4`). The triads are derived from TRANSI bra/op/ket strings, so
+once Step 4 emits D4h-Butler labels, the BAN will naturally have D4h
+triads. No code change in `_build_ban_from_rac` itself.
 
-### Step 5 — Gate test (~50 LOC)
+### Step 6 — Gate test (~50 LOC)
 
 Add to `tests/test_d4h/test_d4h_from_scratch_status.py`:
 
@@ -248,7 +370,7 @@ def test_calcXAS_from_scratch_d4h_ni_matches_nid8_strict():
 
 Do NOT skip this test. If it fails, debug — don't loosen the tolerance.
 
-### Step 6 — DS perturbation test (~30 LOC)
+### Step 7 — DS perturbation test (~30 LOC)
 
 Add a regression test that ds≠0 changes the spectrum:
 
@@ -271,7 +393,7 @@ def test_d4h_ds_perturbation_changes_spectrum():
     )
 ```
 
-### Step 7 — Drop the deprecated v1 path
+### Step 8 — Drop the deprecated v1 path
 
 Once gate test passes, delete the OLD per-Oh-irrep `if sym == 'd4h':`
 emission code (the broken DT/DS blocks, the `dt_a1_scale` /
@@ -281,24 +403,33 @@ pieces useful for future work even if not the primary path.
 
 ---
 
-## Implementation order (in a fresh session)
+## Implementation order (Session 3+ pickup)
 
-1. Read this file + `CODE_REVIEW.md` Addendum 3
-2. Run `pytest tests/test_d4h tests/test_angular -q` — confirm
-   116 pass + 1 xfail baseline
-3. Implement Step 1: `_make_d4h_op_adds` for HAMILTONIAN only
-4. Test on Ni d8: emit one block, manually verify ADDs against nid8
-5. Implement TENDQ — same approach
-6. Implement DS (the previously-broken case) — verify diagonalization
-   matches the existing `test_ds_operator_is_diagonal_in_d4h_basis`
-7. Implement DT (most complex — multi-path operator vector)
-8. Wire everything into the `if sym == 'd4h':` branch
-9. Run gate test (Step 5). Fix bugs. Iterate.
-10. Run DS perturbation test (Step 6).
-11. Run autograd parity test (already exists for slater/soc; extend
-    to dt/ds/tendq).
-12. Verify the bench harness's parity for nid8/Fe d4h (if fixture
-    bootstrap is unblocked) before merging.
+Steps 1–2 (helpers) are DONE in `multitorch/angular/rac_generator.py`
+between `generate_ground_state_rac` and `generate_ledge_rac`
+(Session 2, uncommitted). Verify with
+`pytest tests/test_d4h tests/test_angular -q` → 116 pass + 1 xfail
+baseline still holds; nothing is wired yet.
+
+Remaining work, in order:
+
+1. Read this file (especially "Session 2 progress") + the helpers in
+   `rac_generator.py` (`_d4h_partner_vector`, `_d4h_op_routes`,
+   `_d4h_operator_vector_complex`, `_operator_real_matrix`,
+   `_make_d4h_op_adds`).
+2. Wire Step 3 (GROUND/EXCITE per-D4h-irrep) into `generate_ledge_rac`
+   under `if sym == 'd4h':`. Use the actual signature with the
+   `parity` kwarg ('g' for GROUND, 'u' for EXCITE).
+3. Wire Step 4 (TRANSI per-D4h-irrep) — this is the new chunk added in
+   Session 2; expect ~150 LOC. Validate `bra_sym/op_sym/ket_sym/n_bra/
+   n_ket` against `nid8.rme_rac` headers as you go.
+4. Add tests from Steps 6 and 7 (gate + DS perturbation).
+5. Flip the existing xfail `test_d4h_dispatcher_emits_nid8_irrep_set`
+   to passing once the irrep set matches.
+6. Drop the deprecated v1 D4h emission code (Step 8).
+7. Run `pytest tests/ -q` — full 477-test suite must pass.
+8. Update PORT_NOTES.md: BUG-001/-002 closed, Phase 1c gap closed.
+9. Surface result to user; do not commit without explicit request.
 
 ## Risks and known gotchas
 
