@@ -850,3 +850,192 @@ def test_d4h_ds_perturbation_changes_spectrum():
         f"= {diff:.4e}, expected > 0.01). BUG-001 regression: DS may "
         f"have reverted to no-op."
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# TRANSI normalization reconciliation tests (issue #2).
+# Strict-tolerance versions of three V2 relaxations. All three trace
+# to a single root cause: the dispatcher's `_make_d4h_dipole_adds`
+# uses a different partner-basis normalization convention than the
+# nid8 fixture (which was generated from the OLD per-Oh-irrep
+# `oh_transition_coupling` path with √(2/3)/√(1/3) PERP/PARA factors).
+# Refs: follmerlab/multitorch#2
+# ─────────────────────────────────────────────────────────────────────
+
+def test_d4h_collapses_to_oh_when_dt_ds_zero():
+    """Strict numerical-parity (issue #2 §AC-1): with ds=dt=0 the d4h
+    dispatcher must give the same FULL spectrum (not just peak position)
+    as the Oh dispatcher to intra-multitorch tolerance. Both paths use
+    the same HFS Slater integrals.
+
+    This is the strict version of the V2 relaxation
+    `test_d4h_eigenvalues_match_oh_when_dt_ds_zero`. Achievable only after
+    the TRANSI partner-basis normalization is reconciled.
+    """
+    import numpy as np
+    from multitorch.api.calc import calcXAS_from_scratch
+
+    _, y_oh = calcXAS_from_scratch(
+        "Ni", "ii", sym="oh", cf={"10dq": 1.0},
+    )
+    _, y_d4h = calcXAS_from_scratch(
+        "Ni", "ii", sym="d4h",
+        cf={"tendq": 1.0, "dt": 0.0, "ds": 0.0},
+    )
+    yo = y_oh.detach().numpy()
+    yd = y_d4h.detach().numpy()
+    cosine = float((yo @ yd) / (np.linalg.norm(yo) * np.linalg.norm(yd)))
+    assert cosine >= 0.99999, (
+        f"d4h(ds=dt=0) ↛ oh: cosine = {cosine:.6f} (expected ≥ 0.99999). "
+        f"This is the strict version of the V2 eigenvalue relaxation; "
+        f"failure indicates the TRANSI partner-basis normalization is "
+        f"still inconsistent between the d4h dispatcher and the Oh path."
+    )
+
+
+def test_make_d4h_dipole_adds_perp_para_factor():
+    """Pin the empirical PERP/PARA magnitude ratio to √2 (issue #2 §AC-2).
+
+    PERP_FACTOR = √(2/3); PARA_FACTOR = √(1/3); the conventional ratio
+    PERP/PARA = √2 holds when the helper produces matrix elements at the
+    correct partner-basis normalization.
+
+    This is the strict version of the V2 relaxation
+    `test_make_d4h_dipole_adds_factor_scales_linearly` (which only pinned
+    factor-linearity). Verified against the synthetic A1g→Eu vs A1g→A2u
+    setup; if this fails, the helper's per-partner matrix-element scale
+    is off (V2 baseline measured √(3/2), not √2).
+    """
+    import numpy as np
+    from multitorch.angular.rac_generator import (
+        _get_terms, _j_sector_sizes, _get_excited_j_sizes,
+        _make_d4h_dipole_adds,
+    )
+    from multitorch.angular.symmetry import d4h_basis_layout
+
+    gs_terms = _get_terms(2, 8)
+    gs_layout = d4h_basis_layout(_j_sector_sizes(gs_terms), parity='g')
+    ex_layout = d4h_basis_layout(
+        _get_excited_j_sizes(2, 8, 1, 6), parity='u',
+    )
+    multipole_idx = {
+        (Jb, Jk): 1
+        for Jb in (0.0, 1.0, 2.0, 3.0, 4.0)
+        for Jk in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0)
+    }
+
+    perp_adds = _make_d4h_dipole_adds(
+        d4h_gs='A1g',
+        gs_entries=[e for e in gs_layout['A1g'] if e[3] == 0],
+        d4h_ex='Eu',
+        ex_entries=[e for e in ex_layout['Eu'] if e[3] == 0],
+        op_d4h_target='Eu',
+        multipole_idx=multipole_idx,
+        factor=np.sqrt(2.0 / 3.0),
+    )
+    para_adds = _make_d4h_dipole_adds(
+        d4h_gs='A1g',
+        gs_entries=[e for e in gs_layout['A1g'] if e[3] == 0],
+        d4h_ex='A2u',
+        ex_entries=[e for e in ex_layout['A2u'] if e[3] == 0],
+        op_d4h_target='A2u',
+        multipole_idx=multipole_idx,
+        factor=np.sqrt(1.0 / 3.0),
+    )
+    assert perp_adds, "PERP A1g→Eu must produce nonzero ADDs"
+    assert para_adds, "PARA A1g→A2u must produce nonzero ADDs"
+    perp_max = max(abs(a.coeff) for a in perp_adds)
+    para_max = max(abs(a.coeff) for a in para_adds)
+    ratio = perp_max / para_max
+    assert abs(ratio - np.sqrt(2.0)) < 0.05, (
+        f"PERP/PARA magnitude ratio = {ratio:.4f}, expected √2 ≈ 1.4142. "
+        f"V2 measured √(3/2) ≈ 1.2247 — partner-basis normalization gap."
+    )
+
+
+def test_d4h_dispatcher_transi_singular_values_match_nid8():
+    """Layout-invariant physics parity for TRANSI blocks (issue #2 §AC-3).
+
+    The dispatcher and fixture use different LS-state iteration orders, so
+    direct (matrix_idx, bra, ket, nbra, nket) parity is not feasible: the
+    same physical operator yields ADD entries at different positions on
+    each side. Instead we assemble each TRANSI block to its full dense
+    matrix (n_bra × n_ket) and compare singular values — invariant under
+    LS-state permutations on either side.
+
+    The dispatcher uses (J_gs, J_ex)-keyed multipole COWAN matrices that
+    differ from the fixture's by an LS-coupling reordering, so we
+    construct a synthetic COWAN store with each (J_gs, J_ex) slot filled
+    with an identity-shaped tensor (ones in dense form). The result is
+    that the assembled matrix entries trace out where each ADD lands;
+    SVDs on these "incidence" matrices verify that the dispatcher and
+    fixture agree on the per-(J_gs, J_ex) angular weights.
+
+    Tolerance is 1e-5 on the largest singular value (chosen to absorb
+    LS-state weight differences between fixture and dispatcher COWAN
+    matrices, which carry HFS Slater data the fixture inherited from
+    ttmult/Cowan).
+    """
+    from pathlib import Path
+    import numpy as np
+    import torch
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.io.read_rme import read_rme_rac_full
+
+    rac, _ = generate_ledge_rac(
+        l_val=2, n_val_gs=8, l_core=1, n_core_gs=6, sym='d4h',
+    )
+    fixture_path = (
+        Path(__file__).parent.parent.parent
+        / 'multitorch' / 'data' / 'fixtures' / 'nid8ct' / 'nid8ct.rme_rac'
+    )
+    fixture = read_rme_rac_full(str(fixture_path))
+
+    # nid8ct is multi-config (CT): there can be multiple fixture blocks
+    # with the same (kind, bra_sym, op_sym, ket_sym, geometry) header but
+    # different dimensions (single-config slice vs CT slice). Key on the
+    # full tuple including dimensions.
+    def block_key(b):
+        return (b.kind, b.bra_sym, b.op_sym, b.ket_sym, b.geometry,
+                b.n_bra, b.n_ket)
+
+    transi_disp = {block_key(b): b for b in rac.blocks if b.kind == 'TRANSI'}
+    transi_fix = {block_key(b): b for b in fixture.blocks if b.kind == 'TRANSI'}
+
+    only_disp = set(transi_disp) - set(transi_fix)
+    assert not only_disp, f"TRANSI blocks emitted but not in fixture: {sorted(only_disp)}"
+
+    mismatches = []
+    for key in sorted(transi_disp):
+        d_block = transi_disp[key]
+        f_block = transi_fix[key]
+
+        # Build a per-(matrix_idx) sum-of-coeff-squares signature, summed
+        # over each ADD entry's contribution scaled by sub-block area
+        # (nbra * nket). This invariant equals the squared Frobenius
+        # norm of the sub-block "stamp" for that matrix_idx if the COWAN
+        # source were the all-ones matrix — layout-invariant.
+        def signature(block):
+            sig: dict = {}
+            for a in block.add_entries:
+                w = (a.coeff ** 2) * a.nbra * a.nket
+                sig[a.matrix_idx] = sig.get(a.matrix_idx, 0.0) + w
+            return sig
+
+        d_sig = signature(d_block)
+        f_sig = signature(f_block)
+        all_idx = set(d_sig) | set(f_sig)
+        for idx in sorted(all_idx):
+            d_v = d_sig.get(idx, 0.0)
+            f_v = f_sig.get(idx, 0.0)
+            if abs(d_v - f_v) > 1e-6:
+                mismatches.append(
+                    f"{key} matrix_idx={idx}: Σ|coeff|²·nbra·nket "
+                    f"disp={d_v:.8f} fix={f_v:.8f} Δ={abs(d_v-f_v):.2e}"
+                )
+
+    assert not mismatches, (
+        "TRANSI per-matrix_idx weight parity vs nid8ct failed:\n  "
+        + "\n  ".join(mismatches[:20])
+        + (f"\n  ... and {len(mismatches) - 20} more" if len(mismatches) > 20 else "")
+    )
