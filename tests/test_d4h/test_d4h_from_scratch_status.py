@@ -582,3 +582,74 @@ def test_make_d4h_op_adds_DS_eg_block_nonzero():
         f"DS Eg ADD ket position {max_ket} exceeds MULT={expected_mult}; "
         f"likely partner_idx duplication (Bug B/C regression)"
     )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Commit 3 (V2 plan §5) — TRANSI dipole helper unit test.
+# Pins the PERP/PARA prefactor convention with a synthetic input;
+# faster failure signal than the per-coefficient parity test for
+# TRANSI bugs.
+# Refs: follmerlab/multitorch#1
+# ─────────────────────────────────────────────────────────────────────
+
+def test_make_d4h_dipole_adds_factor_scales_linearly():
+    """`_make_d4h_dipole_adds` must scale ADD coefficients linearly in
+    its `factor` kwarg, with all other state held fixed. This is the
+    helper's testable contract — it verifies that PERP_FACTOR=√(2/3) and
+    PARA_FACTOR=√(1/3) get applied as plain multiplicative scales.
+
+    The ABSOLUTE magnitude of the matrix elements (and hence the
+    PERP/PARA coefficient ratio) depends on the partner basis
+    normalization and is verified end-to-end by Q6-B's per-coefficient
+    parity test against `nid8.rme_rac`. Pinning a specific ratio here
+    would over-couple this unit test to an external reference.
+    """
+    from multitorch.angular.rac_generator import (
+        _get_terms, _j_sector_sizes, _get_excited_j_sizes,
+        _make_d4h_dipole_adds,
+    )
+    from multitorch.angular.symmetry import d4h_basis_layout
+
+    gs_terms = _get_terms(2, 8)
+    gs_layout = d4h_basis_layout(_j_sector_sizes(gs_terms), parity='g')
+    ex_layout = d4h_basis_layout(
+        _get_excited_j_sizes(2, 8, 1, 6), parity='u',
+    )
+    multipole_idx = {
+        (Jb, Jk): 1
+        for Jb in (0.0, 1.0, 2.0, 3.0, 4.0)
+        for Jk in (0.0, 1.0, 2.0, 3.0, 4.0, 5.0)
+    }
+
+    def _adds_for(target_d4h_ex, factor):
+        return _make_d4h_dipole_adds(
+            d4h_gs='A1g',
+            gs_entries=[e for e in gs_layout['A1g'] if e[3] == 0],
+            d4h_ex=target_d4h_ex,
+            ex_entries=[
+                e for e in ex_layout[target_d4h_ex] if e[3] == 0
+            ],
+            op_d4h_target=target_d4h_ex,
+            multipole_idx=multipole_idx,
+            factor=factor,
+        )
+
+    # Both PERP (A1g→Eu) and PARA (A1g→A2u) must produce nonzero ADDs
+    perp_1 = _adds_for('Eu', factor=1.0)
+    para_1 = _adds_for('A2u', factor=1.0)
+    assert perp_1, "PERP A1g→Eu must produce nonzero ADDs"
+    assert para_1, "PARA A1g→A2u must produce nonzero ADDs"
+    assert all(abs(a.coeff) > 0 for a in perp_1)
+    assert all(abs(a.coeff) > 0 for a in para_1)
+
+    # Linearity: factor=2 must produce coefficients exactly 2× factor=1
+    perp_2 = _adds_for('Eu', factor=2.0)
+    assert len(perp_2) == len(perp_1)
+    for a1, a2 in zip(perp_1, perp_2):
+        assert (a1.bra, a1.ket, a1.nbra, a1.nket) == (
+            a2.bra, a2.ket, a2.nbra, a2.nket
+        )
+        assert abs(a2.coeff - 2.0 * a1.coeff) < 1e-12, (
+            f"factor scaling is non-linear: factor=1 → {a1.coeff:.6e}, "
+            f"factor=2 → {a2.coeff:.6e}"
+        )

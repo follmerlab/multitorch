@@ -872,6 +872,88 @@ def _make_d4h_op_adds(
     return adds
 
 
+def _make_d4h_dipole_adds(
+    d4h_gs: str,
+    gs_entries: List[Tuple[float, str, int, int, int]],
+    d4h_ex: str,
+    ex_entries: List[Tuple[float, str, int, int, int]],
+    op_d4h_target: str,
+    multipole_idx: Dict[Tuple[float, float], int],
+    factor: float,
+) -> List[ADDEntry]:
+    """Build TRANSI ADD entries for one (D4h gs, D4h ex, dipole sub-irrep).
+
+    The dipole operator T1u (rank-1, ungerade) subduces to D4h-Eu (PERP,
+    dim 2) + D4h-A2u (PARA, dim 1). For a given choice of `op_d4h_target`
+    (one of 'Eu', 'A2u'), this helper builds the operator vector for
+    that sub-irrep's partner 0 (partners are degenerate in the spectrum
+    via the BAN's standard scaling) and projects matrix elements onto
+    the GROUND/EXCITE D4h-partner basis vectors.
+
+    The `factor` argument is the conventional prefactor that scales the
+    matrix element relative to the multipole_blocks reference matrix:
+    PERP = √(dim_Eu / dim_T1u) = √(2/3), PARA = √(dim_A2u / dim_T1u) =
+    √(1/3). It maps to the existing OLD-path PERP_FACTOR / PARA_FACTOR.
+
+    Both `gs_entries` and `ex_entries` MUST be pre-filtered to one
+    partner per (J, oh, copy) — pass `[e for e in layout[d4h_*] if
+    e[3] == 0]` from the caller, mirroring `_make_d4h_op_adds`'s
+    SCOPE LIMITATION.
+    """
+    # Build the dipole operator vector (rank-1, complex basis) for the
+    # target D4h sub-irrep of T1u.
+    sub = oh_to_d4h_subduction_matrix('T1u')[op_d4h_target]
+    op_vec_real = np.ascontiguousarray(sub[:, 0]).astype(np.float64)
+    U_1 = _c2r_unitary(1)
+    op_vec_complex = U_1.conj().T @ op_vec_real.astype(np.complex128)
+
+    O_cache: Dict[Tuple[float, float], np.ndarray] = {}
+    v_gs_cache: Dict[Tuple[float, str, int], np.ndarray] = {}
+    v_ex_cache: Dict[Tuple[float, str, int], np.ndarray] = {}
+
+    def get_O(Jb: float, Jk: float) -> np.ndarray:
+        key = (Jb, Jk)
+        if key not in O_cache:
+            O_cache[key] = _operator_real_matrix(Jb, Jk, 1, op_vec_complex)
+        return O_cache[key]
+
+    def get_v(d4h_irrep: str, J: float, oh_label: str, copy: int,
+              cache: Dict[Tuple[float, str, int], np.ndarray]) -> np.ndarray:
+        key = (J, oh_label, copy)
+        if key not in cache:
+            cache[key] = _d4h_partner_vector(J, oh_label, copy, d4h_irrep, 0)
+        return cache[key]
+
+    adds: List[ADDEntry] = []
+    bra_pos = 1
+    for (Jb, oh_b, cb, _, nb) in gs_entries:
+        ket_pos = 1
+        for (Jk, oh_k, ck, _, nk) in ex_entries:
+            # Triangle selection for k=1
+            if abs(Jb - Jk) > 1 or Jb + Jk < 1:
+                ket_pos += nk
+                continue
+            if (Jb, Jk) not in multipole_idx:
+                ket_pos += nk
+                continue
+            v_b = get_v(d4h_gs, Jb, oh_b, cb, v_gs_cache)
+            v_k = get_v(d4h_ex, Jk, oh_k, ck, v_ex_cache)
+            O_real = get_O(Jb, Jk)
+            me = float(v_b @ O_real @ v_k)
+            if abs(me) < 1e-13:
+                ket_pos += nk
+                continue
+            adds.append(ADDEntry(
+                matrix_idx=multipole_idx[(Jb, Jk)],
+                bra=bra_pos, ket=ket_pos,
+                nbra=nb, nket=nk,
+                coeff=factor * me,
+            ))
+            ket_pos += nk
+        bra_pos += nb
+    return adds
+
+
 def generate_ledge_rac(
     l_val: int,
     n_val_gs: int,
@@ -1118,14 +1200,58 @@ def generate_ledge_rac(
 
     # --- TRANSI (MULTIPOLE) blocks ---
     # Dipole operator T1u splits into D4h sub-irreps:
-    #   PERP (Eu, dim=2, Butler '1-'):  ADD = √(2/3) × oh_coupling
-    #   PARA (A2u, dim=1, Butler '^0-'): ADD = √(1/3) × oh_coupling
+    #   PERP (Eu, dim=2, Butler '1-'):  ADD ∝ √(dim_Eu / dim_T1u) = √(2/3)
+    #   PARA (A2u, dim=1, Butler '^0-'): ADD ∝ √(dim_A2u / dim_T1u) = √(1/3)
     # Separate TRANSI blocks are created for each geometry so the assembler
     # can match triads by actor symmetry.
     PERP_FACTOR = math.sqrt(2.0 / 3.0)  # √(dim_Eu / dim_T1u)
     PARA_FACTOR = math.sqrt(1.0 / 3.0)  # √(dim_A2u / dim_T1u)
 
-    for gs_irrep in oh_irreps_gs:
+    # V2 commit 3 — per-D4h-irrep TRANSI emission via _make_d4h_dipole_adds.
+    # Operates on the D4h-Butler labels emitted by commit 2 above.
+    # The OLD per-Oh-irrep TRANSI loop below is gated to `sym == 'oh'`
+    # by an empty-list swap; deleted in V2 commit 4.
+    if sym == 'd4h':
+        layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
+        layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
+        for d4h_gs, gs_raw in sorted(layout_gs.items()):
+            gs_filtered = [e for e in gs_raw if e[3] == 0]
+            if not gs_filtered:
+                continue
+            n_bra = sum(e[4] for e in gs_filtered)
+            gs_butler = D4H_TO_BUTLER[d4h_gs]
+            for d4h_ex, ex_raw in sorted(layout_ex.items()):
+                ex_filtered = [e for e in ex_raw if e[3] == 0]
+                if not ex_filtered:
+                    continue
+                n_ket = sum(e[4] for e in ex_filtered)
+                ex_butler = D4H_TO_BUTLER[d4h_ex]
+                for op_d4h_target, op_butler, geometry, factor in (
+                    ('Eu',  '1-',  'PERP', PERP_FACTOR),
+                    ('A2u', '^0-', 'PARA', PARA_FACTOR),
+                ):
+                    transi_adds = _make_d4h_dipole_adds(
+                        d4h_gs=d4h_gs, gs_entries=gs_filtered,
+                        d4h_ex=d4h_ex, ex_entries=ex_filtered,
+                        op_d4h_target=op_d4h_target,
+                        multipole_idx=multipole_idx,
+                        factor=factor,
+                    )
+                    if not transi_adds:
+                        continue
+                    blocks.append(RACBlockFull(
+                        kind='TRANSI',
+                        bra_sym=gs_butler,
+                        op_sym=op_butler,
+                        ket_sym=ex_butler,
+                        geometry=geometry,
+                        n_bra=n_bra, n_ket=n_ket,
+                        add_entries=transi_adds,
+                    ))
+
+    # OLD per-Oh-irrep TRANSI loop (sym='oh' only after V2 commit 3).
+    _legacy_transi_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+    for gs_irrep in _legacy_transi_gs_irreps:
         gs_butler = butler_label(gs_irrep, '+')
         gs_j_order = irrep_j_ordering(gs_j_sizes, gs_irrep)
         if not gs_j_order:
