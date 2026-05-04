@@ -453,3 +453,58 @@ exactly.
 
 This is the right unified path. Pause Thread 2 / Thread 3 here.
 Continue with Thread 1 (GPU on exxa) per user's A→B→C ordering.
+
+
+## Update — BUG-001 + BUG #2 closed via V2 dispatcher (2026-05-03, end of day)
+
+**Status: CLOSED** for the scope spelled out in
+`docs/D4H_DISPATCHER_PLAN_V2.md`. Tracked in the public issue at
+follmerlab/multitorch#1.
+
+The unified Threads 2+3 finding from earlier today (DS coupling + D4h
+labeling close together via one Oh→D4h basis rotation) was implemented
+on a dedicated feature branch (`d4h-dispatcher-v2`, six commits squashed
+on merge):
+
+1. Fixed three latent bugs in the Session-2 helpers — dropped the
+   `parity` kwarg (operator parity is gerade by construction; manifold
+   parity is in `d4h_irrep[-1]`); added partner-symmetry filtering inside
+   `_make_d4h_op_adds`; parameterized on `target_d4h_irrep='A1g'` for
+   future extensibility.
+2. Wired the per-D4h-irrep GROUND + EXCITE emission into
+   `generate_ledge_rac`. Block matrix dimension uses MULT (per-partner)
+   not the partner-summed entry count; the assembler's `1/√IDIM`
+   normalization is consistent.
+3. Added `_make_d4h_dipole_adds` and per-D4h-irrep TRANSI emission with
+   PERP/PARA factor convention matching the OLD per-Oh-irrep loop.
+4. Deleted the OLD per-Oh-irrep d4h-specific emission (the
+   `dt_a1_scale` / `ds_e_scale` magic and inner `if sym == 'd4h':`
+   branches inside the OLD loops).
+5. Added eight new tests across helper-level (DS-Eg nonzero, dipole
+   factor linearity), structural (block set vs nid8ct), invariants (no
+   cross-copy HAM, every CF block has ADDs), and end-to-end (peak
+   match in ds=dt=0 limit, ds-perturbation observability). Deleted the
+   one test obsoleted by D4h-Butler labeling.
+6. This update.
+
+**What this does NOT yet close:**
+
+- Strict cosine ≥ 0.99999 between d4h(ds=dt=0) and oh(10dq=*). The two
+  dispatchers use different TRANSI partner-basis normalization
+  conventions. Hamiltonian eigenvalues match exactly (peak-position
+  test passes); intensities do not. The OLD per-Oh-irrep TRANSI loop's
+  RME convention via `oh_transition_coupling` differs from the new
+  `_make_d4h_dipole_adds`'s direct `<v_b | T1u_partner | v_k>`
+  projection. Reconciling these is a separate piece of work.
+- Strict per-coefficient parity vs `nid8ct.rme_rac`. The dispatcher's
+  internal block layout (matrix indices, entry order, bra/ket position
+  assignment) differs from the cached fixture's even when the physics
+  is correct. End-to-end physics correctness is verified by the loose-
+  tolerance test (`test_d4h_ni_from_scratch_runs_and_matches_oh_baseline`,
+  cosine ≥ 0.95 vs cached nid8) which still passes.
+- Half-integer J / D4h double-group support. Gated explicitly with
+  `NotImplementedError`; out of V2 scope.
+
+The downstream symptom — the sharp ~714 eV residual visible in the v0
+manuscript fits in `bench/v0_fitter_results/` — should now drop
+substantially once those fits are re-run with the V2 dispatcher.
