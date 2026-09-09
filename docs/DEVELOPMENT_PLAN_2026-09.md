@@ -1,0 +1,262 @@
+# multitorch development plan — fully differentiable port + beyond Oh/D4h
+
+**Date:** 2026-09-09
+**Branch:** `develop` (created from `d4h-transi-normalization`, HEAD `7b0c1fa`; merges to `main` when everything is done)
+**Test baseline:** 539 passed / 2 skipped / 3 xfailed
+**Compute:** exxa (`~/code/multitorch`, 2× RTX 4090, 128 cores, 503 GB RAM). Large outputs go to `/data/ahf/multitorch/`.
+
+---
+
+## 0. Where we left off (May 2026) and where we are now
+
+### Branch state on 2026-09-09
+
+| Branch | HEAD | Status |
+|---|---|---|
+| `main` | `c061f86` | v0.1.0 + Phase 1c scaffolding. Behind by 14 commits. |
+| `d4h-dispatcher-v2` | `382b04d` | V2 per-D4h-irrep dispatcher. Closed BUG-001 (DS gap) and BUG #2 (label collision). Unmerged. |
+| `d4h-transi-normalization` | `7b0c1fa` | Wigner-Eckart prefactor + partner-summed RME; all 13 TRANSI blocks match `nid8ct` at 1e-6. Unmerged. |
+| **`develop`** | `7b0c1fa` | **New.** Contains both feature branches. All new work lands here. |
+
+Open GitHub issues: #1 (Phase 1c dispatcher, closable), #2 (TRANSI normalization; only the "re-run the five Fe v0 fits" bullet remains).
+
+### The two computation paths and what each can do today
+
+| Capability | Phase 5 path `calcXAS(element, valence, sym, edge, cf, …)` | From-scratch path `calcXAS_from_scratch` / `generate_ledge_rac` |
+|---|---|---|
+| Angular structure | Loaded from bundled Fortran fixtures (`data/fixtures/`) | Generated in Python (CFP tables + Wigner + O(3)→Oh→D4h projection) |
+| Symmetries | Whatever fixtures exist: Oh for Ti–Ni (8 ions), D4h for Ni only | `oh`, `d4h` |
+| Half-integer J (odd-electron ions: Fe(III) d5, Co(II) d7, Cr(III) d3, V(IV) d1, Cu(II) d9) | Yes via fixtures (Oh only) | Oh yes; **D4h raises NotImplementedError** (no double-group tables) |
+| Charge transfer | Yes (nid8ct fixture) | **No** (single configuration only) |
+| Autograd | **Yes** in slater, soc, tendq, dt, ds, delta (verified today) | **Partial.** `tendq`/`dt`/`ds` carry gradients (autograd matches finite difference to 1e-8). `slater`/`soc` fail at `rac_generator.py:160` (`H += fk_ev * shell_mat`, numpy accumulator) and five sibling sites. No test protects the working CF gradient. |
+| Accuracy vs Fortran | Parity at 1e-6 to 1e-12 **only at slater=soc=1 with the fixture's own CF/CT parameters.** At the default `slater=0.8` the forward model is wrong (audit S1: only the ground config-1 block is rescaled, F⁰ and the E_av constant are scaled, the 2p⁵3dⁿ⁺¹ manifold is not). Fixture-path `dt` omits the `−35·Dt/6` cross term (S2). | The quoted "0.978 cosine" is computed after an 830 eV peak shift on a window holding 66% of the intensity (audit §7.1). Root causes: HFS runs with no closed core (S3: F²dd 2.7×, G¹pd 6.8× rcn31), D4h CF blocks not one-electron-consistent + Ds sign flipped (S4), Oh dipole strengths off by triad-dependent 1.5–7× (S5). |
+| Speed (single spectrum) | 20 ms (Ni) – 2 s (V d2) cached | 6–10 s; **95% is regenerating uncached angular constants** (`_complex_subduction_matrix` ×704, `wigner_D_matrix` ×16,896, `_small_d` ×1.77M per call). Four `lru_cache` decorators measured 12× (Fe d6 Oh 6.1 s → 0.5 s; Fe d6 D4h 10 s → 0.7 s). |
+
+So the answer to "where did we end up on going beyond Oh and D4h" is: **nowhere yet, and D4h itself is only complete for even-electron ions.** The `fits/` Fe work still runs in the Oh approximation for exactly that reason (Fe(III) d5 is half-integer J). The 714 eV residual in every v0 fit is the symptom.
+
+### What the Fortran suite could do that we cannot yet
+
+`ttrac` reads Butler's branching library (`ttmult/inputs/disk0`), which tabulates the point groups **O, T, K, C1–C6, D2–D6, D∞** (inversion handled by parity labels, so Oh = O×Ci, D4h = D4×Ci, Td ≅ O with relabeling). pyctm only ever wrote chains for `oh`, `d4h`, `c4h`. CTM4XAS users expect at least Oh, Td, D4h, C4v, D3d, D2h, C2v.
+
+### Known residuals carried forward
+
+The 2026-09 scientific audit (§6) superseded the May-era understanding of these. Verified independently on 2026-09-09: halving `slater` on the fixture path shifts all Ni sticks by a rigid +43.4 eV with the span unchanged (24.383 eV both ways); `build_ban.py:118` writes raw `tendq` where pyctm writes `tendq − 35·dt/6`.
+
+1. **S1 (fixture path, default regime).** `slater`/`soc` rescale only the ground config-1 HAMILTONIAN blocks; the excited manifold and the ligand-hole config are constants. F⁰ and the configuration-average constant are scaled too (−88.6 eV / +84.2 eV per unit). The `.rme_rcg` store has no separate G^k blocks, so the excited manifold cannot be rebuilt from fixture data: the fix needs the from-scratch two-shell exchange machinery. **Consequence: the v0 Fe fitted `slater`/`soc` values are not comparable with literature.**
+2. **S2 (fixture path, D4h).** `dt` is a pure rank-4 E_θ operator, not Ballhausen Dt. One-line fix plus a test against `pyctm.write_BAN.cf_list`.
+3. **S3 (from-scratch).** `tables.py:78-80` returns `'2P06 3D08'` with no closed core. Restoring it fixes F^k_dd and ζ2p to ≤1.4%; G^k_pd/F²_pd stay 2.5–2.8× and ζ3d(Blume-Watson) 1.39× → two further defects in `slater.py` / `blume_watson.py`. F²_pd omission is ~4 eV of span, not "a few tenths".
+4. **S4 (from-scratch D4h).** Eg/A2g/B2g CF blocks give non-one-electron energies at dt=ds=0 (weighted means of true levels → ADD-entry/matrix-index defect in `_make_d4h_op_adds` for multi-`(J, oh_irrep, copy)` irreps); Ds sign opposite to fixture/Ballhausen. TRANSI blocks are exactly right (issue #2 closure holds).
+5. **S5 (from-scratch Oh).** Dipole Frobenius² per triad off by 1.46–7.0× vs Fortran; changes normalized spectra. The D4h dispatcher's `_make_d4h_dipole_adds` is on the Fortran convention and should serve Oh.
+6. **S6 (API).** All "Oh" fixtures are 2-configuration LMCT calculations applied silently (Fe: cosine 0.36 vs ionic); `delta=float` sets Δ_gs only; `delta`/`lmct` docstrings wrong; `u` ignored.
+7. Must-document items (audit §8): `T` dead at `max_gs=1`; `med_energy` dead and the midpoint split gives early-3d L3 lines the L2 width; Boltzmann weights unnormalized and degenerate ground components split by rounding; legacy pseudo-Voigt η under by ~0.11 (SCA-001); `xv != 0.0` guard severs autograd at exactly-zero CF parameters; d⁰ silently ignores `slater`/`soc`; HFS `converged` flag never checked.
+8. `safe_eigh` degeneracy perturbation: Cr d3 excluded from autograd tests because eigh backward gives NaN at exact degeneracies.
+9. The five Fe v0 fits were never re-run with the V2 dispatcher, and must not be re-run until S1 is fixed.
+
+---
+
+## 1. Goals for this cycle
+
+| ID | Goal | Done when |
+|---|---|---|
+| **A** | From-scratch path fully differentiable | `torch.autograd.gradcheck`-style finite-difference agreement for every physical parameter (F^k, ζ, R^1, all CF parameters, Δ, U, T) on Ni(II), Fe(II), Fe(III); no fixture files needed |
+| **B** | Arbitrary point groups, single and double | Oh, Td, D4h, C4v, D3d, D2h, C2v (at least) for integer *and* half-integer J, validated against Fortran-generated references |
+| **C** | Charge transfer from scratch | `nid8ct` reproduced from scratch at ≥ 0.99 cosine; Fe(III)Cl LMCT fits possible |
+| **D** | Performance | ≤ 0.1 s per spectrum for Fe d6 D4h after angular cache warm-up; batched sweeps; benchmarks archived in `/data/ahf/multitorch/bench` |
+| **E** | Feature extensions | XMCD/XMLD, K pre-edge quadrupole, from-scratch XES/RIXS, uncertainty quantification, a `multitorch.fit` module |
+| **S** | Scientific correctness (new, gates everything) | All six "blocks scientific use" audit findings closed with Fortran oracles: a Ni d⁸ fixture regenerated by ttrcg at 80% Slater reduction reproduced at `slater=0.8` to 1e-6 eigenvalues; one-electron CF probe passes on both paths for 10Dq/Dt/Ds; from-scratch HFS integrals within 3% of every bundled `.rcn31_out`; parity metrics on the union window |
+| **F** | Codebase health | Architecture deepening applied where it pays; audits (senior review + scientific audit) findings resolved or documented |
+
+---
+
+## 2. Work packages
+
+Effort is in focused working days. Ordering matters: **0 → S → A → B → C**. WP-S comes first because the audit showed the default fixture-path regime and the whole from-scratch path are currently wrong in ways every later package would build on; S1b and A1 share one seam and land together. B replaces the module A makes differentiable; C reuses B's operator machinery. D and E overlap with B/C once A has landed.
+
+### WP-0 — Consolidate (1–2 days)
+
+- [x] Create `develop` from `d4h-transi-normalization`, push, sync exxa checkout, create `/data/ahf/multitorch/`.
+- [ ] ~~Re-run the five Fe v0 fits with the V2 dispatcher on exxa~~ **Deferred to after WP-S** — with S1 unfixed the fitted `slater`/`soc` are meaningless and S2 makes fitted `dt` non-Ballhausen. Results will go to `/data/ahf/multitorch/fits/v1_2026-09/`.
+- [ ] Close #1; retitle #2 or close with the fit re-run.
+- [ ] Add `SCIENTIFIC_AUDIT_*.md` to `.gitignore`; move `tests/scratch_*.py` out of `tests/` (they are gitignored but still collected by name-pattern in some tooling).
+- [x] Record this plan under `.claude/orchestration/INDEX.md` "Active Tracks" as **Track D**.
+- [ ] **Memoize angular constants** (review rec. #1, ½ day): `lru_cache` on `_complex_subduction_matrix`, `_real_subduction_matrix`, `oh_branching`, `_complex_subduction_matrix_half_int`; `(J, R.tobytes())` cache for `wigner_D_matrix`. Seed or assert on the `np.random.randn` fallback in `_find_real_copy_basis` (`point_group.py:1799`). 12× on every from-scratch call and a much faster test suite.
+- [ ] Drop the `torch.allclose` Hermiticity check in `safe_eigh` and always symmetrize (Perf-001: 1.68 s per Fe(III) forward).
+- [ ] Refresh stale trackers/docstrings: `INDEX.md` test count, `CLAUDE.md`, `calc.py:650` (advertises `'c4h'`), `calc.py:1136`, `rac_generator.py:1-24` module docstring.
+
+### WP-S — Scientific correctness fixes (5–8 days; **before** anything else lands on the from-scratch path)
+
+Ordered by blast radius. Every item gets a Fortran or analytic oracle, not a code-vs-code test.
+
+- **S1a. Stop scaling F⁰ and the E_av constant** in `build_cowan.py`: decompose `h_parsed = c·1 + Σ_{k=2,4} F^k SHELL_k + ζ V11` with `c` fitted per block, leave `c` and F⁰ unscaled; scale `gk` (already computed by `scaled_params.py`, never read). ½ day.
+- **S1b. Rebuild the excited manifold.** Bring the two-shell generator (`rme.py::compute_two_shell_exchange`, `compute_two_shell_soc`) into the fixture path to rebuild section 3 with scaled G¹/G³/ζ2p/ζ3d. This is the same seam as WP-A1 (parameter-linear operator basis): do them together. Until it lands, default `slater=1.0` and warn. **Oracle:** regenerate `ni2_d8_oh` with ttrcg at 80% reduction on exxa (`/data/ahf/multitorch/fixtures/ni2_d8_oh_s80/`), assert eigenvalue parity at `slater=0.8` to 1e-6. 2–3 days.
+- **S2. `build_ban.py`: write `tendq − 35·dt/6` into `xham[1]`**; test against `pyctm.write_BAN.cf_list` on a (tendq, dt, ds) grid. Add the one-electron probe (slater=soc=0 → pair sums of Ballhausen orbital energies) as a test for both paths and all three operators. ½ day.
+- **S3. `tables.py`: return the full configuration** `'1S02 2S02 2P06 3S02 3P06 3D0n'`; then chase the residual 2.5× in G^k(pd)/F²(pd) (`slater.py` mixed-shell Y^k) and 1.39× in ζ3d Blume-Watson; test `_hfs_to_slater_params` vs `read_rcn31_out_params` for every bundled `.rcn31_out` at ≤ 3%. Check `hfs_scf(...).converged`. 1–2 days.
+- **S4. D4h dispatcher CF blocks.** Add per-D4h-irrep CF-only eigenvalue parity (fixture ground blocks vs `generate_ledge_rac(sym='d4h')`, 1e-6) at dt=ds=0, dt-only, ds-only; fix the multi-copy ADD/matrix-index defect in `_make_d4h_op_adds` and the Ds sign. 1–2 days.
+- **S5. Retire the Oh legacy TRANSI loop** in favour of `_make_d4h_dipole_adds` (Fortran convention; identity subduction for Oh); assert per-triad Frobenius² vs fixture for all 8 Oh ions. ½–1 day. (Also removes ~200 lines, see WP-F.)
+- **S6. API semantics.** Document per-element fixture CT defaults or default `lmct=0`; `delta` accepts `(Δ, Δ_f)` or `{'eg2','ef2'}`; implement or remove `u`; fix docstrings; wire or drop `med_energy`; exclude zero-intensity sticks from range/median; replace `xv != 0.0` with `is None`; normalise or document ground-state degeneracy in `get_sticks*`; SCA-001 flip with deprecation warning. 1 day.
+- **S7. Parity metric.** Compare on the union window, report fraction of intensity inside, add stick-span and L3/L2 assertions to every from-scratch test; rewrite the four docstrings citing an "HFS floor". Make `test_deployment_checks.py:123` fail instead of skip. ½ day.
+- **S8. Autograd FD harness as a test** parametrised over (Ni d4h, Fe oh) × (nominal, dt=ds=1e-3, soc=1e-3) with `xmin/xmax` pinned, rel-err ≤ 1e-5 at h=1e-4. ½ day.
+
+### WP-A — Differentiable from-scratch core (2–3 days; smaller than first estimated)
+
+The Phase 5 path already solved this problem for fixture-loaded matrices (`ScaledAtomicParams` in `atomic/scaled_params.py` and the Coulomb/SOC decomposition in `hamiltonian/build_cowan.py`). WP-A applies the same design to the generator. The senior review found the break is confined to six numpy accumulation sites (`rac_generator.py:160, 171, 258-263, 271, 279, 287-291`) plus eleven `float()` casts in `_hfs_to_slater_params` (`calc.py:1041-1056`); CF parameters already flow because `XHAMEntry` passes tensors through untouched.
+
+- **A1. Parameter-linear Hamiltonian (architecture candidate 2).** The angular layer emits a *parameter-free operator basis* (SHELL_k, V(11), G_k, DIRECT_k, MULTIPOLE as constant tensors, via the currently-unused `angular/torch_blocks.py`); one contraction `H = Σ p_i B_i` multiplies physical scalars in. Rewrite `_build_hamiltonian_cowan_matrices` and `_build_excited_hamiltonian_cowan` on top of it; make the fixture path's `_rebuild_hamiltonian_block` (which today *inverts* the sum by subtract-and-divide) the second adapter of the same seam. The basis is parameter-independent, so it caches across a fit.
+- **A2. CF parameters as tensors.** `_build_ban_from_rac` must place `tendq/dt/ds` into `xham` as tensors (the Phase 5 `modify_ban_params` already does this; the assembler handles it).
+- **A3. Atomic-parameter bundle (architecture candidate 7).** Collapse `ConfigParams` (float), `ScaledConfigParams` (tensor), and the two dict vocabularies (`'F2dd'` vs `'F2_dd'`; ground `'F2'` vs excited `'F2_dd'`) into one bundle keyed by (shell pair, rank) whose values may be float or tensor; `.rcn31_out`, HFS, and user dicts become adapters. `_hfs_to_slater_params` and its casts disappear. `slater`/`soc` multipliers remain the user-facing leaves; absolute F^k/ζ are leaves too.
+- **A4. Gradient contract tests.** Finite-difference vs autograd at 1e-4 relative for every leaf on Ni(II) Oh/D4h and Fe(II) Oh (mirror `test_phase5_parity.py:222`); ∂H/∂F2 == SHELL_2 at the contraction seam; gradient isolation (slater ↛ ζ); degenerate-eigenvalue test at dt=ds=0. Add peak-position and L3/L2-ratio assertions next to every cosine check (metrics exist in `bench/bench/parity.py`); cosine alone is blind to the 2× dipole-scale discrepancy.
+- **A5. Degeneracy-safe eigh backward.** Replace the diagonal-perturbation trick with a custom `autograd.Function` whose backward uses the Lorentzian-regularized 1/(λ_i−λ_j) (standard in differentiable-physics codes) so Cr d3 and high-symmetry limits (dt=ds=0) give finite gradients.
+- **A6. `preload_from_scratch(element, valence, sym)`** returning a `CachedFixture`-like object so `calcXAS_cached`/`calcXAS_batch` work on the from-scratch path (review rec. #3; depends on A1 + WP-0 memoization).
+- **A7 (stretch).** Torch Numerov radial solver so HFS itself is differentiable (only needed for d(spectrum)/d(Z_eff); not needed for fitting; Fortran RCN is likewise a fixed input to RCG).
+
+### WP-B — General point groups (8–12 days)
+
+Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations, Oh irrep matrices, Oh character projectors, Butler labels; `symmetry.py` adds an Oh→D4h second step. The generalization is to replace "chain of hand-written groups" with **one numerical construction that works for any finite subgroup G of O(3)**:
+
+- **B1. `PointGroup` object.** Built from generators (rotations as unit quaternions, so the SU(2) double cover comes for free; improper elements as rotation × inversion). Enumerate elements, conjugacy classes, compute the character table numerically (Burnside/Dixon or eigen-decomposition of class sums), and assign Mulliken labels from a small dimension/character-signature table. Validate: orders, class counts and characters for O, Td, D4, D3, D2, C4v, C3v, C2v match textbook tables.
+- **B2. Direct O(3)→G subduction.** `subduction_matrix(J, parity, G)` → per-irrep partner bases via character projection of Wigner-D(J) over G. Half-integer J uses the SU(2) matrices and the double group. **Oracle:** G=Oh reproduces `oh_subduction_matrix` and the Oh double-group code; G=D4h reproduces `d4h_partner_basis_per_J` (which was proved to diagonalize DS) and the `nid8` layout.
+- **B3. Symmetry-adapted crystal field (derive, don't tabulate).** Express the CF Hamiltonian as a Wybourne expansion Σ B_kq C^(k)_q (k=2,4 for d electrons) and project onto the totally symmetric irrep of G to get the allowed invariant combinations automatically. Named-parameter adapters convert conventional inputs: `10Dq` (Oh/Td), `(10Dq, Ds, Dt)` (D4h/C4v, Ballhausen), `(10Dq, Dσ, Dτ)` (D3d/C3v), `(10Dq, Ds, Dt, Du, Dv)`-style for D2h/C2v. This removes the per-operator recipe table `d4h_cf_operator_recipe` and makes new groups zero-code for CF.
+- **B4. General dipole/quadrupole operator subduction.** Rank-1 (and rank-2 for K pre-edge) operator components → G irreps and partners, giving linear and circular polarization selection for any G (generalizes PERP/PARA).
+- **B5. Symmetry Plan + generator rewrite (architecture candidates 1 and 5).** A `SymmetryPlan` answers, per group and manifold: which irrep blocks exist, their MULT, partner bases, and operator routes. `generate_ledge_rac(…, group=G)` becomes a loop over the plan with none of today's ten `sym ==` branch points or `legacy_*_irreps = []` tricks; the D4h dispatcher (whose Oh→D4h subduction is the identity for Oh) serves Oh too, retiring the legacy per-Oh-irrep loops (~200 lines + `_make_operator_adds`/`_make_cf_adds`). The generator returns its operator list and hybridization channels so `_build_ban_from_rac` and `assemble_and_diagonalize_in_memory` stop sniffing the group from `len(xham)` (`assemble.py:246-253`) and dipole geometry from Butler strings (`assemble.py:494-498`). Parity handled by including improper elements (χ^J(σ) = (−1)^p χ^J(R)) instead of the `'g'/'u'` suffix bolt-on. Oracle: byte-equal RAC output vs today's Oh and D4h paths.
+- **B6. Reference data.** Recompile `ttrac` with the BUG-002 workaround on exxa and generate Fortran references for Fe(II)/Fe(III) D4h, Ni(II) C4v/D3d/Td, Co(II) D4h (half-integer). Store full outputs under `/data/ahf/multitorch/fixtures/`, bundle only the small `.rme_*`/`.ban_out` files needed for tests. If ttrac cannot be revived, cross-check with Quanty or CTM4XAS output for the same parameters (documented in the audit ledger, not silent).
+
+### WP-C — Charge transfer from scratch (5–7 days)
+
+- **C1.** Two-configuration basis d^n + d^(n+1)L̲ (ligand hole as an extra l=2 shell, as ttrcg does), with the two-shell CFP/RME machinery already in `angular/rme.py` (`build_two_shell_j_basis`, `compute_two_shell_*`).
+- **C2.** Hybridization operator per G irrep (Oh: T_eg, T_t2g via rank-0 + rank-4 branch coefficients as in pyctm's `eghybr/t2ghybr`; lower symmetry splits these using WP-B projection). Parameters Δ, U_dd, U_pd, T_Γ; MLCT configuration optional.
+- **C3.** Emit HYBR TRANSI blocks and the two-configuration section plan so `hamiltonian/charge_transfer.py` + `assemble_and_diagonalize_in_memory` consume them unchanged. **Oracle:** `nid8ct` from scratch at ≥ 0.99 cosine and matching CT configuration weights (`calcDOC`).
+
+### WP-D — Performance (3–5 days, interleaved)
+
+- **D1. Angular cache.** In-process memoization lands in WP-0. Then persist the RAC + parameter-free operator basis per (element config, edge, G) with `torch.save` to `$MULTITORCH_CACHE` (default `~/.cache/multitorch`; on exxa `/data/ahf/multitorch/cache`). A sweep then costs parameter-multiply + eigh only (~10–20 ms, i.e. `calcXAS_cached` speed).
+- **D2. Batched evaluation.** Stack parameter sets and use `safe_eigh_batch` / `torch.func.vmap` so fits and grids evaluate 100s of spectra per call; this is where the 4090s finally pay (per `docs/GPU_ACCELERATION_PLAN.md`: eigh ≥ 500 dim, broadening, RIXS kernel).
+- **D3. Second-order angular wins** after memoization: tabulate `_small_d` per (J, β) per rotation class; compute `_coupling_trace` from `_coupling_trace_full` instead of re-deriving subduction matrices; build the assembler's block index once instead of 8N linear scans (architecture candidate 6).
+- **D5. Eigensolver seam (architecture candidate 8).** `solve(H, k_needed, needs_grad)` with dense-CPU / dense-CUDA / batched / partial-Lanczos adapters; device policy keyed on block dimension inside the seam rather than on element/valence at the API layer. Home for A5's degeneracy-safe backward.
+- **D4. Bench.** Re-run `bench/` on exxa before/after; archive under `/data/ahf/multitorch/bench/<date>/`, commit only the markdown summary.
+
+### WP-E — Feature extensions (ordered by payoff; 2–4 days each)
+
+1. **XMCD / XMLD.** Exchange field operator (H_ex·S) and polarization-resolved dipole components (needs B4). Validate against the Fortran `als1ni2` fixture and van der Laan's Ni(II) reference spectra.
+2. **From-scratch XES and RIXS.** Emission blocks (3d→2p) and the existing Kramers-Heisenberg kernel; removes the `ban_output_path` requirement in `calcXES`/`calcRIXS`.
+3. **K pre-edge quadrupole** (1s→3d, rank-2 operator) and **M2,3 edges** (3p→3d) — mostly configuration bookkeeping once B is general.
+4. **`multitorch.fit`.** Promote `fits/fe_xas_fit.py` into the package: parameter constraints via reparameterization, shared-parameter joint fits (v1 of the fits README), and Laplace/Hessian uncertainty via `torch.func.hessian`.
+5. **4d/5d metals** (Ru, Mo, W) — larger ζ, f-shell CFP tables not needed; mainly HFS/RCN parameter sourcing.
+
+### WP-F — Codebase health (continuous)
+
+- Apply the architecture-deepening candidates (§6) in the order the report recommends: 2+3 (inside WP-A) → 1 → 5 (inside WP-B); 4 (Spectrum Request/Result: one sticks|spectrum seam replacing the five pasted broaden tails and 24-parameter signatures in `api/calc.py`; makes SCA-001 a one-line default) is independent and ~1 day; 6, 7, 8 as noted in WP-C/A/D.
+- **Delete ~2,000 lines of dead/superseded code** (review §D, 1 day): `oh_coupling_coefficients_for_op`, `_coupling_trace_full_real`, `_real_coupling_operator`, `oh_subduction_matrix`, `_D_real_matrices`, `get_oh_irreps_from_o3`, `OH_IRREPS`, `D4H_SHELL_BRANCHES`, `d4h_butler_label`, `d4h_cf_operator_recipe` (fold into `_d4h_op_routes`); `hamiltonian/crystal_field.py` (third copy of the Butler coefficients, different normalization), `transitions.py`, `diagonalize_block/_batch`, `validate_rme_against_reference`; retire `generate_ground_state_rac` (re-point `test_rac_generator.py:236`, the strongest angular parity test, at `generate_ledge_rac`); `charge_transfer.py` becomes WP-C's implementation rather than an orphan; `bench/{full_compare,full_compare_v2,quick_compare,check_progress}.py`, untrack `bench/results/`; delete `tests/scratch_*.py` (2,587 lines) or move under `docs/investigations/`; remove the absolute `sys.path.insert` in `test_d4h_from_scratch_status.py:463`.
+- Make fixture-guard `pytest.skip`s fail when running from a git checkout.
+- Resolve or document every "blocks scientific use" and "must document" finding from `SCIENTIFIC_AUDIT_2026-09.md` and the ranked recommendations in `CODE_REVIEW_2026-09.md`.
+- SCA-001 deprecation cycle: warn on `broaden_mode="legacy"` default in 0.2.0, flip in 0.3.0.
+
+---
+
+## 3. Sequencing
+
+```mermaid
+flowchart LR
+  WP0[WP-0 consolidate] --> S[WP-S correctness fixes]
+  S --> A[WP-A differentiable core]
+  S --> FITS[Fe v1 fits, D4h, /data/ahf]
+  A --> B[WP-B general point groups]
+  B --> C[WP-C charge transfer]
+  A --> D1[D1 angular cache]
+  D1 --> D2[D2 batched eval]
+  B --> E1[E1 XMCD]
+  B --> E3[E3 K pre-edge / M-edge]
+  C --> E2[E2 XES/RIXS from scratch]
+  A --> E4[E4 multitorch.fit + UQ]
+  C --> R[v0.2.0 release: develop → main]
+  D2 --> R
+  E1 --> R
+```
+
+Milestones (approximate, one person, focused):
+
+| Milestone | Contents | ETA from start |
+|---|---|---|
+| M1 | WP-0 + WP-S (S1a, S2, S3, S6, S7) | week 2 |
+| M1.5 | WP-S S1b/S4/S5 + WP-A: excited manifold rebuilt, from-scratch Oh/D4h correct and differentiable; Fe fits re-run as v1 in D4h | week 4 |
+| M2 | WP-B1–B3: `PointGroup`, direct subduction, Wybourne CF; Oh/D4h regress clean; Fe(III) D4h works | week 7 |
+| M3 | WP-B4–B6 + D1/D2: Td, C4v, D3d, D2h validated; cache + batching | week 9 |
+| M4 | WP-C: CT from scratch; Fe(III)Cl fits with LMCT | week 11 |
+| M5 | WP-E1/E2/E4 + release v0.2.0, merge to `main` | week 13–14 |
+
+---
+
+## 4. Validation strategy
+
+| Layer | Oracle | Tolerance |
+|---|---|---|
+| Group theory (B1) | Textbook character tables; group orders; Frobenius–Schur indicators | exact (integers) / 1e-12 |
+| Subduction (B2) | Existing `oh_subduction_matrix`, `d4h_partner_basis_per_J`; unitarity; block-diagonalization of the CF operator | 1e-10 |
+| Angular blocks | Fortran fixtures (`.rme_rac`/`.rme_rcg`) old and new | 1e-6 per coefficient (assembled-matrix comparison, not entry order) |
+| Spectra | Fortran `.ban_out` / ttmult raw, **union window**, intensity-fraction reported | cosine ≥ 0.99 + peak shift < 0.5 eV + L3/L2 ratio ± 5% + stick-span ratio 0.9–1.1 (from-scratch, after WP-S), ≥ 0.999 (fixture-loaded at any slater/soc) |
+| Scaled parameters | ttrcg re-run at 80% on exxa; one-electron CF probe (pair sums of Ballhausen energies) | 1e-6 eigenvalues; exact |
+| Gradients | Central finite differences | 1e-4 relative, every leaf, three ions |
+| Physics sanity | Sum rules (integrated L3+L2 ∝ number of 3d holes), Oh limit of every lower group, dt=ds=0 collapse, T→0 ground-state only | documented per test |
+
+All numbers quoted from external sources (CTM4XAS manuals, Butler tables, literature spectra) go through the provenance ledger convention already used in the repo docs.
+
+---
+
+## 5. Infrastructure
+
+- **Branches:** all work on `develop` via short-lived feature branches (`feat/wp-a-torch-cowan`, `feat/wp-b-pointgroup`, …) squash-merged into `develop`; `develop` → `main` once M5 passes the audit gate. `main` stays releasable.
+- **exxa:** `~/code/multitorch` tracks `origin/develop`. Conda env `multi`. Large outputs (fixtures generated by recompiled Fortran, benchmark sweeps, fit results, angular caches) under `/data/ahf/multitorch/{fixtures,bench,fits,cache}`; never in `~/code`.
+- **Local:** `/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/multitorch`, env `multi`, `pytest tests/ -q -p no:cacheprovider`.
+- **Trackers:** `.claude/orchestration/INDEX.md` (add Track D pointing here); update the WP checkboxes above as commits land.
+
+---
+
+## 6. Review findings (2026-09-09)
+
+Three reviews were run on `develop` @ 7b0c1fa. Full text (gitignored, local): `CODE_REVIEW_2026-09.md`, `SCIENTIFIC_AUDIT_2026-09.md`, `ARCHITECTURE_REVIEW_2026-09.html`.
+
+### Senior code review — top findings
+1. From-scratch autograd is half-broken, not fully: CF parameters propagate (autograd −0.059835549 vs FD −0.059835548 for Ni Oh 10Dq); `slater`/`soc` sever at six numpy accumulation sites. ~30-line fix (WP-A1). No test protects the CF gradient (WP-A4).
+2. 95% of from-scratch wall time regenerates angular constants with no memoization; 12× measured from four decorators (WP-0). Assembly + eigh is 0.027 s.
+3. Symmetry support is Oh-centric by construction: D4h is a second subduction *through* Oh using only the D4z rotations; Td and D3d are not reachable this way (T subgroup, C3 along [111]); operator sets live in four places; assembler sniffs the group from `len(xham)`. Seven structural items enumerated in review §B, all absorbed into WP-B.
+4. ~2,000 lines dead or superseded (WP-F).
+5. Test suite is honest (reference data is Fortran output) but from-scratch validation is structural + loose-cosine only; no from-scratch autograd test; cosine is blind to the known 2× dipole-scale discrepancy.
+
+### Architecture deepening report — eight candidates
+| # | Candidate | Strength | Absorbed into |
+|---|---|---|---|
+| 1 | Symmetry Plan — pull the point-group decision out of the RAC emitter | Strong | WP-B5 |
+| 2 | Parameter-Linear Hamiltonian — operator basis + one contraction | Strong | WP-A1 |
+| 3 | Angular Structure — RAC/COWAN types + `assemble_matrix_from_adds` out of `io/read_rme.py` (in-degree 7; angular layer imports its output types from a parser) | Strong | WP-A1 (same commit series) |
+| 4 | Spectrum Request / Result — one sticks|spectrum seam for six `calc*` entry points | Strong | WP-F |
+| 5 | Subduction Chain — group-agnostic `PointGroup`; character projector currently written twice | Worth exploring → Strong at third group | WP-B1/B2 |
+| 6 | Triad Assembly — block index, explicit configuration model, `charge_transfer.py` as implementation | Worth exploring | WP-C3, WP-D3 |
+| 7 | Atomic Parameter Bundle — one vocabulary for F^k/G^k/ζ | Worth exploring | WP-A3 |
+| 8 | Eigensolver — policy module with solver adapters | Worth exploring | WP-D5 |
+
+Top recommendation: 2 + 3 together first (measured defect, two adapters already waiting on one interface), then 1 → 5, with 4 whenever convenient. Dependency graph, per-module public-function counts, and the untested-module list (`charge_transfer.py`, `write_inputs.py`, `crystal_field.py`, `transitions.py`, `torch_blocks.py`) are in the HTML report.
+
+### Scientific audit — top findings
+Trust level per the audit: **LOW** for `slater≠1`/`soc≠1` on the fixture path (the default is 0.8), for fixture-path `dt`, and for the whole from-scratch path; **HIGH** only at scale 1 with fixture parameters and for the spectrum layer. No evidence of engineered agreement: parity tests were written only where parity is exact by construction, and every departure was logged as "deferred" rather than tested. Fixture-path autograd is numerically exact (rel. err ≤ 2e-7 vs central FD at h=1e-5) but for `slater`/`soc` it differentiates the wrong forward model.
+
+| # | Finding | Path | Verified today |
+|---|---|---|---|
+| S1 | Only ground config-1 rescaled; F⁰ + E_av scaled; excited manifold constant; Δ_eff distorted +17.7 eV at slater=0.8 | fixture | yes (rigid +43 eV shift, span unchanged) |
+| S2 | `dt` drops the `−35·Dt/6` X400 cross term | fixture D4h | yes (`build_ban.py:118` vs `write_BAN.py:48`) |
+| S3 | HFS with no closed core: F²dd 2.7×, G¹pd 6.8×, ζ2p 1.4×; spectra span 87 eV vs 20 | from-scratch | not re-run |
+| S4 | D4h CF blocks non-one-electron at dt=ds=0; Ds sign flipped | from-scratch D4h | not re-run |
+| S5 | Oh dipole strengths off 1.46–7.0× per triad | from-scratch Oh | not re-run |
+| S6 | Hidden LMCT defaults; `delta`/`lmct`/`u` semantics wrong | fixture API | partially (docstrings) |
+
+Three "red flags" that must be corrected before publication: the 0.978-after-830-eV-shift parity metric; the tracker entry calling the unrebuilt excited manifold "architectural, not a bug"; and the "HFS floor" narrative repeated in four documents without checking the rcn31 values sitting in the same fixture directory. All absorbed into WP-S.
+
+---
+
+## 7. Risks
+
+| Risk | Mitigation |
+|---|---|
+| Fortran `ttrac` cannot be recompiled (BUG-002), leaving no reference for new groups | Use Quanty/CTM4XAS as secondary oracles; rely on internal consistency (Oh limit, unitarity, sum rules) and document the gap |
+| Numerical character-table construction mislabels irreps (Mulliken conventions differ between sources) | Pin labels with a signature table validated against textbook tables in tests; keep Butler labels for fixture parity |
+| Double-group phase conventions differ from Butler's, breaking fixture parity | Compare assembled matrices / singular values, not raw coefficients (lesson from #2) |
+| Autograd through eigh at degeneracies | A5 custom backward; tests at dt=ds=0 |
+| Scope creep in WP-E | Each E item is independently shippable; M5 gates on E1/E2/E4 only |
