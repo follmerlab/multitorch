@@ -110,15 +110,19 @@ def compute_fk(
     """
     Compute the Slater F^k(a,b) Coulomb integral.
 
-    F^k(a,b) = ∫ P_a²(r) × Y^k_b(r) / r dr
-             = h × Σ_i P_a²[i] × Y^k_b[i]  (on log mesh, dr/r = h)
+    F^k(a,b) = ∫ P_a²(r) × Y^k_b(r) dr   (Hartree) → ×2 for Rydberg
 
     Returns value in Rydbergs.
     """
     Yk = compute_yk(Pb, r, k, h)
     Pa2 = Pa ** 2
-    # F^k = ∫ Pa²(r) × Y^k(r) / r dr  (mesh-adaptive)
-    return _trap(Pa2 * Yk / r, r)
+    # ``compute_yk`` already returns the potential
+    #   Y^k_b(r) = r^{-(k+1)} ∫_0^r r'^k P_b² dr' + r^k ∫_r^∞ r'^{-(k+1)} P_b² dr'
+    # (i.e. ∫ P_b²(r') r_<^k / r_>^{k+1} dr'), so F^k = ∫ P_a² Y^k dr in
+    # Hartree; the factor 2 converts to Rydberg. The previous
+    # ``_trap(Pa2 * Yk / r, r)`` divided by r a second time, which made
+    # F^k(a,b) ≠ F^k(b,a) and gave 0.60× the exact hydrogenic F^0(1s,1s).
+    return 2.0 * _trap(Pa2 * Yk, r)
 
 
 def compute_gk(
@@ -141,8 +145,8 @@ def compute_gk(
     # Y^k using the mixed density P_a × P_b
     Pab = Pa * Pb
     Yk = compute_yk_cross(Pab, r, k, h)
-    # G^k = ∫ Pab(r) × Y^k_{ab}(r) / r dr  (mesh-adaptive)
-    return _trap(Pab * Yk / r, r)
+    # G^k = ∫ P_a P_b Y^k_{ab} dr (Hartree) × 2 → Rydberg; see compute_fk.
+    return 2.0 * _trap(Pab * Yk, r)
 
 
 def compute_yk_cross(

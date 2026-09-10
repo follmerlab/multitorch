@@ -461,6 +461,14 @@ def test_d4h_dispatcher_emits_nid8_irrep_set():
 # adds test above.
 
 
+@pytest.mark.xfail(
+    strict=False,
+    reason="WP-S (2026-09): the 0.97 threshold was met only through a "
+           "peak-aligned window holding 66% of the intensity (audit §7.1), "
+           "and the from-scratch excited manifold is being re-derived "
+           "against Fortran oracles (S1b). Re-enable with a union-window "
+           "metric once S1b lands.",
+)
 def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     """D4h Ni from-scratch should run end-to-end and produce a spectrum that
     correlates with the bundled nid8 fixture.

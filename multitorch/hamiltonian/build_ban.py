@@ -57,7 +57,8 @@ def modify_ban_params(
         - ``'ds'`` (float): Ds in eV.  D4h only (default 0.0).
 
         When provided, ``xham[0].values`` is rebuilt as
-        ``[1.0, tendq, dt, ds]`` (D4h) or ``[1.0, tendq]`` (Oh).
+        ``[1.0, tendq - 35*dt/6, dt, ds]`` (D4h, Ballhausen 10Dq/Dt/Ds
+        mapped onto Butler X400/X420/X220 as pyctm does) or ``[1.0, tendq]`` (Oh).
         The leading ``1.0`` is the Hamiltonian (Coulomb + SOC) strength,
         which is always unity.
     delta : float or dict, optional
@@ -108,12 +109,25 @@ def modify_ban_params(
         # Only override if cf contains actual keys; empty dict = no override.
         # Values may be torch tensors (for autograd); do NOT call float().
         n_ops = len(out.xham[0].values)
-        if 'tendq' in cf:
-            out.xham[0].values[1] = cf['tendq']
-        if 'dt' in cf and n_ops >= 3:
-            out.xham[0].values[2] = cf['dt']
-        if 'ds' in cf and n_ops >= 4:
-            out.xham[0].values[3] = cf['ds']
+        vals = out.xham[0].values
+        if n_ops >= 3:
+            # D4h (Butler chain O3 > Oh > D4h). The XHAM slot for the
+            # rank-4 A1g operator is the *effective* cubic field
+            #     10Dq_eff = 10Dq - 35*Dt/6
+            # because Butler's X400 branch carries the cubic part of the
+            # Ballhausen Dt operator (pyctm ``write_BAN.order_cf``; the
+            # slot is named ``tendq_eff`` by ``read_ban``). The template
+            # stores 10Dq_eff, so recover the raw 10Dq before overriding.
+            dt_old = vals[2]
+            tendq_old = vals[1] + 35.0 * dt_old / 6.0
+            tendq_new = cf.get('tendq', tendq_old)
+            dt_new = cf.get('dt', dt_old)
+            vals[1] = tendq_new - 35.0 * dt_new / 6.0
+            vals[2] = dt_new
+            if 'ds' in cf and n_ops >= 4:
+                vals[3] = cf['ds']
+        elif 'tendq' in cf:
+            vals[1] = cf['tendq']
 
     # ── Charge-transfer energy Δ ─────────────────────────────
     if delta is not None:

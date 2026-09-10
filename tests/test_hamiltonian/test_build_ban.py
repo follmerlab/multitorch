@@ -64,7 +64,8 @@ def test_no_overrides_is_a_copy(nid8ct_ban):
 def test_cf_override_d4h(nid8ct_ban):
     """D4h: cf dict maps to xham[0].values = [1.0, tendq, dt, ds]."""
     out = modify_ban_params(nid8ct_ban, cf={'tendq': 2.5, 'dt': 0.05, 'ds': -0.1})
-    assert out.xham[0].values == [1.0, 2.5, 0.05, -0.1]
+    # Butler X400 slot holds 10Dq_eff = 10Dq - 35*Dt/6 (pyctm write_BAN.order_cf)
+    assert out.xham[0].values == pytest.approx([1.0, 2.5 - 35.0 * 0.05 / 6.0, 0.05, -0.1])
 
 
 def test_cf_override_d4h_partial(nid8ct_ban):
@@ -157,7 +158,7 @@ def test_combined_overrides(nid8ct_ban):
         delta=6.5,
         lmct=2.5,
     )
-    assert out.xham[0].values == [1.0, 2.0, 0.03, -0.05]
+    assert out.xham[0].values == pytest.approx([1.0, 2.0 - 35.0 * 0.03 / 6.0, 0.03, -0.05])
     assert out.eg[2] == 6.5
     assert out.xmix[0].values == [2.5, 2.5, 2.5, 2.5]
     # Structure unchanged

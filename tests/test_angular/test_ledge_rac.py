@@ -148,48 +148,34 @@ def test_ledge_rac_produces_all_block_types():
     assert len(ungerade_blocks) > 0, "Missing excited-state (ungerade) blocks"
 
 
-def test_ledge_rac_perp_para_splitting():
-    """TRANSI blocks are split into PERP and PARA with correct factors."""
+def test_ledge_rac_oh_transi_blocks_match_fortran_norms():
+    """Oh TRANSI blocks are single MULTIPOLE (T1u, op '1-') blocks whose
+    Σ coeff² n_bra n_ket equals the Fortran RAC's (bundled ni2_d8_oh) per
+    (ground, excited) irrep pair. Before 2026-09 the Oh path emitted
+    PERP/PARA-split blocks with triad-dependent errors of 1.5-7x (audit S5)."""
+    import os
+    from multitorch.io.read_rme import read_rme_rac_full
     rac, cowan = generate_ledge_rac(l_val=2, n_val_gs=8)
+    transi = [b for b in rac.blocks if b.kind == 'TRANSI']
+    assert transi and all(b.geometry == 'MULTIPOLE' and b.op_sym == '1-' for b in transi)
 
-    perp_blocks = [b for b in rac.blocks
-                   if b.kind == 'TRANSI' and b.geometry == 'PERP']
-    para_blocks = [b for b in rac.blocks
-                   if b.kind == 'TRANSI' and b.geometry == 'PARA']
+    def norms(r):
+        out = {}
+        for b in r.blocks:
+            if b.kind == 'TRANSI' and b.add_entries and 'HYBR' not in (b.geometry or ''):
+                key = (b.bra_sym, b.ket_sym)
+                out.setdefault(key, sum(a.coeff ** 2 * a.nbra * a.nket for a in b.add_entries))
+        return out
+    ref_file = os.path.join(REF_DIR, "ni2_d8_oh", "ni2_d8_oh.rme_rac")
+    if not os.path.exists(ref_file):
+        pytest.fail(f"missing fixture {ref_file}")
+    ref = norms(read_rme_rac_full(ref_file))
+    got = norms(rac)
+    assert set(got) == set(ref), (set(got) ^ set(ref))
+    for key in ref:
+        assert abs(got[key] - ref[key]) < 1e-6, (key, got[key], ref[key])
+    assert abs(sum(got.values()) - 60.0) < 1e-6
 
-    assert len(perp_blocks) > 0, "No PERP blocks"
-    assert len(para_blocks) > 0, "No PARA blocks"
-    assert len(perp_blocks) == len(para_blocks), (
-        f"PERP count ({len(perp_blocks)}) != PARA count ({len(para_blocks)})"
-    )
-
-    # Verify PERP/PARA ratio is √2 for all matching entries
-    for pb, ab in zip(
-        sorted(perp_blocks, key=lambda b: (b.bra_sym, b.ket_sym)),
-        sorted(para_blocks, key=lambda b: (b.bra_sym, b.ket_sym)),
-    ):
-        assert pb.bra_sym == ab.bra_sym and pb.ket_sym == ab.ket_sym
-        assert len(pb.add_entries) == len(ab.add_entries)
-        for pe, ae in zip(pb.add_entries, ab.add_entries):
-            assert pe.matrix_idx == ae.matrix_idx
-            if abs(ae.coeff) > 1e-15:
-                ratio = pe.coeff / ae.coeff
-                assert abs(ratio - math.sqrt(2)) < 1e-10, (
-                    f"PERP/PARA ratio = {ratio:.6f}, expected √2"
-                )
-
-
-def test_ledge_rac_op_sym_labels():
-    """PERP blocks have op_sym='1-', PARA blocks have op_sym='^0-'."""
-    rac, _ = generate_ledge_rac(l_val=2, n_val_gs=8)
-
-    for b in rac.blocks:
-        if b.kind != 'TRANSI':
-            continue
-        if b.geometry == 'PERP':
-            assert b.op_sym == '1-', f"PERP block has op_sym={b.op_sym}"
-        elif b.geometry == 'PARA':
-            assert b.op_sym == '^0-', f"PARA block has op_sym={b.op_sym}"
 
 
 def test_ledge_rac_irrep_infos():

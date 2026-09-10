@@ -33,7 +33,28 @@ Sugano, Tanabe, Kamimura (1970). Multiplets of Transition-Metal Ions.
 from __future__ import annotations
 
 import math
-from functools import lru_cache
+from functools import lru_cache, wraps
+
+
+def _readonly_cached(fn):
+    """Memoize a pure function returning an ndarray; hand out read-only views.
+
+    The angular constants computed in this module depend only on (J, irrep)
+    and dominate the from-scratch pipeline's runtime when recomputed.
+    Returned arrays are marked non-writeable so an accidental in-place
+    mutation by a caller raises instead of corrupting the cache.
+    """
+    cached = lru_cache(maxsize=None)(fn)
+
+    @wraps(fn)
+    def wrapper(*args, **kwargs):
+        out = cached(*args, **kwargs)
+        if isinstance(out, np.ndarray):
+            out.flags.writeable = False
+        return out
+
+    wrapper.cache_clear = cached.cache_clear  # type: ignore[attr-defined]
+    return wrapper
 from typing import Dict, List, Tuple
 
 import numpy as np
@@ -183,13 +204,17 @@ def _euler_angles_from_rotation(R: np.ndarray) -> Tuple[float, float, float]:
         if cos_beta > 0:  # β ≈ 0
             alpha = math.atan2(-R[0, 1], R[0, 0])
             gamma = 0.0
-        else:  # β ≈ π
-            alpha = math.atan2(R[0, 1], -R[0, 0])
+        else:  # β ≈ π: R = Rz(α) Ry(π) = [[-cos α, -sin α, 0], [-sin α, cos α, 0], [0, 0, -1]]
+            # (the former ``atan2(R[0, 1], -R[0, 0])`` flipped the sign of
+            # sin α and swapped the two C2' rotations about (1,±1,0), so
+            # the Wigner D-matrices were not a group homomorphism.)
+            alpha = math.atan2(-R[0, 1], -R[0, 0])
             gamma = 0.0
 
     return alpha, beta, gamma
 
 
+@lru_cache(maxsize=None)
 def _small_d(J, m, mp, beta: float) -> float:
     """Small Wigner d-matrix element d^J_{m,m'}(β).
 
@@ -240,8 +265,20 @@ def _m_values(J):
     return [J - dim + 1 + i for i in range(dim)]
 
 
+_WIGNER_D_CACHE: Dict[Tuple[float, bytes], np.ndarray] = {}
+
+# Seeded generator for the (rarely taken) basis-completion branch in
+# _find_real_copy_basis, so cached coupling coefficients are reproducible.
+_BASIS_RNG = np.random.default_rng(20260909)
+
+
 def wigner_D_matrix(J, R: np.ndarray) -> np.ndarray:
     """Compute the (2J+1)×(2J+1) Wigner D-matrix for rotation R.
+
+    Results are memoized on ``(J, R.tobytes())`` and returned as
+    read-only arrays: the D-matrices are pure angular constants and
+    were previously the dominant cost of the from-scratch pipeline
+    (~1.8 M ``_small_d`` calls per spectrum).
 
     D^J_{m,m'}(R) = e^{-i m α} d^J_{m,m'}(β) e^{-i m' γ}
 
@@ -259,6 +296,12 @@ def wigner_D_matrix(J, R: np.ndarray) -> np.ndarray:
     ndarray, shape (2J+1, 2J+1)
         Complex Wigner D-matrix.
     """
+    R = np.ascontiguousarray(R, dtype=np.float64)
+    key = (float(J), R.tobytes())
+    cached = _WIGNER_D_CACHE.get(key)
+    if cached is not None:
+        return cached
+
     dim = int(round(2 * J + 1))
     alpha, beta, gamma = _euler_angles_from_rotation(R)
 
@@ -270,6 +313,8 @@ def wigner_D_matrix(J, R: np.ndarray) -> np.ndarray:
             phase = np.exp(-1j * m * alpha) * np.exp(-1j * mp * gamma)
             D[im, imp] = phase * d_val
 
+    D.flags.writeable = False
+    _WIGNER_D_CACHE[key] = D
     return D
 
 
@@ -508,6 +553,16 @@ def _classify_rotation(R: np.ndarray) -> int:
 # ─────────────────────────────────────────────────────────────
 
 def oh_branching(J) -> Dict[str, int]:
+    """Compute the O3→Oh branching for angular momentum J (memoized).
+
+    Returns a fresh dict on every call; the underlying computation is
+    cached per J.
+    """
+    return dict(_oh_branching_cached(float(J)))
+
+
+@lru_cache(maxsize=None)
+def _oh_branching_cached(J: float) -> Tuple[Tuple[str, int], ...]:
     """Compute the O3→Oh branching for angular momentum J.
 
     Returns the multiplicity of each Oh irrep in the reduction of D^J.
@@ -541,7 +596,7 @@ def oh_branching(J) -> Dict[str, int]:
         n /= 24.0
         result[irrep] = int(round(n))
 
-    return result
+    return tuple(result.items())
 
 
 def _so3_character(J, R: np.ndarray) -> float:
@@ -741,6 +796,7 @@ def _oh_irrep_matrices_complex() -> Dict[str, List[np.ndarray]]:
     return result
 
 
+@_readonly_cached
 def _complex_subduction_matrix(J, irrep: str) -> np.ndarray:
     """Compute the complex-basis subduction matrix B^Gamma_J.
 
@@ -862,6 +918,7 @@ def _oh_double_irrep_matrices() -> Dict[str, List[np.ndarray]]:
     return result
 
 
+@_readonly_cached
 def _complex_subduction_matrix_half_int(J: float, irrep: str) -> np.ndarray:
     """Compute complex-basis subduction matrix for half-integer J.
 
@@ -1112,6 +1169,7 @@ def _oh_irrep_matrices_real_std() -> Dict[str, List[np.ndarray]]:
     return result
 
 
+@_readonly_cached
 def _real_subduction_matrix(J: int, irrep: str) -> np.ndarray:
     """Compute real-valued subduction matrix B^Γ_J in standard m-ordering.
 
@@ -1797,8 +1855,8 @@ def _find_real_copy_basis(
     if W.shape[1] < mult:
         # Complete the basis
         Q, _ = np.linalg.qr(
-            np.hstack([W, np.random.randn(mult, mult - W.shape[1])
-                       + 1j * np.random.randn(mult, mult - W.shape[1])])
+            np.hstack([W, _BASIS_RNG.standard_normal((mult, mult - W.shape[1]))
+                       + 1j * _BASIS_RNG.standard_normal((mult, mult - W.shape[1]))])
         )
         W = Q
 

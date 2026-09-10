@@ -35,8 +35,11 @@ def safe_eigh(H: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
     Fortran-matching numerics).
     """
     H = H.to(dtype=DTYPE)
-    if not torch.allclose(H, H.T, atol=1e-10):
-        H = 0.5 * (H + H.T)
+    # Symmetrize unconditionally. For an already-symmetric H this is
+    # bit-exact (0.5*(a+a) == a in IEEE 754); the former
+    # ``torch.allclose`` guard cost ~1.7 s per Fe(III) forward pass
+    # (Perf-001) while saving nothing.
+    H = 0.5 * (H + H.T)
 
     if H.requires_grad:
         n = H.shape[0]

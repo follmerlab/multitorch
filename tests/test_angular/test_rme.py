@@ -30,6 +30,10 @@ def _load_ref_blocks(config_idx=0):
     """Load reference SHELL and SPIN blocks from .rme_rcg."""
     from multitorch.io.read_rme import read_rme_rcg
 
+    # ni2_d8_oh is a pyctm run with core-first shell order ("P 6 D 8"), the
+    # order the from-scratch two-shell basis uses. nid8ct (a ttmult example)
+    # is valence-first ("D 8 P 6") and differs by the recoupling phase
+    # (-1)^{L_gs+L_ex+1}.
     ref = read_rme_rcg(REFDATA / "nid8ct.rme_rcg")
     shell_configs = [c for c in ref.configs
                      if any(b.operator.startswith('SHELL') for b in c.blocks)]
@@ -260,7 +264,11 @@ def test_multipole_d8_p5d9_elementwise():
     from multitorch.angular.cfp import get_cfp_block
     from multitorch.io.read_rme import read_rme_rcg
 
-    ref = read_rme_rcg(REFDATA / "nid8ct.rme_rcg")
+    # ni2_d8_oh is a pyctm run with core-first shell order ("P 6 D 8"), the
+    # order the from-scratch two-shell basis uses. nid8ct (a ttmult example)
+    # is valence-first ("D 8 P 6") and differs by the recoupling phase
+    # (-1)^{L_gs+L_ex+1}.
+    ref = read_rme_rcg(REFDATA.parent / "ni2_d8_oh" / "ni2_d8_oh.rme_rcg")
     cfg0 = ref.configs[0]
     multi_ref = {}
     for b in cfg0.blocks:

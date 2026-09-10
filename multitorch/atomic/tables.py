@@ -74,10 +74,15 @@ def get_l_edge_configs(element: str, valence: str) -> Tuple[str, str]:
         Final (core-hole) configuration string (e.g. '2P05 3D09').
     """
     n_d = get_d_electrons(element, valence)
-    # Core: 1s2 2s2 2p6 3s2 3p6 (all filled below d shell)
-    gs = f'2P06 3D{n_d:02d}'
+    # Full configuration including the closed core 1s2 2s2 2p6 3s2 3p6.
+    # The HFS SCF must see every occupied shell: running it with only
+    # '2P06 3D0n' (as this function did before 2026-09) solves a 14-electron
+    # ion and inflates F^k(3d,3d) by ~2.7x and G^k(2p,3d) by ~7x relative
+    # to Cowan's RCN31 (scientific audit 2026-09, finding S3).
+    core = '1S02 2S02 3S02 3P06'
+    gs = f'{core} 2P06 3D{n_d:02d}'
     # L-edge: remove one 2p electron, add one 3d electron
-    fs = f'2P05 3D{min(n_d + 1, 10):02d}'
+    fs = f'{core} 2P05 3D{min(n_d + 1, 10):02d}'
     return gs, fs
 
 

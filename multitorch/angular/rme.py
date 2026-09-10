@@ -347,6 +347,366 @@ def compute_all_shell_blocks(
 
 
 # ─────────────────────────────────────────────────────────────
+# Single-shell Hamiltonian operators in the COWAN-store (RME) convention
+# ─────────────────────────────────────────────────────────────
+#
+# Validated 2026-09-09 against ttrcg HAMILTONIAN blocks generated at
+# (slater, soc) = (1,1), (0,1), (1,0) for Ni2+ 3d8 (see
+# tests/reference_data/fortran_ops/ni2_oh_sc_hamiltonian.npz). Two
+# conventions matter and were both wrong in the earlier from-scratch
+# builder (which multiplied F^k into the rank-k *unit-tensor* SHELL
+# blocks and used the spin operator S as the spin-orbit operator):
+#
+#   1. The Coulomb coefficients are the scalar products
+#          f_k = <l||C^(k)||l>^2 * 1/2 [ U^(k)·U^(k) - n/(2l+1) ]
+#      taken *relative to the configuration average* (Cowan's E_av
+#      convention), so F^0 never appears and Σ_k F^k f_k is the
+#      multiplet splitting only.
+#   2. Every COWAN-store block is a reduced matrix element in J, i.e.
+#      carries a factor sqrt(2J+1) relative to the plain matrix
+#      element; the RAC branch coefficient for the scalar operator
+#      supplies the 1/sqrt(2J+1) on assembly.
+
+
+def _lsterms_and_cfp(l: int, n: int):
+    """LS terms of l^n, of l^(n-1), and the CFP matrix between them."""
+    from multitorch.angular.cfp import get_cfp_block
+
+    block = get_cfp_block(l, n)
+    if block is None or block.cfp is None:
+        raise ValueError(f"No CFP data for l={l}, n={n}")
+    parent_block = get_cfp_block(l, n - 1)
+
+    def _terms(b):
+        return [LSTerm(index=t.index, S=t.S, L=t.L, seniority=t.seniority,
+                       label=f"{int(2*t.S+1)}{t.L_label}") for t in b.terms]
+
+    terms = _terms(block)
+    if parent_block is not None and parent_block.terms:
+        parents = _terms(parent_block)
+    else:
+        parents = [LSTerm(index=t.index, S=t.S, L=t.L, seniority=t.seniority,
+                          label=f"{int(2*t.S+1)}{t.L_label}")
+                   for t in block.parent_terms]
+    return terms, parents, block.cfp
+
+
+def _j_basis_for_terms(terms: List[LSTerm]) -> Dict[float, List[JBasisState]]:
+    S_max = max(t.S for t in terms)
+    L_max = max(t.L for t in terms)
+    J_min = 0.0 if (2 * S_max) % 2 == 0 else 0.5
+    return build_j_basis(terms, J_min, S_max + L_max)
+
+
+def compute_coulomb_fk_ls(l: int, n: int, k: int) -> Tuple[List[LSTerm], np.ndarray]:
+    """Coulomb angular coefficient f_k(αSL, α'SL) of l^n in the LS basis.
+
+    f_k = <l||C^(k)||l>^2 * 1/2 * [ (U^(k)·U^(k)) - n/(2l+1) ]  with
+    (U·U)_{αα'} = (-1)^{L+L''}/(2L+1) Σ_{α''L''} <αSL||U||α''SL''><α''SL''||U||α'SL>.
+
+    Returned *relative to the configuration average* (degeneracy-weighted
+    trace removed), which is Cowan's E_av convention. For k=0 this is
+    identically zero.
+    """
+    terms, parents, cfp = _lsterms_and_cfp(l, n)
+    uk = compute_uk_ls(l, n, k, terms, parents, cfp)
+    nt = len(terms)
+    uu = np.zeros((nt, nt), dtype=np.float64)
+    for i, ti in enumerate(terms):
+        for j, tj in enumerate(terms):
+            if abs(ti.S - tj.S) > 1e-9 or abs(ti.L - tj.L) > 1e-9:
+                continue
+            acc = 0.0
+            for m, tm in enumerate(terms):
+                acc += uk[i, m] * uk[m, j] * (-1.0) ** int(round(ti.L + tm.L))
+            uu[i, j] = acc / (2.0 * ti.L + 1.0)
+    c_l = (-1) ** l * (2 * l + 1) * wigner3j(l, k, l, 0, 0, 0)
+    fk = c_l ** 2 * 0.5 * (uu - n / (2.0 * l + 1.0) * np.eye(nt))
+    w = np.array([(2 * t.S + 1) * (2 * t.L + 1) for t in terms])
+    fk = fk - (np.sum(w * np.diag(fk)) / np.sum(w)) * np.eye(nt)
+    return terms, fk
+
+
+def compute_coulomb_blocks(l: int, n: int) -> Dict[Tuple[int, float], np.ndarray]:
+    """Coulomb operator blocks {(k, J): sqrt(2J+1) * f_k|_J} for k = 2, 4, ...
+
+    The full ground Hamiltonian block in the COWAN-store convention is
+    Σ_k F^k(eV) * block[(k, J)] + ζ(eV) * compute_soc_blocks(l, n)[J]
+    (+ E_av * sqrt(2J+1) * I).
+    """
+    out: Dict[Tuple[int, float], np.ndarray] = {}
+    for k in range(2, 2 * l + 1, 2):
+        terms, fk = compute_coulomb_fk_ls(l, n, k)
+        jb = _j_basis_for_terms(terms)
+        for J, states in jb.items():
+            idx = [st.ls_term.index for st in states]
+            out[(k, J)] = math.sqrt(2.0 * J + 1.0) * fk[np.ix_(idx, idx)]
+    return out
+
+
+def compute_v11_ls(l: int, n: int) -> Tuple[List[LSTerm], np.ndarray]:
+    """Double-tensor RME <l^n αSL||V^(11)||l^n α'S'L'> with V^(11) = Σ_i s_i u_i^(1).
+
+    Cowan (11.51) with <s||s||s> = sqrt(s(s+1)(2s+1)) folded in.
+    """
+    terms, parents, cfp = _lsterms_and_cfp(l, n)
+    s = 0.5
+    nt = len(terms)
+    v = np.zeros((nt, nt), dtype=np.float64)
+    fl = float(l)
+    for i, ti in enumerate(terms):
+        for j, tj in enumerate(terms):
+            if abs(ti.S - tj.S) > 1 + 1e-9 or abs(ti.L - tj.L) > 1 + 1e-9:
+                continue
+            val = 0.0
+            for p, tp in enumerate(parents):
+                ci = cfp[i, p] if p < cfp.shape[1] else 0.0
+                cj = cfp[j, p] if p < cfp.shape[1] else 0.0
+                if abs(ci) < 1e-15 or abs(cj) < 1e-15:
+                    continue
+                six_s = wigner6j(ti.S, 1, tj.S, s, tp.S, s)
+                six_l = wigner6j(ti.L, 1, tj.L, fl, tp.L, fl)
+                if abs(six_s) < 1e-15 or abs(six_l) < 1e-15:
+                    continue
+                ph = (-1.0) ** int(round(tp.S + s + tj.S + 1 + tp.L + fl + tj.L + 1))
+                val += ci * cj * ph * six_s * six_l
+            val *= n * math.sqrt((2 * ti.S + 1) * (2 * tj.S + 1)
+                                 * (2 * ti.L + 1) * (2 * tj.L + 1))
+            v[i, j] = val
+    return terms, v * math.sqrt(s * (s + 1) * (2 * s + 1))
+
+
+def compute_soc_blocks(l: int, n: int) -> Dict[float, np.ndarray]:
+    """Spin-orbit operator Σ_i l_i·s_i of l^n in the COWAN-store convention.
+
+    block[J] = sqrt(2J+1) * sqrt(l(l+1)(2l+1)) * (-1)^{S+L'+J} {J L' S'; 1 S L}
+               * <αSL||V^(11)||α'S'L'>
+    so that ζ(eV) * block[J] is the SOC contribution to the HAMILTONIAN
+    block of sector J.
+    """
+    terms, v = compute_v11_ls(l, n)
+    jb = _j_basis_for_terms(terms)
+    fac = math.sqrt(l * (l + 1) * (2 * l + 1))
+    out: Dict[float, np.ndarray] = {}
+    for J, states in jb.items():
+        m = np.zeros((len(states), len(states)), dtype=np.float64)
+        for ib, sb in enumerate(states):
+            for ik, sk in enumerate(states):
+                ti, tj = sb.ls_term, sk.ls_term
+                six = wigner6j(J, tj.L, tj.S, 1, ti.S, ti.L)
+                if abs(six) < 1e-15:
+                    continue
+                ph = (-1.0) ** int(round(ti.S + tj.L + J))
+                m[ib, ik] = fac * ph * six * v[ti.index, tj.index]
+        out[J] = math.sqrt(2.0 * J + 1.0) * m
+    return out
+
+
+# ─────────────────────────────────────────────────────────────
+# Two-shell Hamiltonian operators in the COWAN-store (RME) convention
+# ─────────────────────────────────────────────────────────────
+#
+# Validated 2026-09-09 against ttrcg HAMILTONIAN blocks of 2p5 3d9 (Ni2+)
+# generated with each parameter scaled separately (F2pd, G1/G3, ζ; see
+# tests/reference_data/fortran_ops/). All blocks carry sqrt(2J+1) and are
+# relative to the configuration average (Cowan's E_av convention).
+
+
+def compute_double_tensor_ls(l: int, n: int, t: int) -> Tuple[List[LSTerm], np.ndarray]:
+    """<l^n αSL||V^(1t)||l^n α'S'L'> for V^(1t) = Σ_i s_i u_i^(t) (Cowan 11.51)."""
+    terms, parents, cfp = _lsterms_and_cfp(l, n)
+    s = 0.5
+    nt = len(terms)
+    v = np.zeros((nt, nt), dtype=np.float64)
+    fl = float(l)
+    for i, ti in enumerate(terms):
+        for j, tj in enumerate(terms):
+            val = 0.0
+            for p, tp in enumerate(parents):
+                ci = cfp[i, p] if p < cfp.shape[1] else 0.0
+                cj = cfp[j, p] if p < cfp.shape[1] else 0.0
+                if abs(ci) < 1e-15 or abs(cj) < 1e-15:
+                    continue
+                a = wigner6j(ti.S, 1, tj.S, s, tp.S, s)
+                b = wigner6j(ti.L, t, tj.L, fl, tp.L, fl)
+                if abs(a) < 1e-15 or abs(b) < 1e-15:
+                    continue
+                ph = (-1.0) ** int(round(tp.S + s + tj.S + 1 + tp.L + fl + tj.L + t))
+                val += ci * cj * ph * a * b
+            v[i, j] = val * n * math.sqrt((2 * ti.S + 1) * (2 * tj.S + 1)
+                                          * (2 * ti.L + 1) * (2 * tj.L + 1))
+    return terms, v * math.sqrt(s * (s + 1) * (2 * s + 1))
+
+
+def _unit_tensor_ls(l: int, n: int, t: int) -> np.ndarray:
+    terms, parents, cfp = _lsterms_and_cfp(l, n)
+    return compute_uk_ls(l, n, t, terms, parents, cfp)
+
+
+def _scalar_product_recoupling(J_tot, ja, jb, jap, jbp, k) -> float:
+    """<(ja jb)J| T^(k)(a)·U^(k)(b) |(ja' jb')J> / (<ja||T||ja'><jb||U||jb'>)  (Edmonds 7.1.6)."""
+    return (-1.0) ** int(round(jap + jb + J_tot)) * wigner6j(J_tot, jb, ja, k, jap, jbp)
+
+
+def _c_rme(la: int, lb: int, k: int) -> float:
+    """<la||C^(k)||lb> = (-1)^la sqrt((2la+1)(2lb+1)) (la k lb; 0 0 0)."""
+    return (-1) ** la * math.sqrt((2 * la + 1) * (2 * lb + 1)) * wigner3j(la, k, lb, 0, 0, 0)
+
+
+def _remove_configuration_average(blocks: Dict[float, np.ndarray],
+                                  basis: Dict[float, List["TwoShellState"]]) -> None:
+    """Subtract the (2J+1)-weighted trace (in-place), using plain (un-RME) values."""
+    num = 0.0
+    den = 0.0
+    for J, m in blocks.items():
+        w = 2.0 * J + 1.0
+        num += w * np.trace(m) / math.sqrt(w)   # m carries sqrt(2J+1)
+        den += w * m.shape[0]
+    avg = num / den
+    for J, m in blocks.items():
+        m -= avg * math.sqrt(2.0 * J + 1.0) * np.eye(m.shape[0])
+
+
+def compute_two_shell_operators(
+    l1: int, n1: int, l2: int, n2: int,
+) -> Tuple[Dict[float, List["TwoShellState"]], Dict[str, Dict[float, np.ndarray]]]:
+    """Parameter-free Hamiltonian operators of l1^n1 l2^n2 per J (RME convention).
+
+    Returns ``(basis, ops)`` with ``ops[name][J]`` such that the HAMILTONIAN
+    block of sector J is (all parameters in eV)::
+
+        E_av·sqrt(2J+1)·I
+        + Σ_k F^k(11)·ops[f"F{k}_11"] + Σ_k F^k(22)·ops[f"F{k}_22"]      (intra-shell Coulomb)
+        + Σ_k F^k(12)·ops[f"F{k}_12"]                                    (inter-shell direct)
+        + Σ_k G^k(12)·ops[f"G{k}_12"]                                    (inter-shell exchange)
+        + ζ1·ops["zeta_1"] + ζ2·ops["zeta_2"]                            (spin-orbit)
+
+    Every operator is relative to the configuration average (k = 0 terms
+    and the constant part of the exchange are in E_av). Exchange:
+    −Σ_t (−1)^t (2t+1) [Σ_k G^k <l1||C^k||l2>² {l1 l2 k; l2 l1 t}]
+    [½ U1^t·U2^t + 2 V1^(1t)·V2^(1t)]  (Cowan 12.30–12.31).
+    """
+    T1, _, _ = _lsterms_and_cfp(l1, n1)
+    T2, _, _ = _lsterms_and_cfp(l2, n2)
+    basis = build_two_shell_j_basis(T1, T2)
+    ops: Dict[str, Dict[float, np.ndarray]] = {}
+
+    def new_blocks():
+        return {J: np.zeros((len(st), len(st)), dtype=np.float64) for J, st in basis.items()}
+
+    def finish(blocks, remove_avg=True):
+        for J, m in blocks.items():
+            m *= math.sqrt(2.0 * J + 1.0)
+        if remove_avg:
+            _remove_configuration_average(blocks, basis)
+        return blocks
+
+    # ── intra-shell Coulomb (relative to average already) ──
+    for shell, (l, n) in ((1, (l1, n1)), (2, (l2, n2))):
+        for k in range(2, 2 * l + 1, 2):
+            _, fk = compute_coulomb_fk_ls(l, n, k)
+            blocks = new_blocks()
+            for J, states in basis.items():
+                for ib, sa in enumerate(states):
+                    for ik, sb in enumerate(states):
+                        if (sa.S_total, sa.L_total) != (sb.S_total, sb.L_total):
+                            continue
+                        if shell == 1:
+                            if sa.term2_idx != sb.term2_idx or (sa.S2, sa.L2) != (sb.S2, sb.L2):
+                                continue
+                            if (sa.S1, sa.L1) != (sb.S1, sb.L1):
+                                continue
+                            blocks[J][ib, ik] = fk[sa.term1_idx, sb.term1_idx]
+                        else:
+                            if sa.term1_idx != sb.term1_idx or (sa.S1, sa.L1) != (sb.S1, sb.L1):
+                                continue
+                            if (sa.S2, sa.L2) != (sb.S2, sb.L2):
+                                continue
+                            blocks[J][ib, ik] = fk[sa.term2_idx, sb.term2_idx]
+            ops[f"F{k}_{shell}{shell}"] = finish(blocks, remove_avg=False)
+
+    # ── cross-shell scalar products, t = 0 .. min(2l1, 2l2) ──
+    tmax = min(2 * l1, 2 * l2)
+    UU: Dict[int, Dict[float, np.ndarray]] = {}
+    VV: Dict[int, Dict[float, np.ndarray]] = {}
+    for t in range(0, tmax + 1):
+        U1 = _unit_tensor_ls(l1, n1, t); U2 = _unit_tensor_ls(l2, n2, t)
+        _, V1 = compute_double_tensor_ls(l1, n1, t); _, V2 = compute_double_tensor_ls(l2, n2, t)
+        uu = new_blocks(); vv = new_blocks()
+        for J, states in basis.items():
+            for ib, sa in enumerate(states):
+                for ik, sb in enumerate(states):
+                    if (sa.S_total, sa.L_total) != (sb.S_total, sb.L_total):
+                        continue
+                    orb = _scalar_product_recoupling(sa.L_total, sa.L1, sa.L2, sb.L1, sb.L2, t)
+                    if abs(orb) < 1e-15:
+                        continue
+                    if (sa.S1, sa.S2) == (sb.S1, sb.S2):
+                        uu[J][ib, ik] = orb * U1[sa.term1_idx, sb.term1_idx] * U2[sa.term2_idx, sb.term2_idx]
+                    sp = _scalar_product_recoupling(sa.S_total, sa.S1, sa.S2, sb.S1, sb.S2, 1)
+                    vv[J][ib, ik] = sp * orb * V1[sa.term1_idx, sb.term1_idx] * V2[sa.term2_idx, sb.term2_idx]
+        UU[t] = uu; VV[t] = vv
+
+    # direct F^k(12): <l1||C^k||l1><l2||C^k||l2> U1^k·U2^k   (k even, k ≥ 2)
+    for k in range(2, tmax + 1, 2):
+        c = _c_rme(l1, l1, k) * _c_rme(l2, l2, k)
+        blocks = {J: c * UU[k][J].copy() for J in basis}
+        ops[f"F{k}_12"] = finish(blocks)
+
+    # exchange G^k(12): k with |l1-l2| ≤ k ≤ l1+l2, k+l1+l2 even
+    for k in range(abs(l1 - l2), l1 + l2 + 1):
+        if (k + l1 + l2) % 2:
+            continue
+        ck2 = _c_rme(l1, l2, k) ** 2
+        blocks = new_blocks()
+        for t in range(0, tmax + 1):
+            six = wigner6j(l1, l2, k, l2, l1, t)
+            if abs(six) < 1e-15:
+                continue
+            coef = -((-1.0) ** t) * (2 * t + 1) * ck2 * six
+            for J in basis:
+                blocks[J] += coef * (0.5 * UU[t][J] + 2.0 * VV[t][J])
+        ops[f"G{k}_12"] = finish(blocks)
+
+    # spin-orbit per shell: ζ Σ_{i∈shell} l_i·s_i
+    for shell, (l, n) in ((1, (l1, n1)), (2, (l2, n2))):
+        _, V = compute_double_tensor_ls(l, n, 1)
+        fac = math.sqrt(l * (l + 1) * (2 * l + 1))
+        blocks = new_blocks()
+        for J, states in basis.items():
+            for ib, sa in enumerate(states):
+                for ik, sb in enumerate(states):
+                    if shell == 1:
+                        if sa.term2_idx != sb.term2_idx:
+                            continue
+                        rs = ((-1.0) ** int(round(sa.S1 + sa.S2 + sb.S_total + 1))
+                              * math.sqrt((2 * sa.S_total + 1) * (2 * sb.S_total + 1))
+                              * wigner6j(sa.S1, sa.S_total, sa.S2, sb.S_total, sb.S1, 1))
+                        rl = ((-1.0) ** int(round(sa.L1 + sa.L2 + sb.L_total + 1))
+                              * math.sqrt((2 * sa.L_total + 1) * (2 * sb.L_total + 1))
+                              * wigner6j(sa.L1, sa.L_total, sa.L2, sb.L_total, sb.L1, 1))
+                        v = V[sa.term1_idx, sb.term1_idx]
+                    else:
+                        if sa.term1_idx != sb.term1_idx:
+                            continue
+                        rs = ((-1.0) ** int(round(sa.S1 + sb.S2 + sa.S_total + 1))
+                              * math.sqrt((2 * sa.S_total + 1) * (2 * sb.S_total + 1))
+                              * wigner6j(sa.S2, sa.S_total, sa.S1, sb.S_total, sb.S2, 1))
+                        rl = ((-1.0) ** int(round(sa.L1 + sb.L2 + sa.L_total + 1))
+                              * math.sqrt((2 * sa.L_total + 1) * (2 * sb.L_total + 1))
+                              * wigner6j(sa.L2, sa.L_total, sa.L1, sb.L_total, sb.L2, 1))
+                        v = V[sa.term2_idx, sb.term2_idx]
+                    six = wigner6j(J, sb.L_total, sb.S_total, 1, sa.S_total, sa.L_total)
+                    if abs(six) < 1e-15 or abs(v) < 1e-15:
+                        continue
+                    ph = (-1.0) ** int(round(sa.S_total + sb.L_total + J))
+                    blocks[J][ib, ik] = fac * ph * six * rs * rl * v
+        ops[f"zeta_{shell}"] = finish(blocks, remove_avg=False)
+
+    return basis, ops
+
+
+# ─────────────────────────────────────────────────────────────
 # SPIN operator: S_shell (rank-1 spin tensor)
 # ─────────────────────────────────────────────────────────────
 
@@ -756,6 +1116,15 @@ def compute_multipole_blocks(
 
                     # ── Compute matrix element ──
                     TC = TC0_base
+                    # Phase convention of ttrcg's MULTIPOLE blocks: relative to
+                    # the recoupling below, Fortran's element carries an extra
+                    # (-1)^{L_gs + L_ex + 1}. Established elementwise against
+                    # the single-configuration Ni2+ ttrcg store (2026-09-10):
+                    # without it every |L_gs - L_ex| = 0 element had the
+                    # opposite sign to Fortran, which left the singular values
+                    # of the transition matrices intact but the stick
+                    # intensities wrong.
+                    TC *= (-1.0) ** int(round(L_total_gs + L_total_ex + 1))
 
                     # UNCPLA for total angular momentum recoupling
                     # TC *= UNCPLA(L_total_bra, S_total_bra, J_bra, R, L_total_ket, J_ket)

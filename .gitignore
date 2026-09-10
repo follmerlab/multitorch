@@ -72,3 +72,6 @@ SCIENTIFIC_AUDIT.md
 SCIENTIFIC_AUDIT_*.md
 ARCHITECTURE_REVIEW_*.html
 _build_notebooks.py
+
+# research-skill handoff cards (local)
+.research_workspace/

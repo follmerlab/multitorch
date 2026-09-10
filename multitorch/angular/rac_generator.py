@@ -38,7 +38,10 @@ from multitorch.angular.rme import (
     build_j_basis,
     build_two_shell_j_basis,
     compute_all_shell_blocks,
+    compute_coulomb_blocks,
     compute_multipole_blocks,
+    compute_soc_blocks,
+    compute_two_shell_operators,
     compute_spin_blocks,
     compute_two_shell_exchange,
     compute_two_shell_shell_blocks,
@@ -127,49 +130,41 @@ def _build_hamiltonian_cowan_matrices(
     raw_zeta_ry: float,
     ry_to_ev: float,
 ) -> Tuple[Dict[float, np.ndarray], Dict[float, np.ndarray]]:
-    """Build pre-assembled Hamiltonian matrices for each J sector.
+    """Build pre-assembled ground-state Hamiltonian blocks for each J sector.
 
-    Returns (h_blocks, v11_blocks) where:
-      h_blocks[J] = sum_k F^k_eV * SHELL_k(J,J) + zeta_eV * V11(J,J)
-      v11_blocks[J] = V11 block for autograd decomposition
+    COWAN-store (reduced-matrix-element) convention, validated against
+    ttrcg HAMILTONIAN blocks (tests/test_angular/test_hamiltonian_operators.py)::
 
-    These are the COWAN store matrices that the HAMILTONIAN ADD entries
-    reference.
+        H_J = Σ_{k=2,4} F^k_eV · C_k(J) + ζ_eV · V(J)
+
+    with ``C_k`` from :func:`compute_coulomb_blocks` (Coulomb coefficients
+    relative to the configuration average, times sqrt(2J+1)) and ``V``
+    from :func:`compute_soc_blocks` (Σ_i l_i·s_i, times sqrt(2J+1)).
+    F^0 does not enter: Cowan's E_av convention puts it into the
+    configuration-average energy, which is 0 for the ground configuration.
+
+    Before 2026-09 this routine multiplied F^k into the rank-k unit-tensor
+    SHELL blocks (crystal-field operators) and used the spin operator S as
+    the spin-orbit operator — both eV-scale errors.
+
+    Returns (h_blocks, soc_blocks); the second element is the ζ-free
+    spin-orbit operator per J (kept for the autograd decomposition).
     """
-    # Compute all SHELL blocks (k=0,2,4 for d-shell)
-    all_shell = compute_all_shell_blocks(l, n)
-
-    # Compute SPIN blocks (for SOC: V(11) = SPIN * ORBIT product)
-    spin_blocks = compute_spin_blocks(terms)
+    coul = compute_coulomb_blocks(l, n)
+    soc = compute_soc_blocks(l, n)
 
     h_blocks: Dict[float, np.ndarray] = {}
     v11_blocks: Dict[float, np.ndarray] = {}
+    zeta_ev = raw_zeta_ry * ry_to_ev
 
     for J, n_states in j_sizes.items():
         H = np.zeros((n_states, n_states), dtype=np.float64)
-
-        # Coulomb: sum_k F^k * SHELL_k(J,J)
-        for k in range(0, 2 * l + 1, 2):
-            shell_key = (k, J, J)
-            if shell_key in all_shell:
-                shell_mat = all_shell[shell_key]
-                # Slater integral in eV
-                fk_name = f"F{k}"
-                fk_ry = raw_slater_ry.get(fk_name, 0.0)
-                fk_ev = fk_ry * ry_to_ev
-                H += fk_ev * shell_mat
-
-        # SOC contribution = zeta * V(11)
-        # V(11) is the spin-orbit coupling matrix in the J-basis
-        # V11(J,J) encodes the diagonal-in-J part of the SOC
-        v11 = np.zeros((n_states, n_states), dtype=np.float64)
-        spin_key = (J, J)
-        if spin_key in spin_blocks:
-            v11 = spin_blocks[spin_key]
-
-        zeta_ev = raw_zeta_ry * ry_to_ev
+        for k in range(2, 2 * l + 1, 2):
+            fk_ry = raw_slater_ry.get(f"F{k}", 0.0)
+            if (k, J) in coul and abs(fk_ry) > 0.0:
+                H += (fk_ry * ry_to_ev) * coul[(k, J)]
+        v11 = soc.get(J, np.zeros((n_states, n_states), dtype=np.float64))
         H += zeta_ev * v11
-
         h_blocks[J] = H
         v11_blocks[J] = v11
 
@@ -223,15 +218,16 @@ def _build_excited_hamiltonian_cowan(
     raw_zeta_ry: Dict[str, float],
     ry_to_ev: float,
 ) -> Dict[float, np.ndarray]:
-    """Build pre-assembled excited-state Hamiltonian matrices for each J sector.
+    """Build pre-assembled excited-state Hamiltonian blocks per J sector.
 
-    The excited-state Hamiltonian includes:
-      - Valence d-d Coulomb: F^k(dd) × SHELL2_k  (k=2,4)
-      - Valence SOC: ζ_d × SOC_d (shell_idx=2)
-      - Core SOC: ζ_p × SOC_p (shell_idx=1)
-      - Inter-shell exchange: G^k(pd) × EXCHANGE_k  (k=1,3)
-      - Inter-shell direct: F^k(pd) × DIRECT_k  (k=2)
-      - Core-core Coulomb: F^k(pp) × SHELL1_k (not needed for p^5, single term)
+    COWAN-store (reduced-matrix-element, E_av-relative) convention, using
+    :func:`compute_two_shell_operators` (shell 1 = core l_core^(n_core-1),
+    shell 2 = valence l_val^(n_val+1)); validated against ttrcg blocks with
+    every parameter scaled separately (tests/test_angular/
+    test_hamiltonian_operators.py)::
+
+        H_J = Σ_k F^k_dd C^dd_k(J) + F^2_pd D_2(J) + Σ_k G^k_pd X_k(J)
+              + ζ_d V_d(J) + ζ_p V_p(J)
 
     Parameters
     ----------
@@ -242,81 +238,29 @@ def _build_excited_hamiltonian_cowan(
     """
     n_core_ex = n_core_gs - 1
     n_val_ex = n_val_gs + 1
+    basis, ops = compute_two_shell_operators(l_core, n_core_ex, l_val, n_val_ex)
 
     j_sizes = _get_excited_j_sizes(l_val, n_val_gs, l_core, n_core_gs)
-
     h_blocks: Dict[float, np.ndarray] = {}
     for J, n_states in j_sizes.items():
-        h_blocks[J] = np.zeros((n_states, n_states), dtype=np.float64)
-
-    # Valence d-d Coulomb (k=2,4)
-    for k in [2, 4]:
-        fk_name = f"F{k}_dd"
-        fk_ry = raw_slater_ry.get(fk_name, 0.0)
-        if abs(fk_ry) < 1e-15:
+        H = np.zeros((n_states, n_states), dtype=np.float64)
+        if J not in basis:
+            h_blocks[J] = H
             continue
-        fk_ev = fk_ry * ry_to_ev
-        shell_blocks = compute_two_shell_shell_blocks(
-            l_val, n_val_ex, l_core, n_core_ex, k)
-        for (Jb, Jk), mat in shell_blocks.items():
-            if abs(Jb - Jk) < 1e-10:  # diagonal in J for Hamiltonian
-                h_blocks[Jb] += fk_ev * mat
-
-    # Valence SOC (shell_idx=2 = valence)
-    zeta_d_ev = raw_zeta_ry.get('d', 0.0) * ry_to_ev
-    if abs(zeta_d_ev) > 1e-15:
-        soc_d = compute_two_shell_soc(
-            l_val, n_val_ex, l_core, n_core_ex, shell_idx=2)
-        for J, mat in soc_d.items():
-            h_blocks[J] += zeta_d_ev * mat
-
-    # Core SOC (shell_idx=1 = core)
-    zeta_p_ev = raw_zeta_ry.get('p', 0.0) * ry_to_ev
-    if abs(zeta_p_ev) > 1e-15:
-        soc_p = compute_two_shell_soc(
-            l_val, n_val_ex, l_core, n_core_ex, shell_idx=1)
-        for J, mat in soc_p.items():
-            h_blocks[J] += zeta_p_ev * mat
-
-    # Inter-shell exchange G^k(pd) (k=1,3)
-    for k in [1, 3]:
-        gk_name = f"G{k}_pd"
-        gk_ry = raw_slater_ry.get(gk_name, 0.0)
-        if abs(gk_ry) < 1e-15:
-            continue
-        gk_ev = gk_ry * ry_to_ev
-        exchange = compute_two_shell_exchange(
-            l_val, n_val_ex, l_core, n_core_ex, k)
-        for J, mat in exchange.items():
-            h_blocks[J] += gk_ev * mat
-
-    # Inter-shell direct Coulomb F^k(pd) (k=2 for p-d)
-    # This uses the same SHELL operator but for the core shell (shell_idx=1)
-    # For p^5 (single term), the core SHELL matrices are diagonal scalars,
-    # so F2_pd contributes only a J-independent shift. We handle it via
-    # the SHELL1 blocks (core shell U^(k) in two-shell basis).
-    f2_pd_ry = raw_slater_ry.get('F2_pd', 0.0)
-    if abs(f2_pd_ry) > 1e-15:
-        f2_pd_ev = f2_pd_ry * ry_to_ev
-        # Direct Coulomb: uses core shell U^(k=2) in the two-shell basis
-        # compute_two_shell_shell_blocks with shell indices swapped:
-        # we need the SHELL operator acting on the CORE shell
-        # For p^5 d^(N+1), the core U^(2) is a scalar (single LS term),
-        # so this is simply f2_pd * identity... but we need the proper
-        # angular structure. For now, compute via the exchange infrastructure
-        # which already handles the full 9j coupling.
-        # Actually F^k(pd) direct uses U^(k) on both shells:
-        # ⟨α|F_k|α'⟩ = n1*n2 * u^(k)(shell1) * u^(k)(shell2) * 3j^2
-        # This is NOT the same as the exchange. We need a separate function.
-        # F2_pd direct Coulomb is not yet implemented. Warn since it can
-        # shift absolute energies by a few tenths of eV for heavy elements.
-        import warnings
-        warnings.warn(
-            f"F2_pd = {f2_pd_ry:.4f} Ry is nonzero but the direct "
-            f"Coulomb contribution is not implemented; this produces a "
-            f"small systematic error in excited-state absolute energies.",
-            stacklevel=2,
-        )
+        assert len(basis[J]) == n_states, (J, len(basis[J]), n_states)
+        contributions = [
+            (raw_slater_ry.get("F2_dd", 0.0), "F2_22"),
+            (raw_slater_ry.get("F4_dd", 0.0), "F4_22"),
+            (raw_slater_ry.get("F2_pd", 0.0), "F2_12"),
+            (raw_slater_ry.get("G1_pd", 0.0), "G1_12"),
+            (raw_slater_ry.get("G3_pd", 0.0), "G3_12"),
+            (raw_zeta_ry.get("p", 0.0), "zeta_1"),
+            (raw_zeta_ry.get("d", 0.0), "zeta_2"),
+        ]
+        for value_ry, name in contributions:
+            if name in ops and abs(value_ry) > 0.0:
+                H += (value_ry * ry_to_ev) * ops[name][J]
+        h_blocks[J] = H
 
     return h_blocks
 
@@ -728,7 +672,21 @@ def _d4h_operator_vector_complex(
         route_vec = (B_oh @ sub).flatten()
         op_vec_real += coeff * route_vec
     U_k = _c2r_unitary(rank)
-    return U_k.conj().T @ op_vec_real.astype(np.complex128)
+    op_vec = U_k.conj().T @ op_vec_real.astype(np.complex128)
+
+    # Pin the overall sign to the Ballhausen / CTM4XAS convention on a
+    # single d electron: E(z2) = 6Dq - 2Ds - 6Dt, i.e. the z2 matrix
+    # element is positive for 10Dq and negative for Dt and Ds. The
+    # D4h-A1g partner vectors that enter ``op_vec_real`` come from an
+    # eigen-decomposition whose sign is arbitrary (audit S4: Ds emerged
+    # with the opposite sign to the fixture path).
+    expected = {'TENDQ': 1.0, 'DT': -1.0, 'DS': -1.0}.get(operator)
+    if expected is not None and target_d4h_irrep == 'A1g':
+        l = 2
+        m_z2 = _operator_real_matrix(l, l, rank, op_vec)[l, l]   # m=0 real harmonic = z2
+        if abs(m_z2) > 1e-12 and (m_z2 > 0) != (expected > 0):
+            op_vec = -op_vec
+    return op_vec
 
 
 def _operator_real_matrix(
@@ -842,6 +800,41 @@ def _make_d4h_op_adds(
             )
         return v_cache[key]
 
+    # Hermiticity of the assembled block requires the ADD coefficients of
+    # a (J_b, J_k) pair and its transpose to obey
+    #     c(J_k, J_b) = (-1)^{J_b - J_k} c(J_b, J_k)
+    # because the rank-k COWAN blocks satisfy SHELL(J_k, J_b) =
+    # (-1)^{J_b - J_k} SHELL(J_b, J_k)^T (UNCPLA phase). The raw
+    # projection <v_b|O(J_b,J_k)|v_k> from ``_build_coupling_operator``
+    # does not carry that phase for J_b > J_k, which made the block
+    # non-symmetric; the assembler's symmetrization then cancelled the
+    # cross-J crystal-field mixing (audit S4: "averaged" one-electron
+    # levels in the Eg/A2g/B2g blocks). We therefore evaluate every pair
+    # with J_b <= J_k and mirror it.
+    coeff_cache: Dict[Tuple[int, int], float] = {}
+
+    # In the real-SH basis the projected block O(J_b, J_k) of an even-rank
+    # operator is real for even J_k - J_b and purely imaginary otherwise
+    # (``_operator_real_matrix`` returns Re or -Im). The unitary gauge
+    # diag(i^J) that makes every block real multiplies the (J_b, J_k)
+    # block by i^{J_k - J_b}; relative to the Re / -Im extraction that is
+    # the sign (-1)^{floor((J_k - J_b)/2)} for J_b <= J_k. Without it the
+    # cross-J couplings of different |J_k - J_b| had inconsistent relative
+    # signs (gauge-loop inconsistency), which the one-electron oracle
+    # (tests/test_hamiltonian/test_cf_one_electron.py) exposes.
+    def coefficient(ib, ik, Jb, oh_b, cb, pb, Jk, oh_k, ck, pk) -> float:
+        if Jb > Jk:
+            return (-1.0) ** int(round(Jb - Jk)) * coefficient(
+                ik, ib, Jk, oh_k, ck, pk, Jb, oh_b, cb, pb)
+        key = (ib, ik)
+        if key not in coeff_cache:
+            v_b = get_v(Jb, oh_b, cb, pb)
+            v_k = get_v(Jk, oh_k, ck, pk)
+            me = float(v_b @ get_O(Jb, Jk) @ v_k)
+            gauge = (-1.0) ** (int(round(Jk - Jb)) // 2)
+            coeff_cache[key] = gauge * math.sqrt(dim_d4h / (2.0 * Jb + 1.0)) * me
+        return coeff_cache[key]
+
     bra_pos = 1
     for ib, (Jb, oh_b, cb, pb, nb) in enumerate(entries):
         ket_pos = 1
@@ -853,14 +846,10 @@ def _make_d4h_op_adds(
             if (Jb, Jk) not in matrix_idx_map:
                 ket_pos += nk
                 continue
-            v_b = get_v(Jb, oh_b, cb, pb)
-            v_k = get_v(Jk, oh_k, ck, pk)
-            O_real = get_O(Jb, Jk)
-            me = float(v_b @ O_real @ v_k)
-            if abs(me) < 1e-13:
+            coeff = coefficient(ib, ik, Jb, oh_b, cb, pb, Jk, oh_k, ck, pk)
+            if abs(coeff) < 1e-13:
                 ket_pos += nk
                 continue
-            coeff = math.sqrt(dim_d4h / (2.0 * Jb + 1.0)) * me
             adds.append(ADDEntry(
                 matrix_idx=matrix_idx_map[(Jb, Jk)],
                 bra=bra_pos, ket=ket_pos,
@@ -1001,13 +990,201 @@ def _make_d4h_dipole_adds(
             if sum_sq < 1e-26:
                 ket_pos += nk
                 continue
-            sign = 1.0 if sign_me >= 0 else -1.0
+            sign = (1.0 if sign_me >= 0 else -1.0) * _dipole_gauge_sign(Jb, Jk)
             rme = sign * math.sqrt(sum_sq) / rme_op_norm
             adds.append(ADDEntry(
                 matrix_idx=multipole_idx[(Jb, Jk)],
                 bra=bra_pos, ket=ket_pos,
                 nbra=nb, nket=nk,
                 coeff=factor * rme_prefactor * rme,
+            ))
+            ket_pos += nk
+        bra_pos += nb
+    return adds
+
+
+def _dipole_gauge_sign(Jb: float, Jk: float) -> float:
+    """Sign that puts the rank-1 projected block on the same real gauge as the
+    even-rank crystal-field blocks (diag(i^J) on both manifolds plus a global
+    i on the ungerade one): relative to ``_operator_real_matrix``'s Re / -Im
+    extraction it is -1 for J_k - J_b = +1 and +1 otherwise."""
+    return -1.0 if int(round(Jk - Jb)) == 1 else 1.0
+
+
+def _make_oh_op_adds(
+    oh_irrep: str,
+    j_order: List[Tuple[float, int, int]],
+    operator: str,
+    ham_idx_map: Dict[float, int],
+    cf_idx_map: Dict[Tuple[float, float], int],
+) -> List[ADDEntry]:
+    """GROUND/EXCITE ADD entries for one Oh irrep by direct projection.
+
+    Oh analogue of :func:`_make_d4h_op_adds`: partner-0 vectors of each
+    (J, copy) from ``_real_subduction_matrix``, the same i^{J_k-J_b}
+    gauge sign and (-1)^{J_b-J_k} hermitian mirroring, so that the
+    HAMILTONIAN, 10DQ and (via ``_make_oh_dipole_adds``) TRANSI blocks of
+    the Oh path share one basis gauge. The former route through
+    ``oh_coupling_coefficients_full`` used BFS-phased complex traces —
+    a different gauge from the TRANSI projection, which left the Oh
+    from-scratch spectrum at cosine 0.968 against Fortran while D4h
+    (all three block types projected) was exact.
+    Integer J only.
+    """
+    dim = OH_IRREP_DIM[oh_irrep]
+    adds: List[ADDEntry] = []
+    if operator == 'HAMILTONIAN':
+        bra_pos = 1
+        for (Jb, cb, nb) in j_order:
+            if Jb in ham_idx_map:
+                adds.append(ADDEntry(
+                    matrix_idx=ham_idx_map[Jb], bra=bra_pos, ket=bra_pos,
+                    nbra=nb, nket=nb, coeff=math.sqrt(dim / (2.0 * Jb + 1.0)),
+                ))
+            bra_pos += nb
+        return adds
+    if operator != '10DQ':
+        raise ValueError(f"_make_oh_op_adds: unknown operator {operator!r}")
+    k = 4
+    op_vec = _d4h_operator_vector_complex('TENDQ', k)   # pure Oh-A1 rank-4, Butler-scaled, sign-pinned
+
+    v_cache: Dict[Tuple[float, int], np.ndarray] = {}
+
+    def get_v(J, copy):
+        key = (J, copy)
+        if key not in v_cache:
+            B = _real_subduction_matrix(int(round(J)), oh_irrep)
+            v_cache[key] = np.ascontiguousarray(B[:, copy * dim])
+        return v_cache[key]
+
+    O_cache: Dict[Tuple[float, float], np.ndarray] = {}
+
+    def get_O(Jb, Jk):
+        if (Jb, Jk) not in O_cache:
+            O_cache[(Jb, Jk)] = _operator_real_matrix(Jb, Jk, k, op_vec)
+        return O_cache[(Jb, Jk)]
+
+    coeff_cache: Dict[Tuple[int, int], float] = {}
+
+    def coefficient(ib, ik):
+        Jb, cb, _ = j_order[ib]
+        Jk, ck, _ = j_order[ik]
+        if Jb > Jk:
+            return (-1.0) ** int(round(Jb - Jk)) * coefficient(ik, ib)
+        if (ib, ik) not in coeff_cache:
+            me = float(get_v(Jb, cb) @ get_O(Jb, Jk) @ get_v(Jk, ck))
+            gauge = (-1.0) ** (int(round(Jk - Jb)) // 2)
+            coeff_cache[(ib, ik)] = gauge * math.sqrt(dim / (2.0 * Jb + 1.0)) * me
+        return coeff_cache[(ib, ik)]
+
+    bra_pos = 1
+    for ib, (Jb, cb, nb) in enumerate(j_order):
+        ket_pos = 1
+        for ik, (Jk, ck, nk) in enumerate(j_order):
+            if abs(Jb - Jk) > k or Jb + Jk < k or (Jb, Jk) not in cf_idx_map:
+                ket_pos += nk
+                continue
+            c = coefficient(ib, ik)
+            if abs(c) > 1e-13:
+                adds.append(ADDEntry(
+                    matrix_idx=cf_idx_map[(Jb, Jk)], bra=bra_pos, ket=ket_pos,
+                    nbra=nb, nket=nk, coeff=c,
+                ))
+            ket_pos += nk
+        bra_pos += nb
+    return adds
+
+
+def _make_oh_dipole_adds(
+    oh_gs: str,
+    gs_j_order: List[Tuple[float, int, int]],
+    oh_ex: str,
+    ex_j_order: List[Tuple[float, int, int]],
+    multipole_idx: Dict[Tuple[float, float], int],
+) -> List[ADDEntry]:
+    """TRANSI ADD entries for one (Oh ground irrep, Oh excited irrep) pair.
+
+    Oh analogue of :func:`_make_d4h_dipole_adds`: the dipole operator is
+    the full T1u triplet (no PERP/PARA split), and the block coefficient
+    is the partner-summed reduced matrix element
+
+        coeff = sqrt(3/(2J_b+1)) × sign × sqrt(Σ_{p_b, p_op, p_k} |<v_b^{p_b}|O^{p_op}|v_k^{p_k}>|² / 3)
+
+    with the Oh partner vectors taken from ``_real_subduction_matrix``.
+    Reproduces the per-block Σ coeff² n_bra n_ket of the Fortran RAC
+    (60.0 total for Ni d8; the former ``oh_transition_coupling`` route
+    gave 125.0 with triad-dependent errors, audit S5).
+    """
+    dim_gs = OH_IRREP_DIM[oh_gs]
+    dim_ex = OH_IRREP_DIM[oh_ex]
+    B_op = _real_subduction_matrix(1, 'T1')          # (3, 3): T1u partners in real-SH basis
+    U_1 = _c2r_unitary(1)
+    op_vecs = [U_1.conj().T @ np.ascontiguousarray(B_op[:, p]).astype(np.complex128)
+               for p in range(3)]
+
+    O_cache: Dict[Tuple[float, float, int], np.ndarray] = {}
+
+    def get_O(Jb, Jk, p_op):
+        key = (Jb, Jk, p_op)
+        if key not in O_cache:
+            O_cache[key] = _operator_real_matrix(Jb, Jk, 1, op_vecs[p_op])
+        return O_cache[key]
+
+    def partners(J, label, copy, dim):
+        B = _real_subduction_matrix(int(round(J)), label)
+        return [np.ascontiguousarray(B[:, copy * dim + p]) for p in range(dim)]
+
+    # Pass 1: every partner-triple matrix element for every (J_b, J_k) pair.
+    # The reduced matrix element's magnitude is the partner sum; its sign
+    # must be read off ONE fixed partner triple (p_b, p_op, p_k) for all
+    # (J_b, J_k) of this (Γ_gs, Γ_ex) pair — the Oh Clebsch-Gordan
+    # coefficient of that triple — otherwise the relative signs between J
+    # pairs are inconsistent. We pick the triple with the largest summed
+    # |me| over all pairs (a "first nonzero" rule could switch triples
+    # between pairs).
+    pair_me: Dict[Tuple[int, int], Dict[Tuple[int, int, int], float]] = {}
+    triple_weight: Dict[Tuple[int, int, int], float] = {}
+    for ib, (Jb, cb, nb) in enumerate(gs_j_order):
+        for ik, (Jk, ck, nk) in enumerate(ex_j_order):
+            if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
+                continue
+            v_bs = partners(Jb, oh_gs, cb, dim_gs)
+            v_ks = partners(Jk, oh_ex, ck, dim_ex)
+            mes = {}
+            for p_b, v_b in enumerate(v_bs):
+                for p_op in range(3):
+                    O_real = get_O(Jb, Jk, p_op)
+                    for p_k, v_k in enumerate(v_ks):
+                        me = float(v_b @ O_real @ v_k)
+                        mes[(p_b, p_op, p_k)] = me
+                        triple_weight[(p_b, p_op, p_k)] = triple_weight.get((p_b, p_op, p_k), 0.0) + abs(me)
+            pair_me[(ib, ik)] = mes
+    ranked_triples = sorted(triple_weight, key=lambda t: -triple_weight[t])
+
+    adds: List[ADDEntry] = []
+    bra_pos = 1
+    for ib, (Jb, cb, nb) in enumerate(gs_j_order):
+        rme_prefactor = math.sqrt(3.0 / (2.0 * Jb + 1.0))
+        ket_pos = 1
+        for ik, (Jk, ck, nk) in enumerate(ex_j_order):
+            mes = pair_me.get((ib, ik))
+            if mes is None:
+                ket_pos += nk
+                continue
+            sum_sq = sum(me * me for me in mes.values())
+            if sum_sq < 1e-26:
+                ket_pos += nk
+                continue
+            sign = 0.0
+            for t in ranked_triples:
+                if abs(mes.get(t, 0.0)) > 1e-12:
+                    sign = 1.0 if mes[t] > 0 else -1.0
+                    break
+            sign *= _dipole_gauge_sign(Jb, Jk)
+            adds.append(ADDEntry(
+                matrix_idx=multipole_idx[(Jb, Jk)],
+                bra=bra_pos, ket=ket_pos, nbra=nb, nket=nk,
+                coeff=rme_prefactor * sign * math.sqrt(sum_sq / 3.0),
             ))
             ket_pos += nk
         bra_pos += nb
@@ -1326,55 +1503,75 @@ def generate_ledge_rac(
                 continue
             ex_block_dim = sum(n_st for _, _, n_st in ex_j_order)
 
-            # Collect Oh-level couplings for this (gs_irrep, ex_irrep) pair
-            oh_couplings: Dict[Tuple[float, int, float, int], float] = {}
-            for (J_gs, c_gs, _) in gs_j_order:
-                for (J_ex, c_ex, _) in ex_j_order:
-                    val = add_transition.get(
-                        (gs_irrep, J_gs, c_gs,
-                         ex_irrep, J_ex, c_ex), 0.0)
-                    if abs(val) > 1e-15:
-                        oh_couplings[(J_gs, c_gs, J_ex, c_ex)] = val
+            if is_half_gs or is_half_ex:
+                # Half-integer J (odd-electron ions): the projected emitter
+                # needs double-group real partner bases (WP-B). Keep the
+                # legacy PERP/PARA emission, whose normalization is known
+                # to be off (audit S5) — see docs/DEVELOPMENT_PLAN_2026-09.md.
+                # Collect Oh-level couplings for this (gs_irrep, ex_irrep) pair
+                oh_couplings: Dict[Tuple[float, int, float, int], float] = {}
+                for (J_gs, c_gs, _) in gs_j_order:
+                    for (J_ex, c_ex, _) in ex_j_order:
+                        val = add_transition.get(
+                            (gs_irrep, J_gs, c_gs,
+                             ex_irrep, J_ex, c_ex), 0.0)
+                        if abs(val) > 1e-15:
+                            oh_couplings[(J_gs, c_gs, J_ex, c_ex)] = val
 
-            if not oh_couplings:
+                if not oh_couplings:
+                    continue
+
+                # Create PERP and PARA TRANSI blocks
+                for d4h_factor, op_sym, geometry in [
+                    (PERP_FACTOR, '1-', 'PERP'),
+                    (PARA_FACTOR, '^0-', 'PARA'),
+                ]:
+                    transi_adds = []
+                    bra_pos = 1
+                    for (J_gs, c_gs, n_gs) in gs_j_order:
+                        ket_pos = 1
+                        for (J_ex, c_ex, n_ex) in ex_j_order:
+                            oh_c = oh_couplings.get(
+                                (J_gs, c_gs, J_ex, c_ex), 0.0)
+                            if ((J_gs, J_ex) in multipole_idx
+                                    and abs(oh_c) > 1e-15):
+                                transi_adds.append(ADDEntry(
+                                    matrix_idx=multipole_idx[(J_gs, J_ex)],
+                                    bra=bra_pos,
+                                    ket=ket_pos,
+                                    nbra=n_gs,
+                                    nket=n_ex,
+                                    coeff=d4h_factor * oh_c,
+                                ))
+                            ket_pos += n_ex
+                        bra_pos += n_gs
+
+                    if transi_adds:
+                        blocks.append(RACBlockFull(
+                            kind='TRANSI',
+                            bra_sym=gs_butler,
+                            op_sym=op_sym,
+                            ket_sym=ex_butler,
+                            geometry=geometry,
+                            n_bra=gs_block_dim,
+                            n_ket=ex_block_dim,
+                            add_entries=transi_adds,
+                        ))
                 continue
-
-            # Create PERP and PARA TRANSI blocks
-            for d4h_factor, op_sym, geometry in [
-                (PERP_FACTOR, '1-', 'PERP'),
-                (PARA_FACTOR, '^0-', 'PARA'),
-            ]:
-                transi_adds = []
-                bra_pos = 1
-                for (J_gs, c_gs, n_gs) in gs_j_order:
-                    ket_pos = 1
-                    for (J_ex, c_ex, n_ex) in ex_j_order:
-                        oh_c = oh_couplings.get(
-                            (J_gs, c_gs, J_ex, c_ex), 0.0)
-                        if ((J_gs, J_ex) in multipole_idx
-                                and abs(oh_c) > 1e-15):
-                            transi_adds.append(ADDEntry(
-                                matrix_idx=multipole_idx[(J_gs, J_ex)],
-                                bra=bra_pos,
-                                ket=ket_pos,
-                                nbra=n_gs,
-                                nket=n_ex,
-                                coeff=d4h_factor * oh_c,
-                            ))
-                        ket_pos += n_ex
-                    bra_pos += n_gs
-
-                if transi_adds:
-                    blocks.append(RACBlockFull(
-                        kind='TRANSI',
-                        bra_sym=gs_butler,
-                        op_sym=op_sym,
-                        ket_sym=ex_butler,
-                        geometry=geometry,
-                        n_bra=gs_block_dim,
-                        n_ket=ex_block_dim,
-                        add_entries=transi_adds,
-                    ))
+            transi_adds = _make_oh_dipole_adds(
+                gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx,
+            )
+            if transi_adds:
+                blocks.append(RACBlockFull(
+                    kind='TRANSI',
+                    bra_sym=gs_butler,
+                    op_sym='1-',
+                    ket_sym=ex_butler,
+                    geometry='MULTIPOLE',
+                    n_bra=gs_block_dim,
+                    n_ket=ex_block_dim,
+                    add_entries=transi_adds,
+                ))
 
     # --- D4h dispatcher — per-D4h-irrep GROUND + EXCITE emission ---
     # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The per-Oh-irrep
@@ -1476,8 +1673,11 @@ def generate_ledge_rac(
         ))
 
         # HAMILTONIAN block (k=0)
-        ham_adds = _make_operator_adds(
-            gs_j_order, add_k0_gs, gs_ham_idx, irrep, diagonal_only=False)
+        if is_half_gs:
+            ham_adds = _make_operator_adds(
+                gs_j_order, add_k0_gs, gs_ham_idx, irrep, diagonal_only=False)
+        else:
+            ham_adds = _make_oh_op_adds(irrep, gs_j_order, 'HAMILTONIAN', gs_ham_idx, gs_cf_idx)
         blocks.append(RACBlockFull(
             kind='GROUND',
             bra_sym=gs_butler,
@@ -1490,7 +1690,8 @@ def generate_ledge_rac(
         ))
 
         # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
-        cf_adds = _make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep)
+        cf_adds = (_make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep) if is_half_gs
+                   else _make_oh_op_adds(irrep, gs_j_order, '10DQ', gs_ham_idx, gs_cf_idx))
         blocks.append(RACBlockFull(
             kind='GROUND',
             bra_sym=gs_butler,
@@ -1519,8 +1720,11 @@ def generate_ledge_rac(
         ))
 
         # HAMILTONIAN block
-        ham_adds = _make_operator_adds(
-            ex_j_order, add_k0_ex, ex_ham_idx, irrep, diagonal_only=False)
+        if is_half_ex:
+            ham_adds = _make_operator_adds(
+                ex_j_order, add_k0_ex, ex_ham_idx, irrep, diagonal_only=False)
+        else:
+            ham_adds = _make_oh_op_adds(irrep, ex_j_order, 'HAMILTONIAN', ex_ham_idx, ex_cf_idx)
         blocks.append(RACBlockFull(
             kind='GROUND',  # assembler uses 'GROUND' for config-1
             bra_sym=ex_butler,
@@ -1533,7 +1737,8 @@ def generate_ledge_rac(
         ))
 
         # 10DQ block
-        cf_adds = _make_cf_adds(ex_j_order, add_cf_ex, ex_cf_idx, irrep)
+        cf_adds = (_make_cf_adds(ex_j_order, add_cf_ex, ex_cf_idx, irrep) if is_half_ex
+                   else _make_oh_op_adds(irrep, ex_j_order, '10DQ', ex_ham_idx, ex_cf_idx))
         blocks.append(RACBlockFull(
             kind='GROUND',  # assembler uses 'GROUND' for config-1
             bra_sym=ex_butler,
@@ -1558,6 +1763,18 @@ def generate_ledge_rac(
         blocks=blocks,
     )
 
+    # Diagnostics: expose the COWAN-store index maps (matrix_idx -> block key).
+    try:
+        rac.index_maps = {
+            'multipole': dict(multipole_idx),
+            'gs_ham': dict(gs_ham_idx), 'gs_cf': dict(gs_cf_idx),
+            'gs_cf_rank2': dict(gs_cf_idx_rank2),
+            'ex_ham': dict(ex_ham_idx) if 'ex_ham_idx' in dir() else {},
+            'ex_cf': dict(ex_cf_idx) if 'ex_cf_idx' in dir() else {},
+            'ex_cf_rank2': dict(ex_cf_idx_rank2) if 'ex_cf_idx_rank2' in dir() else {},
+        }
+    except Exception:  # pragma: no cover - diagnostics only
+        pass
     return rac, cowan_store
 
 

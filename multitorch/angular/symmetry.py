@@ -289,7 +289,19 @@ def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
     d4_mats = [oh_mats[i] for i in d4_indices]
     d4_classes = [_classify_d4_rotation(rotations[i]) for i in d4_indices]
 
-    # 3. Build projectors and find partner vectors per D4h irrep
+    # 3. Partner-resolved projectors per D4h irrep.
+    #
+    # A character projector P^Γ = (dim/|G|) Σ χ(R) D(R) fixes only the
+    # irrep *subspace*; for the 2-D irrep E the partner basis inside it
+    # was left to numpy's eigensolver and therefore differed between Oh
+    # parents (T1g→Eg and T2g→Eg). Matrix elements of a D4h-scalar
+    # operator between partner-0 vectors of different parents then
+    # vanished or mixed wrongly (scientific audit 2026-09, S4). Using
+    # the explicit irrep matrices Γ_{μν}(R) — the (x, y) vector
+    # representation R[:2, :2] for E, the character for 1-D irreps —
+    # P_{00} = (dim/|G|) Σ Γ_{00}(R) D(R) singles out one definite
+    # partner ("x-like") for every parent, and the transfer operator
+    # P_{μ0} = (dim/|G|) Σ Γ_{μ0}(R) D(R) generates the others.
     target_d4h_irreps = OH_TO_D4H.get(oh_irrep, [])
     if not target_d4h_irreps:
         raise ValueError(f"OH_TO_D4H has no entry for {oh_irrep}")
@@ -303,26 +315,40 @@ def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
         chars = D4_CHARACTERS[d4_irrep]
         dim_d4 = D4H_IRREP_DIM[d4h_irrep]
 
-        # P^Γ = (dim_Γ / |G|) Σ χ^Γ(R)* Γ(R)
-        # For D4 |G|=8, characters are real, so χ* = χ
-        P = _np.zeros((dim_oh, dim_oh), dtype=_np.float64)
-        for i in range(8):
-            P += chars[d4_classes[i]] * d4_mats[i]
-        P *= dim_d4 / 8.0
+        def gamma(i: int) -> _np.ndarray:
+            if dim_d4 == 1:
+                return _np.array([[chars[d4_classes[i]]]], dtype=_np.float64)
+            return rotations[d4_indices[i]][:2, :2]
 
-        # Eigenvectors with eigenvalue ≈ 1 are the partner vectors
-        eigvals, eigvecs = _np.linalg.eigh(P)
+        def transfer(mu: int, nu: int) -> _np.ndarray:
+            P = _np.zeros((dim_oh, dim_oh), dtype=_np.float64)
+            for i in range(8):
+                P += gamma(i)[mu, nu] * d4_mats[i]
+            return P * (dim_d4 / 8.0)
+
+        P00 = transfer(0, 0)
+        eigvals, eigvecs = _np.linalg.eigh(P00)
         mask = eigvals > 0.5
-        partners = eigvecs[:, mask]  # (dim_oh, mult * dim_d4)
-
-        # Verify dimension matches expected mult × dim_d4
-        expected_n = OH_TO_D4H[oh_irrep].count(d4h_irrep) * dim_d4
-        if partners.shape[1] != expected_n:
+        v0 = eigvecs[:, mask]  # (dim_oh, mult) partner-0 vectors, one per copy
+        mult = OH_TO_D4H[oh_irrep].count(d4h_irrep)
+        if v0.shape[1] != mult:
             raise RuntimeError(
                 f"Partner extraction failed for {oh_irrep} → {d4h_irrep}: "
-                f"got {partners.shape[1]} partners, expected {expected_n}"
+                f"got {v0.shape[1]} partner-0 vectors, expected {mult}"
             )
-        result[d4h_irrep] = partners
+        cols = []
+        for c in range(mult):
+            base = v0[:, c]
+            for mu in range(dim_d4):
+                v = base if mu == 0 else transfer(mu, 0) @ base
+                nrm = _np.linalg.norm(v)
+                if nrm < 1e-10:
+                    raise RuntimeError(
+                        f"Transfer operator gave a null partner {mu} for "
+                        f"{oh_irrep} → {d4h_irrep}"
+                    )
+                cols.append(v / nrm)
+        result[d4h_irrep] = _np.stack(cols, axis=1)  # (dim_oh, mult × dim_d4), copy-major
 
     return result
 

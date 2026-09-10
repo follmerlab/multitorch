@@ -1011,15 +1011,21 @@ def _hfs_to_slater_params(
     from multitorch.atomic.hfs import hfs_scf
     from multitorch.atomic.slater import compute_slater_from_wavefunctions
 
+    # Cowan's tabulated Slater integrals (the values CTM4XAS users reduce
+    # to 80 %) come from RCN31's second pass with EXF = 0.65 (his HX
+    # exchange); with EXF = 1.0 the Ni2+ F2(3d,3d) is 11.6 % above
+    # Cowan's 12.234 eV, with EXF = 0.65 it is 1.5 % above. The residual
+    # is the HX correction term (WP-S S3b).
+    exf = 0.65
     # Ground state HFS
-    hfs_gs = hfs_scf(Z, gs_config, zeta_method=zeta_method)
+    hfs_gs = hfs_scf(Z, gs_config, zeta_method=zeta_method, EXF=exf)
     pnl_gs = {orb.nl_label.lower(): orb.P for orb in hfs_gs.orbitals
               if orb.P is not None}
     slater_gs = compute_slater_from_wavefunctions(
         pnl_gs, hfs_gs.r, hfs_gs.r[1].item() - hfs_gs.r[0].item())
 
     # Excited state HFS
-    hfs_ex = hfs_scf(Z, ex_config, zeta_method=zeta_method)
+    hfs_ex = hfs_scf(Z, ex_config, zeta_method=zeta_method, EXF=exf)
     pnl_ex = {orb.nl_label.lower(): orb.P for orb in hfs_ex.orbitals
               if orb.P is not None}
     slater_ex = compute_slater_from_wavefunctions(
