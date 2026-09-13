@@ -558,6 +558,14 @@ Empirical validation:
   fixture's convention; if the oh-fs path needs to be normalized to
   match, that's a separate edit to `oh_transition_coupling`.
 
+> **Superseded (2026-09-13).** There is no "HFS floor" here. The ~0.978
+> figures came from a peak-aligned intersection window (audit §7.1). On the
+> union window d4h-fs(dt=ds=0) == oh-fs at cosine 0.99999998; with the Fortran
+> store's own parameters the D4h generator reproduces nid8ct at 0.99999992;
+> the remaining 0.969 with default HFS parameters is the HFS port's atomic
+> parameters (WP-S S3b). The oh-fs dipole normalization was fixed in S5. See
+> `docs/DEVELOPMENT_PLAN_2026-09.md`, Known residuals 16–17.
+
 The user-visible payoff (re-running the 5 Fe v0 manuscript fits in
 `bench/v0_fitter_results/` with the corrected dispatcher) is the
 remaining bullet in #2.

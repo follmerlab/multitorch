@@ -18,9 +18,11 @@ with float64 precision and full `torch.autograd` support.
   pre-computed angular coefficients are bundled as package data
 - **XAS, XES, RIXS** — L-edge absorption, emission, and 2D resonant
   inelastic scattering maps via the Kramers-Heisenberg kernel
-- **Validated** — 477 tests; numerical agreement with the established
-  Cowan/ttmult Fortran suite across 9 Ti-Ni fixtures (cosine similarity
-  >= 0.97)
+- **Validated** — against the Cowan/ttmult Fortran suite: the fixture path
+  reproduces the Fortran spectra of 8 of 9 Ti–Ni fixtures to cosine ≥ 0.9999999
+  (Cr(III) is an open residual at 0.989); the from-scratch path reproduces
+  V(III), Fe(II) and Ni(II) exactly given the same atomic parameters
+  (odd-electron ions in progress)
 - **GPU-ready** — tensors move to any PyTorch device
 
 ## Installation
