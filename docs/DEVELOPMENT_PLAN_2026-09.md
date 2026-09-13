@@ -127,6 +127,35 @@ Ordered by blast radius. Every item gets a Fortran or analytic oracle, not a cod
 | Half-integer J on the projected emitters (Fe(III), Co(II), Cu(II), …) | open → WP-B double group |
 | Fe v0 fits re-run | **done 2026-09-13**, issue #2 closed: `/data/ahf/multitorch/fits/v1_2026-09/` (loss 1.6–2.4× below v0 at the v0 protocol; converged slater 0.77–0.82 Fe(II), 0.67–0.72 Fe(III); dE ≈ 692 eV is the energy-zero offset) |
 
+### Next session: WP-A execution plan (written 2026-09-13, develop @ 0574ec2)
+
+**Starting state.** WP-S is closed except S3b and residuals 14/15. From scratch, `calcXAS_from_scratch` reproduces Fortran exactly for integer J (V³⁺, Fe²⁺, Ni²⁺; Oh and D4h). Its crystal-field leaves (`tendq`, `dt`, `ds`) carry gradients. `slater`/`soc` raise `Can't call numpy() on Tensor that requires grad`: `_hfs_to_slater_params` (`api/calc.py`) casts with `float()`; `_build_hamiltonian_cowan_matrices` / `_build_excited_hamiltonian_cowan` (`angular/rac_generator.py`) accumulate in numpy; `generate_ledge_rac` stores `torch.as_tensor(numpy)`. The fixture path already has the seam WP-A needs: `hamiltonian/build_cowan.py` rebuilds every HAMILTONIAN block from per-configuration operator parts.
+
+**Order (each step lands as its own commit with a green suite and a Fortran or finite-difference oracle):**
+
+1. **A1: parameter-linear Hamiltonian from scratch.**
+   - `generate_ledge_rac` additionally returns, per Hamiltonian block, the parameter-free operators it used, keyed like S1a:
+     - ground: `F2_11`, `F4_11`, `zeta_1` from `compute_coulomb_blocks` / `compute_soc_blocks` (our CFP gauge);
+     - excited: `compute_two_shell_operators` names, multiplied by the valence-term σ exactly as `_build_excited_hamiltonian_cowan` now does.
+   - Generalise `ConfigDecomposition` to keep per-parameter operator blocks, not only the aggregated Slater/SOC parts, so one builder contracts `H = E_av·√(2J+1)·I + Σ p_i O_i` for both paths. The fixture path keeps its anchored form `H_fixture + Σ (p_i − p_i^fit) O_i`.
+   - Parameters become torch leaves in eV: F^k, G^k and ζ per configuration, plus global `slater`/`soc` multipliers.
+   - Oracle: at float parameters the new from-scratch store equals the current one elementwise (≤ 1e-12). `test_from_scratch_fortran_parity.py` stays green.
+2. **A2: HFS values as constants.** `_hfs_to_slater_params` returns plain floats (HFS itself is not differentiable; that is A7). `calcXAS_from_scratch` multiplies them by `slater`/`soc` tensors after the fact. Also accept explicit per-parameter overrides (`atomic={'F2dd': …}`), so fits can free individual integrals.
+3. **A4: gradient contract tests.** Extend `tests/test_integration/test_autograd_fd.py` to the from-scratch path: every leaf (slater, soc, F2/F4 ground, F2pd/G1/G3/F2dd/F4dd/ζ2p/ζ3d excited, 10Dq/Dt/Ds) on Ni(II) Oh and D4h and Fe(II) Oh, pinned grid, h = 1e-4, rel ≤ 1e-5. Add ∂H/∂F² == the F² operator block at the contraction seam, and gradient isolation (slater ↛ ζ).
+4. **A6: `preload_from_scratch(element, valence, sym)`** returning a `CachedFixture`-compatible object (rac, plan-like store layout, operator decomposition, HFS constants), so `calcXAS_cached` / `calcXAS_batch` run from scratch. Oracle: equals `calcXAS_from_scratch` to 1e-12; time a 200-step Fe(II) fit loop against the fixture path.
+5. **A5: degeneracy-safe eigh backward.** Custom `autograd.Function`, Lorentzian-regularised 1/(λᵢ−λⱼ), replacing the diagonal perturbation in `safe_eigh`. Oracle: FD at dt = ds = 0 (exact Oh limit) and on Cr d³ (currently excluded from autograd tests).
+6. **A3 (only if A1 leaves the vocabulary split).** One atomic-parameter bundle keyed (shell pair, rank) replacing `ConfigParams` / `ScaledConfigParams` / the `'F2dd'` vs `'F2_dd'` dicts.
+
+**Interleave when convenient (not blocking WP-A):**
+- **S3b:** port Cowan's HX exchange (`rcn31.f`, KUT = −1) so HFS F^k/ζ match RCN31 to ≤ 1%. Also check `hfs_scf(...).converged`.
+- **Residual 14:** Cr³⁺ fixture path vs `.ban_out`. Compare per-triad sticks.
+- **Residual 15:** `get_sticks` `max_gs` level counting needs a physical (kT-based) definition.
+
+**After WP-A, return to the Fe fits** (results in `/data/ahf/multitorch/fits/v1_2026-09/`, drivers in `fits/`, not a git repo):
+- The overlays show a charge-transfer satellite near 714 eV that the data lack. Free Δ, u and V, or fit an ionic model (`lmct=0`).
+- Broadening widths hit their bounds at 1000 steps.
+- Then fit in D4h: Fe(II) from scratch once A6 lands; Fe(III) needs WP-B2a (half-integer J).
+
 ### WP-A — Differentiable from-scratch core (2–3 days; smaller than first estimated)
 
 The Phase 5 path already solved this problem for fixture-loaded matrices (`ScaledAtomicParams` in `atomic/scaled_params.py` and the Coulomb/SOC decomposition in `hamiltonian/build_cowan.py`). WP-A applies the same design to the generator. The senior review found the break is confined to six numpy accumulation sites (`rac_generator.py:160, 171, 258-263, 271, 279, 287-291`) plus eleven `float()` casts in `_hfs_to_slater_params` (`calc.py:1041-1056`); CF parameters already flow because `XHAMEntry` passes tensors through untouched.
