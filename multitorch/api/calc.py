@@ -18,6 +18,7 @@ Usage:
                    slater=0.8, soc=1.0, T=80)
 """
 from __future__ import annotations
+import functools
 import math
 from pathlib import Path
 from typing import Optional, Tuple, Union
@@ -984,15 +985,23 @@ def _hfs_to_slater_params(
     Z: int,
     gs_config: dict,
     ex_config: dict,
-    slater_scale: float = 1.0,
-    soc_scale: float = 1.0,
     zeta_method: str = "blume_watson",
 ):
-    """Run HFS SCF for ground and excited configs, return Slater parameter dicts.
+    """Run HFS SCF for ground and excited configs, return unreduced Slater parameter dicts.
 
-    Returns the dicts in the format expected by ``generate_ledge_rac``:
+    Returns plain floats (Rydberg) in the format of ``generate_ledge_rac``:
       gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
+    HFS is not differentiable (WP-A7); reductions and per-parameter
+    overrides are applied afterwards as tensors by the parameter-linear
+    contraction (:mod:`multitorch.hamiltonian.parametric`).
     """
+    key = (int(Z), tuple(sorted(gs_config.items())), tuple(sorted(ex_config.items())), zeta_method)
+    return _hfs_to_slater_params_cached(*key)
+
+
+@functools.lru_cache(maxsize=32)
+def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
+    gs_config, ex_config = dict(gs_items), dict(ex_items)
     from multitorch.atomic.hfs import hfs_scf
     from multitorch.atomic.slater import compute_slater_from_wavefunctions
 
@@ -1029,25 +1038,51 @@ def _hfs_to_slater_params(
 
     # Format for generate_ledge_rac
     gs_slater_ry = {
-        'F0': float(slater_gs.get('F0dd', 0.0)) * slater_scale,
-        'F2': float(slater_gs.get('F2dd', 0.0)) * slater_scale,
-        'F4': float(slater_gs.get('F4dd', 0.0)) * slater_scale,
+        'F0': float(slater_gs.get('F0dd', 0.0)),
+        'F2': float(slater_gs.get('F2dd', 0.0)),
+        'F4': float(slater_gs.get('F4dd', 0.0)),
     }
-    gs_zeta_ry = float(zeta_3d_gs) * soc_scale
+    gs_zeta_ry = float(zeta_3d_gs)
 
     ex_slater_ry = {
-        'F2_dd': float(slater_ex.get('F2dd', 0.0)) * slater_scale,
-        'F4_dd': float(slater_ex.get('F4dd', 0.0)) * slater_scale,
-        'G1_pd': float(slater_ex.get('G1pd', 0.0)) * slater_scale,
-        'G3_pd': float(slater_ex.get('G3pd', 0.0)) * slater_scale,
-        'F2_pd': float(slater_ex.get('F2pd', 0.0)) * slater_scale,
+        'F2_dd': float(slater_ex.get('F2dd', 0.0)),
+        'F4_dd': float(slater_ex.get('F4dd', 0.0)),
+        'G1_pd': float(slater_ex.get('G1pd', 0.0)),
+        'G3_pd': float(slater_ex.get('G3pd', 0.0)),
+        'F2_pd': float(slater_ex.get('F2pd', 0.0)),
     }
     ex_zeta_ry = {
-        'd': float(zeta_3d_ex) * soc_scale,
-        'p': float(zeta_2p_ex) * soc_scale,
+        'd': float(zeta_3d_ex),
+        'p': float(zeta_2p_ex),
     }
 
     return gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
+
+
+def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: str):
+    """(rac, template store, decomposition with HFS reference values) for one ion.
+
+    The decomposition's 'gs' / 'ex' configurations carry the unreduced HFS
+    parameters in eV as ``reference``; contract with
+    :func:`~multitorch.hamiltonian.parametric.rebuild_hamiltonian_store`.
+    """
+    from multitorch.angular.rac_generator import generate_ledge_template, ledge_reference_ev
+    from multitorch.atomic.tables import (
+        get_atomic_number, get_d_electrons, get_l_edge_configs, parse_config_string,
+    )
+
+    Z = get_atomic_number(element)
+    n_d = get_d_electrons(element, valence)
+    gs_cfg_str, ex_cfg_str = get_l_edge_configs(element, valence)
+    hfs = _hfs_to_slater_params(
+        Z, parse_config_string(gs_cfg_str), parse_config_string(ex_cfg_str),
+        zeta_method=zeta_method,
+    )
+    rac, template, dec = generate_ledge_template(l_val=2, n_val_gs=n_d, sym=sym)
+    gs_ref, ex_ref = ledge_reference_ev(2, *hfs)
+    dec.by_label('gs').reference = gs_ref
+    dec.by_label('ex').reference = ex_ref
+    return rac, template, dec
 
 
 def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.0,
@@ -1113,6 +1148,7 @@ def calcXAS_from_scratch(
     device: str = "cpu",
     zeta_method: str = "blume_watson",
     sym: str = "oh",
+    atomic: Optional[dict] = None,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Calculate an L-edge XAS spectrum from scratch — no Fortran fixture files.
 
@@ -1124,9 +1160,10 @@ def calcXAS_from_scratch(
       5. Hamiltonian assembly + diagonalization
       6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
 
-    Currently supports single-configuration Oh symmetry only (no charge
-    transfer, no D4h splitting beyond PERP/PARA). This is sufficient for
-    isolated-ion crystal-field calculations.
+    Single configuration (no charge transfer); ``sym`` 'oh' or 'd4h' (D4h for
+    integer J only). Differentiable in ``slater``, ``soc``, every ``atomic``
+    override and the ``cf`` entries: pass tensors with ``requires_grad=True``.
+    The HFS radial part is a constant (WP-A7).
 
     Parameters
     ----------
@@ -1135,13 +1172,13 @@ def calcXAS_from_scratch(
     valence : str
         Oxidation state ('i', 'ii', 'iii', 'iv').
     cf : dict
-        Crystal field parameters. Must include 'tendq' (10Dq in eV).
+        Crystal field parameters (eV): 'tendq' (default 1.0), and for
+        ``sym='d4h'`` 'dt', 'ds' (default 0). Floats or tensors.
     slater : float or torch.Tensor
-        Slater integral reduction: fraction of the Hartree-Fock F^k and G^k
-        (default 0.8). On the fixture path it applies to every configuration
-        (ground, ligand-hole, core-hole); 0.8 reproduces the bundled fixtures.
+        Slater integral reduction: fraction of the HFS F^k and G^k of both
+        configurations (default 0.8).
     soc : float or torch.Tensor
-        Spin-orbit reduction: fraction of the Hartree-Fock ζ (default 1.0).
+        Spin-orbit reduction: fraction of the HFS ζ (default 1.0).
     T : float
         Temperature in Kelvin.
     beam_fwhm, gamma1, gamma2 : float
@@ -1163,6 +1200,15 @@ def calcXAS_from_scratch(
         PyTorch device.
     zeta_method : str
         HFS SOC method ('blume_watson' or 'central_field').
+    sym : {'oh', 'd4h'}
+        Point group.
+    atomic : dict, optional
+        Absolute per-parameter values (eV) replacing ``HFS × slater`` or
+        ``HFS × soc`` for individual integrals, keyed by configuration
+        (``'gs'``: 3d^n; ``'ex'``: 2p^5 3d^(n+1)) and parameter
+        (``'gs'``: ``F2dd``, ``F4dd``, ``zeta_d``; ``'ex'``: ``F2dd``, ``F4dd``,
+        ``F2pd``, ``G1pd``, ``G3pd``, ``zeta_p``, ``zeta_d``), e.g.
+        ``{'ex': {'G1pd': torch.tensor(5.0, requires_grad=True)}}``.
 
     Returns
     -------
@@ -1172,37 +1218,15 @@ def calcXAS_from_scratch(
         Absorption intensity.
     sticks : torch.Tensor  shape (N, 2)  (only if return_sticks=True)
     """
-    from multitorch.angular.rac_generator import generate_ledge_rac
-    from multitorch.atomic.tables import (
-        get_atomic_number, get_d_electrons, get_l_edge_configs,
-        parse_config_string,
-    )
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+    from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
     from multitorch.spectrum.sticks import get_sticks_from_banresult
 
-    # Step 1: Resolve element info
-    Z = get_atomic_number(element)
-    n_d = get_d_electrons(element, valence)
-    gs_cfg_str, ex_cfg_str = get_l_edge_configs(element, valence)
-    gs_config = parse_config_string(gs_cfg_str)
-    ex_config = parse_config_string(ex_cfg_str)
-
-    # Step 2: HFS SCF → Slater integrals + SOC
-    gs_slater, gs_zeta, ex_slater, ex_zeta = _hfs_to_slater_params(
-        Z, gs_config, ex_config,
-        slater_scale=slater, soc_scale=soc,
-        zeta_method=zeta_method,
-    )
-
-    # Step 3: Generate angular structure + COWAN store
-    rac, cowan = generate_ledge_rac(
-        l_val=2, n_val_gs=n_d,
-        raw_slater_gs_ry=gs_slater,
-        raw_zeta_gs_ry=gs_zeta,
-        raw_slater_ex_ry=ex_slater,
-        raw_zeta_ex_ry=ex_zeta,
-        sym=sym,
-    )
+    # Steps 1-3: HFS constants + parameter-free angular structure, then the
+    # parameter-linear contraction H = Σ p_i O_i (p_i = HFS_i × slater|soc or
+    # an `atomic` override; tensors keep their gradients).
+    rac, template, dec = _from_scratch_structure(element, valence, sym, zeta_method)
+    cowan = rebuild_hamiltonian_store(template, dec, slater=slater, soc=soc, atomic=atomic, device=device)
 
     # Step 4: Build BanData from RAC (D4h carries 4 XHAM operators).
     tendq = cf.get('tendq', 1.0)
