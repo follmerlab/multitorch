@@ -461,49 +461,71 @@ def test_d4h_dispatcher_emits_nid8_irrep_set():
 # adds test above.
 
 
-@pytest.mark.xfail(
-    strict=False,
-    reason="WP-S (2026-09): the 0.97 threshold was met only through a "
-           "peak-aligned window holding 66% of the intensity (audit §7.1), "
-           "and the from-scratch excited manifold is being re-derived "
-           "against Fortran oracles (S1b). Re-enable with a union-window "
-           "metric once S1b lands.",
-)
 def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
-    """D4h Ni from-scratch should run end-to-end and produce a spectrum that
-    correlates with the bundled nid8 fixture.
+    """D4h Ni from scratch: Oh limit, Fortran D4h store, and the HFS-parameter residual.
 
-    Strict intra-multitorch tolerances (cosine 0.99999) are NOT met by the
-    current from-scratch path — the Oh-from-scratch baseline only achieves
-    ~0.89 cosine vs the bundled Oh fixture, so D4h-from-scratch achieves
-    similar ~0.978 cosine vs nid8. The remaining gap is in the underlying
-    from-scratch path (HFS Slater accuracy, F2_pd direct-Coulomb correction)
-    — independent of the D4h dispatcher.
+    Metric: union-window parity (``multitorch.spectrum.parity``), no peak
+    alignment. The Fortran store ``nid8ct`` puts the 2p⁵3d⁹ configuration
+    average at E_av = 860.166 eV, the from-scratch path at 0; that known offset
+    (read from the S1a decomposition) is the only shift applied.
 
-    Tightened from 0.95 → 0.97 on the issue #2 reconciliation (the V2
-    dispatcher already met 0.95; the post-#2 dispatcher routinely scores
-    ~0.978).
+    1. dt = ds = 0 is the Oh limit: identical to the Oh from-scratch spectrum.
+    2. With nid8ct's own atomic parameters (fitted from its HAMILTONIAN blocks)
+       and LMCT switched off, the D4h generator reproduces the Fortran store.
+    3. With the default HFS parameters the residual (cosine 0.969 measured
+       2026-09-13, all intensity inside the window) is the atomic-parameter
+       accuracy of the HFS port, WP-S S3b, not the angular part.
     """
-    import sys
-    sys.path.insert(0, '/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/multitorch/bench')
-    from bench.parity import (
-        compare,
-        INTRA_COSINE_TOLERANCE, INTRA_MAX_ABS_DIFF_TOLERANCE,
-        INTRA_PEAK_POS_TOLERANCE_EV, INTRA_L3L2_RATIO_TOLERANCE,
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.api.calc import (
+        _build_ban_from_rac, _stick_window, calcXAS_cached, calcXAS_from_scratch, preload_fixture,
     )
-    from multitorch.api.calc import calcXAS_cached, calcXAS_from_scratch, preload_fixture
+    from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+    from multitorch.spectrum.broaden import pseudo_voigt
+    from multitorch.spectrum.parity import spectral_parity
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
 
     cf = {"tendq": 1.0, "ds": 0.0, "dt": 0.0}
     cache = preload_fixture("Ni", "ii", "d4h")
-    x_ref, y_ref = calcXAS_cached(cache, cf=cf)
-    x_new, y_new = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h")
-    result = compare(x_new.detach().numpy(), y_new.detach().numpy(),
-                     x_ref.detach().numpy(), y_ref.detach().numpy(), calctype="xas")
-    assert result.cosine >= 0.97, (
-        f"D4h Ni from-scratch cosine = {result.cosine:.4f}, expected ≥ 0.97. "
-        f"This catches regressions in the D4h dispatcher; tightening to "
-        f"≥ 0.99 requires also fixing HFS Slater / F2_pd accuracy."
+    e_av = cache.decomposition.config(3, "GROUND").e_av
+    x_ref, y_ref = calcXAS_cached(cache, cf=cf, lmct=0.0, delta=100.0, max_gs=40)
+
+    # 1. Oh limit. max_gs=40 with T=80 K: the degenerate ground components sit
+    #    in several D4h irreps and differ by ~1e-15 eV, which max_gs=1 counts as
+    #    distinct levels (Known residual 15); a Boltzmann pool is well defined.
+    x_d4h, y_d4h = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h", max_gs=40)
+    x_oh, y_oh = calcXAS_from_scratch("Ni", "ii", cf={"tendq": 1.0}, sym="oh", max_gs=40)
+    p = spectral_parity(x_d4h, y_d4h, x_oh, y_oh)
+    assert p.cosine > 0.999999 and p.area_ratio == pytest.approx(1.0, abs=1e-5), p
+
+    # 2. Fortran D4h store with its own parameters
+    ry = 13.605693122994
+    g = cache.decomposition.config(2, "GROUND").params
+    e = cache.decomposition.config(3, "GROUND").params      # valence-first: shell 1 = 3d, 2 = 2p
+    rac, cowan = generate_ledge_rac(
+        2, 8, sym="d4h",
+        raw_slater_gs_ry={"F2": g["F2_11"] / ry, "F4": g["F4_11"] / ry},
+        raw_zeta_gs_ry=g["zeta_1"] / ry,
+        raw_slater_ex_ry={"F2_pd": e["F2_12"] / ry, "G1_pd": e["G1_12"] / ry,
+                          "G3_pd": e["G3_12"] / ry, "F2_dd": 0.0, "F4_dd": 0.0},
+        raw_zeta_ex_ry={"p": e["zeta_2"] / ry, "d": e["zeta_1"] / ry},
     )
+    ban = _build_ban_from_rac(rac, tendq=1.0, dt=0.0, ds=0.0, sym="d4h")
+    E, M, _ = get_sticks_from_banresult(assemble_and_diagonalize_in_memory(cowan, rac, ban), T=80.0, max_gs=40)
+    # broadened like calcXAS: on the reference grid, midpoint of the bright sticks
+    x = x_ref - e_av
+    _, _, med = _stick_window(E, M, None, None, None)
+    y = pseudo_voigt(x, E, M, fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.4, med_energy=med, mode="legacy")
+    p = spectral_parity(x, y, x_ref, y_ref, shift_a=e_av)
+    assert p.cosine > 0.99999, p
+    assert min(p.fraction_inside_a, p.fraction_inside_b) > 0.9999, p
+    assert p.area_ratio == pytest.approx(1.0, abs=1e-4), p
+
+    # 3. default HFS parameters: S3b residual, all intensity inside the window
+    p = spectral_parity(x_d4h, y_d4h, x_ref, y_ref, shift_a=e_av, split=e_av + 8.0)
+    assert p.cosine >= 0.96, p
+    assert min(p.fraction_inside_a, p.fraction_inside_b) > 0.999, p
+    assert p.l3_l2_a == pytest.approx(p.l3_l2_b, rel=0.05), p
 
 
 # ─────────────────────────────────────────────────────────────────────

@@ -49,6 +49,16 @@ HYBR_ORDER_D4H = ['B1HYBR', 'A1HYBR', 'B2HYBR', 'EHYBR']
 HYBR_ORDER_OH = ['EGHYBR', 'T2GHYBR']
 
 
+def _is_constant_zero(xv) -> bool:
+    """A plain-number zero coefficient: its block can be skipped.
+
+    Tensors are never skipped, even at exactly 0, because a parameter sitting
+    at 0 (e.g. ``dt=ds=0`` as a fit start) still has a gradient through its
+    block.
+    """
+    return not isinstance(xv, torch.Tensor) and xv == 0.0
+
+
 def _find_operator_blocks(
     rac: RACFileFull,
     kind: str,            # 'GROUND' or 'EXCITE'
@@ -389,7 +399,7 @@ def _assemble_one_triad(
 
         H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
         for blk, xv in zip(op_blocks, xham):
-            if blk is not None and blk.add_entries and xv != 0.0:
+            if blk is not None and blk.add_entries and not _is_constant_zero(xv):
                 H_block += assemble_matrix_from_adds(blk.add_entries, sec, d, d, scale=xv, device=device)
 
         # Symmetrize and apply IDIM scaling
@@ -411,7 +421,7 @@ def _assemble_one_triad(
 
         V = torch.zeros(d1, d2, dtype=DTYPE, device=device)
         for blk, xv in zip(hybr_blocks, xmix):
-            if blk is not None and blk.add_entries and xv != 0.0:
+            if blk is not None and blk.add_entries and not _is_constant_zero(xv):
                 V += assemble_matrix_from_adds(blk.add_entries, sec, d1, d2, scale=xv, device=device)
 
         V *= idim_scale_gs
@@ -443,7 +453,7 @@ def _assemble_one_triad(
 
             H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
             for blk, xv in zip(op_blocks, xham):
-                if blk is not None and blk.add_entries and xv != 0.0:
+                if blk is not None and blk.add_entries and not _is_constant_zero(xv):
                     H_block += assemble_matrix_from_adds(blk.add_entries, sec_fs, d, d, scale=xv, device=device)
 
             H_block = 0.5 * (H_block + H_block.T) * idim_scale_fs
@@ -463,7 +473,7 @@ def _assemble_one_triad(
 
             V_fs = torch.zeros(d1, d2, dtype=DTYPE, device=device)
             for blk, xv in zip(hybr_blocks, xmix):
-                if blk is not None and blk.add_entries and xv != 0.0:
+                if blk is not None and blk.add_entries and not _is_constant_zero(xv):
                     V_fs += assemble_matrix_from_adds(blk.add_entries, sec_fs, d1, d2, scale=xv, device=device)
 
             V_fs *= idim_scale_fs

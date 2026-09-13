@@ -40,6 +40,7 @@ def modify_ban_params(
     *,
     cf: Optional[Dict[str, Any]] = None,
     delta: Optional[Any] = None,
+    u: Optional[Any] = None,
     lmct: Optional[Any] = None,
     mlct: Optional[Any] = None,
 ) -> BanData:
@@ -61,26 +62,32 @@ def modify_ban_params(
         mapped onto Butler X400/X420/X220 as pyctm does) or ``[1.0, tendq]`` (Oh).
         The leading ``1.0`` is the Hamiltonian (Coulomb + SOC) strength,
         which is always unity.
-    delta : float or dict, optional
-        Charge-transfer energy Δ.
+    delta : float, tensor or dict, optional
+        LMCT charge-transfer energy Δ = E(d^(n+1)L̲) − E(d^n), in eV.
+        Conventions follow pyctm ``writeBAN``: ``EG2 = Δ``, ``EF2 = Δ − u``.
 
-        - If a **float**: sets ``eg[2] = delta``.  ``ef[2]`` is left
-          unchanged (uses the template value).
-        - If a **dict**: may contain ``'eg2'`` and/or ``'ef2'`` keys
-          to set the ground-state and excited-state CT offsets
-          independently.
-    lmct : float or list, optional
-        LMCT hybridization strength(s) V.
+        - **scalar** or ``{'lmct': Δ}``: sets ``EG2 = Δ`` and
+          ``EF2 = Δ − u``, where ``u`` is the argument below or, if not
+          given, the template's ``EG2 − EF2`` (so the final-state CT
+          energy follows Δ instead of staying at the template value).
+        - ``{'eg2': …, 'ef2': …}``: set either offset directly (no ``u``
+          logic; combining with ``u`` is an error).
+    u : float, tensor or dict, optional
+        ``u = U_pd − U_dd`` (pyctm's "Q − U"): how much the core hole lowers
+        the ligand-hole configuration, ``EF2 = EG2 − u``. Scalar or
+        ``{'lmct': u}``. Without ``delta`` it keeps the template Δ.
+    lmct : float, tensor, list or dict, optional
+        LMCT hopping integrals V(Γ) in eV, applied to ground and final state
+        (the template's XMIX combos).
 
-        - If a **float**: all ``xmix[0].values`` are set to this value.
-        - If a **list**: used directly as ``xmix[0].values`` (must match
-          the template's XMIX channel count).
-    mlct : float or list, optional
-        MLCT hybridization strength(s) — same convention as *lmct*.
-        Applied to the same ``xmix[0].values`` channels.  If both
-        *lmct* and *mlct* are provided, *mlct* overrides *lmct* for
-        the second half of the channels (for fixtures with paired
-        LMCT+MLCT mixing).
+        - **dict**: by channel name, ``{'eg', 't2g'}`` (Oh) or
+          ``{'b1', 'a1', 'b2', 'e'}`` (D4h); missing keys keep the template.
+        - **list**: all channels, in that order.
+        - **scalar**: the same V for every channel (note that V(e_g) ≈
+          2·V(t_2g) physically).
+    mlct : optional
+        Not supported: no bundled fixture has an MLCT configuration.
+        Passing anything but ``None`` raises ``ValueError``.
 
     Returns
     -------
@@ -129,21 +136,44 @@ def modify_ban_params(
         elif 'tendq' in cf:
             vals[1] = cf['tendq']
 
-    # ── Charge-transfer energy Δ ─────────────────────────────
-    if delta is not None:
-        if isinstance(delta, dict):
-            if 'eg2' in delta:
-                out.eg[2] = delta['eg2']
-            if 'ef2' in delta:
-                out.ef[2] = delta['ef2']
-        else:
-            # scalar (int, float, or torch.Tensor)
-            out.eg[2] = delta
+    # ── Charge-transfer energies Δ and u (pyctm: EG2 = Δ, EF2 = Δ − u) ──
+    if mlct is not None:
+        raise ValueError(
+            "mlct is not supported: the fixture has no MLCT configuration"
+        )
+    if (delta is not None or u is not None) and 2 not in ban.eg:
+        raise ValueError("delta/u given but the fixture has no LMCT configuration")
+    explicit = isinstance(delta, dict) and ('eg2' in delta or 'ef2' in delta)
+    if explicit:
+        if u is not None:
+            raise ValueError("pass either delta={'eg2','ef2'} or u, not both")
+        unknown = set(delta) - {'eg2', 'ef2'}
+        if unknown:
+            raise ValueError(f"unknown delta keys {sorted(unknown)}")
+        if 'eg2' in delta:
+            out.eg[2] = delta['eg2']
+        if 'ef2' in delta:
+            out.ef[2] = delta['ef2']
+    elif delta is not None or u is not None:
+        d = _lmct_value(delta, 'delta') if delta is not None else ban.eg[2]
+        q = _lmct_value(u, 'u') if u is not None else ban.eg[2] - ban.ef.get(2, 0.0)
+        out.eg[2] = d
+        out.ef[2] = d - q
 
     # ── Hybridization V ──────────────────────────────────────
     if lmct is not None and out.xmix:
         n_ch = len(out.xmix[0].values)
-        if isinstance(lmct, (list, tuple)):
+        if isinstance(lmct, dict):
+            names = _HYBR_CHANNELS.get(n_ch)
+            if names is None:
+                raise ValueError(f"no channel names for a {n_ch}-channel XMIX")
+            unknown = set(lmct) - set(names)
+            if unknown:
+                raise ValueError(
+                    f"unknown lmct channels {sorted(unknown)}; this fixture has {names}"
+                )
+            out.xmix[0].values = [lmct.get(name, v) for name, v in zip(names, out.xmix[0].values)]
+        elif isinstance(lmct, (list, tuple)):
             if len(lmct) != n_ch:
                 raise ValueError(
                     f"lmct has {len(lmct)} values but template XMIX "
@@ -154,21 +184,18 @@ def modify_ban_params(
             # scalar (int, float, or torch.Tensor)
             out.xmix[0].values = [lmct] * n_ch
 
-    if mlct is not None and out.xmix:
-        n_ch = len(out.xmix[0].values)
-        if isinstance(mlct, (list, tuple)):
-            half = n_ch // 2
-            if len(mlct) != n_ch - half:
-                raise ValueError(
-                    f"mlct has {len(mlct)} values but template XMIX "
-                    f"expects {n_ch - half} for the MLCT half"
-                )
-            for i, v in enumerate(mlct):
-                out.xmix[0].values[half + i] = v
-        else:
-            # scalar (int, float, or torch.Tensor)
-            half = n_ch // 2
-            for i in range(half, n_ch):
-                out.xmix[0].values[i] = mlct
-
     return out
+
+
+# XMIX channel order = RAC hybridization blocks EGHYBR, T2GHYBR (Oh) and
+# B1HYBR, A1HYBR, B2HYBR, EHYBR (D4h); pyctm write_BAN mix_keys.
+_HYBR_CHANNELS = {2: ('eg', 't2g'), 4: ('b1', 'a1', 'b2', 'e')}
+
+
+def _lmct_value(x, name):
+    if isinstance(x, dict):
+        unknown = set(x) - {'lmct'}
+        if unknown:
+            raise ValueError(f"{name} dict accepts only 'lmct' (got {sorted(x)})")
+        return x['lmct']
+    return x

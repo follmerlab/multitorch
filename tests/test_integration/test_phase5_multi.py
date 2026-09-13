@@ -8,22 +8,13 @@ every fixture.
 
 Parity metric
 -------------
-Cosine similarity between the broadened spectra.  The Phase 5 path
-rebuilds every HAMILTONIAN block with autograd-carrying parameters at
-``slater=0.8, soc=1.0`` (the reductions the fixtures were generated at),
-while the bootstrap path reads pre-computed ``.ban_out`` files that used
-the Fortran pipeline with those same fixture ``.ban`` parameters.  The two
-paths differ in:
-
-1. **Stick intensities**: Phase 5 squares transition-matrix amplitudes
-   (``T**2``), while ``.ban_out`` files contain pre-squared intensities.
-   These are algebraically identical.
-
-2. **Slater scaling**: ``slater`` is absolute (fraction of Hartree-Fock);
-   at the fixture's own reduction the rebuilt store equals the fixture, so
-   the result is identical to the Fortran pipeline.
-
-Expected cosine similarity ≥ 0.99 for all fixtures.
+:func:`multitorch.spectrum.parity.spectral_parity` on the union of the two
+energy windows (no peak alignment; both spectra share the Fortran energy
+zero), plus the fraction of intensity inside the overlap and the area ratio.
+The Phase 5 path rebuilds every HAMILTONIAN block at ``slater=0.8, soc=1.0``
+(the reductions the fixtures were generated at), which reproduces the Fortran
+store, so the only differences are the 6-decimal print precision of the
+``.ban_out`` sticks.
 """
 from __future__ import annotations
 
@@ -36,95 +27,42 @@ from multitorch._constants import DTYPE
 
 REFDATA = Path(__file__).parent.parent / "reference_data"
 
-# Per-case cosine similarity thresholds.
-# Cases below 0.99 are KNOWN LIMITATIONS with documented root causes:
-#   ti4_d0_oh (0.97): d0 has no d-d Slater integrals → eigenvalues match to
-#       3.7e-7 Ry but the residual gap is in the broadening layer. See README
-#       §Known limitations §4.
-#   cr3_d3_oh (0.98): 1074-dim Hamiltonian has exact eigenvalue degeneracies
-#       that amplify minor numerical differences in the COWAN store rebuild.
-#       Eigenvalues match to 1e-10; the gap is in stick-intensity rounding.
-# All other cases must achieve ≥ 0.99.
+# Union-window cosine per case (WP-S S7). Phase 5 at the fixture's own
+# reductions rebuilds the Fortran store, so the spectra agree to the .ban_out
+# print precision; Cr(III) is the exception (open residual, see
+# docs/DEVELOPMENT_PLAN_2026-09.md "Known residuals" 14).
 CASES = [
-    ("ti4_d0_oh",  "Ti", "iv",  "oh",  0.97),
-    ("v3_d2_oh",   "V",  "iii", "oh",  0.99),
-    ("cr3_d3_oh",  "Cr", "iii", "oh",  0.98),
-    ("mn2_d5_oh",  "Mn", "ii",  "oh",  0.99),
-    ("fe2_d6_oh",  "Fe", "ii",  "oh",  0.99),
-    ("fe3_d5_oh",  "Fe", "iii", "oh",  0.99),
-    ("co2_d7_oh",  "Co", "ii",  "oh",  0.99),
-    ("ni2_d8_oh",  "Ni", "ii",  "oh",  0.99),
-    ("nid8ct",     "Ni", "ii",  "d4h", 0.99),
+    ("ti4_d0_oh",  "Ti", "iv",  "oh",  0.9999999),
+    ("v3_d2_oh",   "V",  "iii", "oh",  0.9999999),
+    ("cr3_d3_oh",  "Cr", "iii", "oh",  0.988),
+    ("mn2_d5_oh",  "Mn", "ii",  "oh",  0.9999999),
+    ("fe2_d6_oh",  "Fe", "ii",  "oh",  0.9999999),
+    ("fe3_d5_oh",  "Fe", "iii", "oh",  0.9999999),
+    ("co2_d7_oh",  "Co", "ii",  "oh",  0.9999999),
+    ("ni2_d8_oh",  "Ni", "ii",  "oh",  0.9999999),
+    ("nid8ct",     "Ni", "ii",  "d4h", 0.9999999),
 ]
 
 
-def _cosine_similarity(a: torch.Tensor, b: torch.Tensor) -> float:
-    """Compute cosine similarity between two 1D tensors."""
-    dot = (a * b).sum()
-    norm = torch.sqrt((a * a).sum() * (b * b).sum())
-    if norm < 1e-30:
-        return 1.0 if (a * a).sum() < 1e-30 and (b * b).sum() < 1e-30 else 0.0
-    return float(dot / norm)
-
-
-def _peak_shift_eV(x1: torch.Tensor, y1: torch.Tensor,
-                   x2: torch.Tensor, y2: torch.Tensor) -> float:
-    """Return peak-position difference in eV between two spectra."""
-    return float(x1[y1.argmax()] - x2[y2.argmax()])
-
-
-def _amplitude_ratio(y1: torch.Tensor, y2: torch.Tensor) -> float:
-    """Return ratio of peak heights (y1.max / y2.max)."""
-    m2 = float(y2.max())
-    return float(y1.max()) / m2 if m2 > 1e-30 else float('inf')
-
-
-# ─────────────────────────────────────────────────────────────
-# Parity: Phase 5 vs bootstrap
-# ─────────────────────────────────────────────────────────────
-
 @pytest.mark.parametrize("case_id,element,valence,sym,cos_min", CASES)
 def test_phase5_vs_bootstrap_parity(case_id, element, valence, sym, cos_min):
-    """Phase 5 spectrum must match bootstrap spectrum.
-
-    Three independent checks prevent false positives:
-      1. Cosine similarity ≥ threshold (catches shape distortion)
-      2. Peak shift < 1 eV (catches energy offsets invisible to cosine)
-      3. Amplitude ratio within [0.7, 1.4] (catches scaling invisible to cosine)
-    """
+    """Phase 5 spectrum == bootstrap (.ban_out) spectrum on the union window."""
     from multitorch.api.calc import calcXAS
+    from multitorch.spectrum.parity import spectral_parity
 
     ban_out = REFDATA / case_id / f"{case_id}.ban_out"
-
-    # Bootstrap path (oracle)
     x_ref, y_ref = calcXAS(
         element='', valence='', sym='', edge='', cf={},
         ban_output_path=str(ban_out), T=80, max_gs=1,
     )
-
-    # Phase 5 path (template-based, slater=0.8, soc=1.0 → matches fixture)
     x_p5, y_p5 = calcXAS(
         element=element, valence=valence, sym=sym, edge='l',
-        cf={},  # empty cf → uses template defaults from .ban
-        slater=0.8, soc=1.0, T=80, max_gs=1,
-        xmin=float(x_ref.min()), xmax=float(x_ref.max()),
-        nbins=x_ref.numel(),
+        cf={}, slater=0.8, soc=1.0, T=80, max_gs=1,
     )
-
-    cos = _cosine_similarity(y_p5, y_ref)
-    assert cos >= cos_min, (
-        f"{case_id}: cosine similarity {cos:.4f} below threshold {cos_min:.3f}"
-    )
-    # Peak shift catches uniform energy offsets (cosine-invisible)
-    shift = _peak_shift_eV(x_p5, y_p5, x_ref, y_ref)
-    assert abs(shift) < 1.0, (
-        f"{case_id}: peak shift {shift:.3f} eV between Phase 5 and bootstrap"
-    )
-    # Amplitude ratio catches uniform scaling (cosine-invisible)
-    amp = _amplitude_ratio(y_p5, y_ref)
-    assert 0.7 < amp < 1.4, (
-        f"{case_id}: amplitude ratio {amp:.3f} outside [0.7, 1.4]"
-    )
+    p = spectral_parity(x_p5, y_p5, x_ref, y_ref)
+    assert p.cosine >= cos_min, f"{case_id}: {p}"
+    assert min(p.fraction_inside_a, p.fraction_inside_b) > 0.9999, f"{case_id}: {p}"
+    assert p.area_ratio == pytest.approx(1.0, abs=5e-3), f"{case_id}: {p}"
 
 
 # ─────────────────────────────────────────────────────────────

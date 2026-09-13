@@ -96,12 +96,40 @@ def test_cf_preserves_structure(nid8ct_ban):
 # Delta overrides
 # ─────────────────────────────────────────────────────────────
 
-def test_delta_float(nid8ct_ban):
-    """Float delta sets eg[2]."""
+def test_delta_float_moves_final_state_with_template_u(nid8ct_ban):
+    """pyctm writeBAN: EG2 = Δ, EF2 = Δ − u; u defaults to the template EG2 − EF2 (5 − 4)."""
     out = modify_ban_params(nid8ct_ban, delta=6.0)
     assert out.eg[2] == 6.0
-    # ef should be unchanged from template
-    assert out.ef == nid8ct_ban.ef
+    assert out.ef[2] == pytest.approx(5.0)
+    assert out.xmix[0].values == nid8ct_ban.xmix[0].values
+
+
+@pytest.mark.parametrize("delta,u", [(4.0, 7.0), ({'lmct': 4.0}, {'lmct': 7.0})])
+def test_delta_and_u_pyctm_convention(ni2_oh_ban, delta, u):
+    """ni2_d8_oh template: Δ=5, EF2=−1 (u=6). pyctm writeBAN(delta=4, u=7) writes EG2=4, EF2=−3."""
+    assert (ni2_oh_ban.eg[2], ni2_oh_ban.ef[2]) == (5.0, -1.0)
+    out = modify_ban_params(ni2_oh_ban, delta=delta, u=u)
+    assert (out.eg[2], out.ef[2]) == (4.0, -3.0)
+
+
+def test_u_alone_keeps_delta(ni2_oh_ban):
+    out = modify_ban_params(ni2_oh_ban, u=2.0)
+    assert (out.eg[2], out.ef[2]) == (5.0, 3.0)
+
+
+def test_delta_tensor_carries_gradient_into_both_offsets(ni2_oh_ban):
+    import torch
+    d = torch.tensor(4.0, dtype=torch.float64, requires_grad=True)
+    out = modify_ban_params(ni2_oh_ban, delta=d)
+    g1, = torch.autograd.grad(out.ef[2], d)
+    assert g1.item() == 1.0 and out.eg[2] is d
+
+
+def test_explicit_offsets_conflict_with_u(ni2_oh_ban):
+    with pytest.raises(ValueError):
+        modify_ban_params(ni2_oh_ban, delta={'eg2': 3.0}, u=6.0)
+    with pytest.raises(ValueError):
+        modify_ban_params(ni2_oh_ban, delta={'mlct': 3.0})
 
 
 def test_delta_dict(nid8ct_ban):
@@ -121,6 +149,22 @@ def test_delta_dict_partial(nid8ct_ban):
 # ─────────────────────────────────────────────────────────────
 # Hybridization overrides
 # ─────────────────────────────────────────────────────────────
+
+def test_lmct_dict_by_channel_name(ni2_oh_ban, nid8ct_ban):
+    """Channel names follow the RAC hybridization blocks (EGHYBR, T2GHYBR / B1, A1, B2, E)."""
+    out = modify_ban_params(ni2_oh_ban, lmct={'t2g': 0.7})
+    assert out.xmix[0].values == [2.0, 0.7]
+    out = modify_ban_params(nid8ct_ban, lmct={'b1': 2.5, 'e': 1.1})
+    assert out.xmix[0].values == [2.5, 2.0, 1.0, 1.1]
+    with pytest.raises(ValueError):
+        modify_ban_params(ni2_oh_ban, lmct={'b1': 1.0})
+
+
+def test_mlct_is_rejected(ni2_oh_ban):
+    """The fixtures have no MLCT configuration; mlct used to overwrite V(t2g)."""
+    with pytest.raises(ValueError, match="MLCT"):
+        modify_ban_params(ni2_oh_ban, mlct=1.0)
+
 
 def test_lmct_float(nid8ct_ban):
     """Float lmct fills all XMIX channels."""

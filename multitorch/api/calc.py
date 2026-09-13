@@ -33,6 +33,32 @@ from multitorch.spectrum.broaden import pseudo_voigt
 from multitorch.device_utils import suggest_device_for_xas, suggest_device_for_rixs
 
 
+# Sticks at or below this fraction of the strongest stick carry no intensity
+# (e.g. the ligand-hole final states that the dipole operator cannot reach);
+# they must not set the energy window or the L3/L2 crossover.
+_STICK_INTENSITY_FLOOR = 1e-10
+
+
+def _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy, pad: float = 5.0):
+    """(xmin, xmax, L3/L2 crossover) from the intensity-bearing sticks.
+
+    ``xmin``/``xmax`` default to the bright-stick range padded by ``pad`` eV;
+    ``med_energy`` (absolute, on the stick energy scale, as in pyctm) defaults
+    to the midpoint of that range.
+    """
+    E = E_sticks.detach()
+    M = M_sticks.detach().abs()
+    bright = E[M > _STICK_INTENSITY_FLOOR * M.max()] if M.numel() else E
+    if bright.numel() == 0:
+        bright = E
+    lo, hi = float(bright.min()), float(bright.max())
+    return (
+        lo - pad if xmin is None else xmin,
+        hi + pad if xmax is None else xmax,
+        0.5 * (lo + hi) if med_energy is None else float(med_energy),
+    )
+
+
 # ─────────────────────────────────────────────────────────────
 # Fixture caching for fast parameter sweeps
 # ─────────────────────────────────────────────────────────────
@@ -151,7 +177,7 @@ def calcXAS_cached(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin=None, xmax=None, nbins: int = 2000,
@@ -208,7 +234,7 @@ def calcXAS_cached(
         )
 
     # Apply parameter overrides to a copy of the cached BAN
-    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
 
     # Build COWAN store from cached template + decomposition (no file I/O)
     cowan = build_cowan_store_in_memory(
@@ -231,16 +257,9 @@ def calcXAS_cached(
         raise ValueError("No transitions found")
 
     # Broaden
-    E_min = float(E_sticks.min())
-    E_max = float(E_sticks.max())
-    if xmin is None:
-        xmin = E_min - 5.0
-    if xmax is None:
-        xmax = E_max + 5.0
-
+    xmin, xmax, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
     x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
 
-    med = 0.5 * (E_min + E_max)
     y = pseudo_voigt(
         x, E_sticks, M_sticks,
         fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
@@ -268,7 +287,7 @@ def calcXAS_batch(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin=None, xmax=None, nbins: int = 2000,
@@ -394,7 +413,7 @@ def calcXAS_batch(
         cf = {}
     
     # Apply parameter overrides (same for all spectra)
-    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
     
     # Batch COWAN rebuild: every HAMILTONIAN block becomes (N, dim, dim)
     # from the shared decomposition.
@@ -430,19 +449,16 @@ def calcXAS_batch(
     # honour them; otherwise we take the union across all non-empty
     # samples so no sample gets clipped or shifted.
     if xmin is None or xmax is None:
-        non_empty = [
-            (float(E.min()), float(E.max()))
-            for E, _ in all_sticks if E.numel() > 0
+        windows = [
+            _stick_window(E, M, None, None, None)
+            for E, M in all_sticks if E.numel() > 0
         ]
-        if non_empty:
-            global_min = min(p[0] for p in non_empty)
-            global_max = max(p[1] for p in non_empty)
-        else:
-            global_min = global_max = float(med_energy)
+        if not windows:
+            raise ValueError("No transitions found in any sample")
         if xmin is None:
-            xmin = global_min - 5.0
+            xmin = min(w[0] for w in windows)
         if xmax is None:
-            xmax = global_max + 5.0
+            xmax = max(w[1] for w in windows)
 
     x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
 
@@ -455,7 +471,7 @@ def calcXAS_batch(
         if E_sticks.numel() == 0:
             y = torch.zeros(nbins, dtype=DTYPE, device=device)
         else:
-            med = 0.5 * (float(E_sticks.min()) + float(E_sticks.max()))
+            _, _, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
             y = pseudo_voigt(
                 x, E_sticks, M_sticks,
                 fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
@@ -615,7 +631,7 @@ def calcXAS(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin: Optional[float] = None,
@@ -636,25 +652,48 @@ def calcXAS(
     valence : str
         Oxidation state ('i', 'ii', 'iii', 'iv').
     sym : str
-        Crystal symmetry ('oh', 'd4h', 'c4h').
+        Crystal symmetry ('oh' or 'd4h'; 'd4h' fixtures exist for Ni(II) only).
     edge : str
         X-ray edge ('l' for L-edge 2p→3d, 'k' for K-edge 1s→3p).
     cf : dict
-        Crystal field parameters: {'tendq': float, 'ds': float, 'dt': float}.
+        Crystal field parameters in eV: {'tendq', 'dt', 'ds'} (Ballhausen).
+        Missing keys keep the fixture value (see the table below).
     slater : float or torch.Tensor
         Slater integral reduction: fraction of the Hartree-Fock F^k and G^k
         (default 0.8). On the fixture path it applies to every configuration
         (ground, ligand-hole, core-hole); 0.8 reproduces the bundled fixtures.
     soc : float or torch.Tensor
         Spin-orbit reduction: fraction of the Hartree-Fock ζ (default 1.0).
-    delta : dict or None
-        Charge transfer energies: {'lmct': float, 'mlct': float}.
-    u : list or None
-        Coulomb repulsion parameters.
-    lmct : dict or None
-        LMCT configuration mixing parameters.
-    mlct : dict or None
-        MLCT configuration mixing parameters.
+    delta : float, tensor or dict, optional
+        LMCT charge-transfer energy Δ (eV), pyctm convention: ground offset
+        EG2 = Δ, final-state offset EF2 = Δ − u. Scalar or ``{'lmct': Δ}``;
+        ``{'eg2': …, 'ef2': …}`` sets the offsets directly.
+    u : float, tensor or dict, optional
+        U_pd − U_dd (pyctm's "Q − U"), eV: EF2 = Δ − u. Defaults to the
+        fixture's EG2 − EF2.
+    lmct : float, tensor, list or dict, optional
+        LMCT hopping V(Γ) in eV, same in ground and final state:
+        ``{'eg', 't2g'}`` (Oh) or ``{'b1', 'a1', 'b2', 'e'}`` (D4h), a list in
+        that order, or one scalar for all channels.
+    mlct : None
+        Not supported (no fixture has an MLCT configuration); raises if given.
+
+        **Every fixture is a two-configuration LMCT calculation.** Parameters
+        not passed keep the fixture values, which differ per ion (eV)::
+
+            fixture     10Dq  Δ    u    V(eg), V(t2g)
+            ti4_d0_oh   1.8   3.0  5.0  2.0, 1.0
+            v3_d2_oh    1.8   4.0  5.5  2.0, 1.0
+            cr3_d3_oh   2.0   4.5  6.0  2.2, 1.1
+            mn2_d5_oh   0.8   5.0  5.5  1.8, 0.9
+            fe3_d5_oh   1.2   3.5  6.0  2.0, 1.0
+            fe2_d6_oh   1.0   5.0  6.5  2.0, 1.0
+            co2_d7_oh   0.9   5.5  6.0  1.8, 0.9
+            ni2_d8_oh   1.0   5.0  6.0  2.0, 1.0
+            nid8ct      1.0   5.0  1.0  V(b1,a1,b2,e) = 2, 2, 1, 1; Dt 0, Ds 0.1
+
+        For an ionic (single-configuration) spectrum pass ``lmct=0.0`` and a
+        large ``delta``.
     T : float
         Temperature in Kelvin (default 80 K).
     beam_fwhm : float
@@ -663,8 +702,13 @@ def calcXAS(
         L3 lifetime FWHM (eV).
     gamma2 : float
         L2 lifetime FWHM (eV).
-    med_energy : float
-        L3/L2 crossover energy (eV relative to sticks).
+    med_energy : float or None
+        Stick energy (same scale as the returned sticks) above which the L2
+        lifetime width ``gamma2`` is used instead of ``gamma1``, as in pyctm.
+        ``None`` (default) uses the midpoint of the intensity-bearing sticks,
+        which is right when L3 and L2 are separated (Mn–Ni) but gives part of
+        L3 the L2 width for Ti–Cr, where the edges overlap: set it explicitly
+        there.
     max_gs : int
         Number of ground states to include.
     broaden_mode : str
@@ -737,7 +781,7 @@ def _calcXAS_from_ban(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin: Optional[float] = None,
@@ -763,17 +807,10 @@ def _calcXAS_from_ban(
         raise ValueError(f"No transitions found in {ban_path}")
 
     # Set energy range
-    E_min = float(E_sticks.min())
-    E_max = float(E_sticks.max())
-    if xmin is None:
-        xmin = E_min - 5.0
-    if xmax is None:
-        xmax = E_max + 5.0
-
+    xmin, xmax, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
     x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
 
     # Apply pseudo-Voigt broadening
-    med = 0.5 * (E_min + E_max)
     y = pseudo_voigt(
         x, E_sticks, M_sticks,
         fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
@@ -867,7 +904,7 @@ def _calcXAS_phase5(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin=None, xmax=None, nbins: int = 2000,
@@ -898,7 +935,7 @@ def _calcXAS_phase5(
 
     # Step 2: Parse template BanData and apply user overrides (C2)
     ban = read_ban(ban_path)
-    ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+    ban = modify_ban_params(ban, cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
 
     # Step 3: Build RAC structure from fixture (C3d)
     rac, plan = build_rac_in_memory(
@@ -924,16 +961,9 @@ def _calcXAS_phase5(
         )
 
     # Step 7: Set energy range and broaden
-    E_min = float(E_sticks.min())
-    E_max = float(E_sticks.max())
-    if xmin is None:
-        xmin = E_min - 5.0
-    if xmax is None:
-        xmax = E_max + 5.0
-
+    xmin, xmax, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
     x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
 
-    med = 0.5 * (E_min + E_max)
     y = pseudo_voigt(
         x, E_sticks, M_sticks,
         fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
@@ -1073,7 +1103,7 @@ def calcXAS_from_scratch(
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
     gamma2: float = 0.4,
-    med_energy: float = 25.0,
+    med_energy: Optional[float] = None,
     max_gs: int = 1,
     broaden_mode: str = "legacy",
     xmin: Optional[float] = None,
@@ -1114,8 +1144,11 @@ def calcXAS_from_scratch(
         Spin-orbit reduction: fraction of the Hartree-Fock ζ (default 1.0).
     T : float
         Temperature in Kelvin.
-    beam_fwhm, gamma1, gamma2, med_energy : float
+    beam_fwhm, gamma1, gamma2 : float
         Broadening parameters (eV).
+    med_energy : float or None
+        L3/L2 width crossover on the stick energy scale; ``None`` = midpoint
+        of the intensity-bearing sticks (see ``calcXAS``).
     max_gs : int
         Number of ground states to include in Boltzmann average.
     broaden_mode : str
@@ -1191,16 +1224,9 @@ def calcXAS_from_scratch(
         )
 
     # Step 7: Broaden
-    E_min = float(E_sticks.min())
-    E_max = float(E_sticks.max())
-    if xmin is None:
-        xmin = E_min - 5.0
-    if xmax is None:
-        xmax = E_max + 5.0
-
+    xmin, xmax, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
     x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
 
-    med = 0.5 * (E_min + E_max)
     y = pseudo_voigt(
         x, E_sticks, M_sticks,
         fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
@@ -1321,7 +1347,7 @@ def calcRIXS(
             element, valence, sym, edge,
             cf or {}, kwargs.get('slater', 0.8), kwargs.get('soc', 1.0),
             kwargs.get('delta'), kwargs.get('lmct'), kwargs.get('mlct'),
-            device,
+            device, u=kwargs.get('u'),
         )
     else:
         raise ValueError(
@@ -1392,6 +1418,7 @@ def _run_phase5_pipeline(
     cf: dict, slater, soc, delta, lmct, mlct,
     device: str = 'cpu',
     *,
+    u=None,
     fixture_suffix: str = '',
 ):
     """Run the Phase 5 pipeline and return the raw BanResult.
@@ -1430,7 +1457,7 @@ def _run_phase5_pipeline(
         rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
 
     ban = read_ban(ban_path)
-    ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+    ban = modify_ban_params(ban, cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
 
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
@@ -1474,7 +1501,7 @@ def _banresult_to_banoutput(result):
 
 def _build_rixs_store_phase5(
     element, valence, sym, edge, cf, slater, soc, delta, lmct, mlct,
-    device='cpu',
+    device='cpu', u=None,
 ):
     """Build a RIXSStore using Phase 5 absorption + bootstrap emission.
 
@@ -1496,7 +1523,7 @@ def _build_rixs_store_phase5(
     # Absorption: full Phase 5 pipeline (autograd-carrying)
     abs_result = _run_phase5_pipeline(
         element, valence, sym, edge, cf, slater, soc, delta, lmct, mlct,
-        device=device,
+        device=device, u=u,
     )
     abs_bo = _banresult_to_banoutput(abs_result)
 
@@ -1662,10 +1689,11 @@ def _calcDOC_phase5(
     slater = kwargs.pop('slater', 0.8)
     soc = kwargs.pop('soc', 1.0)
     delta = kwargs.pop('delta', None)
+    u = kwargs.pop('u', None)
     lmct = kwargs.pop('lmct', None)
     mlct = kwargs.pop('mlct', None)
 
-    ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
+    ban = modify_ban_params(ban, cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
 
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
