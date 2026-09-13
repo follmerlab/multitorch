@@ -23,7 +23,10 @@ anchored on the fixture block itself::
     H(J) = H_fixture(J) + (a − 1)·S(J) + (b − 1)·Z(J),
     a = slater / slater_reduction,  b = soc / soc_reduction,
 
-with S = Σ F^k O_F + Σ G^k O_G and Z = Σ ζ_i O_ζi from the fit. At the
+with S = Σ F^k O_F + Σ G^k O_G and Z = Σ ζ_i O_ζi from the fit. The rebuild
+itself is the shared parameter-linear contraction of
+:mod:`multitorch.hamiltonian.parametric`, which the from-scratch generator uses
+with a zero anchor. At the
 fixture's own reduction the store is returned unchanged (bit-exact parity with
 the Fortran chain); elsewhere it differs from E_av + a·S + b·Z only by the fit
 residual, i.e. Fortran print noise. ``slater_reduction`` is the reduction the
@@ -55,6 +58,12 @@ import torch
 from multitorch._constants import DTYPE
 from multitorch.angular.cowan_operators import Shell, configuration_operators
 from multitorch.hamiltonian.build_rac import SectionPlan
+from multitorch.hamiltonian.parametric import (
+    ConfigDecomposition,
+    HamiltonianDecomposition,
+    as_scale,
+    rebuild_hamiltonian_store,
+)
 from multitorch.io.read_rme import read_cowan_store
 
 
@@ -221,46 +230,14 @@ def fixture_slater_reduction(rcg_path: str | Path) -> float:
 RESIDUAL_REL_TOL = 1e-5
 
 
-@dataclass
-class ConfigDecomposition:
-    """One configuration's HAMILTONIAN blocks split into Slater and spin-orbit parts.
-
-    ``fixture[J] ≈ E_av·sqrt(2J+1)·I + slater_part[J] + soc_part[J]`` to
-    ``max_residual`` (relative, elementwise); rebuilt as
-    ``fixture[J] + (a−1)·slater_part[J] + (b−1)·soc_part[J]``.
-    """
-
-    section: int
-    block_type: str
-    shells: Tuple[Shell, ...]
-    block_index: Dict[float, int]
-    e_av: float
-    params: Dict[str, float]
-    max_residual: float
-    fixture: Dict[float, torch.Tensor]
-    slater_part: Dict[float, torch.Tensor]
-    soc_part: Dict[float, torch.Tensor]
-
-
-@dataclass
-class HamiltonianDecomposition:
-    configs: List[ConfigDecomposition]
-    slater_reduction: float
-    soc_reduction: float = FIXTURE_SOC_REDUCTION_DEFAULT
-
-    def config(self, section: int, block_type: str) -> ConfigDecomposition:
-        for c in self.configs:
-            if c.section == section and c.block_type == block_type:
-                return c
-        raise KeyError((section, block_type))
-
-
 def _decompose_config(
     section: int,
     block_type: str,
     shells: Tuple[Shell, ...],
     blocks: Dict[float, Tuple[int, np.ndarray]],
     rel_tol: float,
+    slater_reduction: float,
+    soc_reduction: float,
 ) -> ConfigDecomposition:
     ops = configuration_operators(shells)
     for J, (_, M) in blocks.items():
@@ -285,29 +262,29 @@ def _decompose_config(
     coef, *_ = np.linalg.lstsq(A, rhs, rcond=None)
     params = dict(zip(cols, (float(c) for c in coef)))
 
-    fixture, s_part, z_part = {}, {}, {}
+    fixture = {}
     worst = 0.0
     for J, (_, M) in blocks.items():
         d = M.shape[0]
         b = params["E_av"] * math.sqrt(2 * J + 1) * np.eye(d)
-        s = sum((params[n] * ops.blocks[n][J] for n in names if not ops.is_soc(n)), np.zeros((d, d)))
-        z = sum((params[n] * ops.blocks[n][J] for n in names if ops.is_soc(n)), np.zeros((d, d)))
-        rel = np.abs(b + s + z - M) / np.maximum(1.0, np.abs(M))
+        sz = sum((params[n] * ops.blocks[n][J] for n in names), np.zeros((d, d)))
+        rel = np.abs(b + sz - M) / np.maximum(1.0, np.abs(M))
         worst = max(worst, float(rel.max()))
         fixture[J] = torch.as_tensor(M, dtype=DTYPE)
-        s_part[J] = torch.as_tensor(s, dtype=DTYPE)
-        z_part[J] = torch.as_tensor(z, dtype=DTYPE)
     if worst > rel_tol:
         raise ValueError(
             f"HAMILTONIAN blocks of section {section} {block_type} {shells} are "
             f"not a combination of the configuration operators: max relative "
             f"residual {worst:.2e} > {rel_tol:.0e} (params {params})"
         )
+    e_av = params.pop("E_av")
     return ConfigDecomposition(
         section=section, block_type=block_type, shells=shells,
         block_index={J: idx for J, (idx, _) in blocks.items()},
-        e_av=params.pop("E_av"), params=params, max_residual=worst,
-        fixture=fixture, slater_part=s_part, soc_part=z_part,
+        e_av=e_av, anchor_params=params, reference=dict(params),
+        operators={n: {J: torch.as_tensor(ops.blocks[n][J], dtype=DTYPE) for J in blocks} for n in names},
+        anchor=fixture, reference_slater=slater_reduction, reference_soc=soc_reduction,
+        max_residual=worst, label=f"{section}.{block_type}",
     )
 
 
@@ -341,7 +318,8 @@ def decompose_cowan_hamiltonians(
                 if m.operator == "HAMILTONIAN" and m.block_type == kind
             }
             if blocks:
-                configs.append(_decompose_config(s, kind, configurations[s][kind], blocks, rel_tol))
+                configs.append(_decompose_config(s, kind, configurations[s][kind], blocks, rel_tol,
+                                                 float(slater_reduction), float(soc_reduction)))
     return HamiltonianDecomposition(configs, float(slater_reduction), float(soc_reduction))
 
 
@@ -374,12 +352,6 @@ def load_hamiltonian_decomposition(
 # ─────────────────────────────────────────────────────────────
 # Public entry points
 # ─────────────────────────────────────────────────────────────
-
-
-def _as_scale(x, device) -> torch.Tensor:
-    if isinstance(x, torch.Tensor):
-        return x.to(dtype=DTYPE, device=device)
-    return torch.as_tensor(float(x), dtype=DTYPE, device=device)
 
 
 def _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition):
@@ -435,6 +407,7 @@ def build_cowan_store_in_memory(
     cowan_template: Optional[List[List[torch.Tensor]]] = None,
     cowan_metadata: Optional[List[List[CowanBlockMeta]]] = None,
     decomposition: Optional[HamiltonianDecomposition] = None,
+    atomic=None,
     device=None,
 ) -> List[List[torch.Tensor]]:
     """Build a COWAN store whose HAMILTONIAN blocks carry ``slater`` and ``soc``.
@@ -449,6 +422,11 @@ def build_cowan_store_in_memory(
         G^k) and spin-orbit parameters. ``slater == decomposition.slater_reduction``
         and ``soc == decomposition.soc_reduction`` reproduce the fixture. Tensors
         with ``requires_grad=True`` carry gradients into every HAMILTONIAN block.
+    atomic : dict, optional
+        Per-configuration overrides of individual parameters (absolute eV),
+        keyed by configuration label ``'<section>.<GROUND|EXCITE>'`` and then
+        operator name (``F2_11``) or unambiguous alias (``F2dd``); see
+        :func:`~multitorch.hamiltonian.parametric.rebuild_hamiltonian_store`.
     source_rcg_path : path-like, optional
         ``.rme_rcg`` fixture; parsed for the template, metadata and (cached)
         decomposition when those are not supplied.
@@ -461,26 +439,14 @@ def build_cowan_store_in_memory(
     -------
     List[List[torch.Tensor]]
         Store with the template's layout; every HAMILTONIAN block rebuilt as
+        ``H_fixture + Σ (p_i − p_i^fit)·O_i`` with ``p_i = p_i^fit·slater/slater_reduction``
+        (F^k, G^k) or ``p_i^fit·soc/soc_reduction`` (ζ), i.e.
         ``H_fixture + (slater/slater_reduction − 1)·S + (soc/soc_reduction − 1)·Z``
-        (equal to the template at the fixture's reductions), every other block
-        the template tensor itself.
+        without overrides (equal to the template at the fixture's reductions);
+        every other block the template tensor itself.
     """
     template, dec = _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition)
-    a = _as_scale(slater, device) / dec.slater_reduction - 1.0
-    b = _as_scale(soc, device) / dec.soc_reduction - 1.0
-
-    result = [
-        [mat if device is None else mat.to(device=device) for mat in sec]
-        for sec in template
-    ]
-    for cfg in dec.configs:
-        for J, j in cfg.block_index.items():
-            result[cfg.section][j] = (
-                cfg.fixture[J].to(device=device)
-                + a * cfg.slater_part[J].to(device=device)
-                + b * cfg.soc_part[J].to(device=device)
-            )
-    return result
+    return rebuild_hamiltonian_store(template, dec, slater=slater, soc=soc, atomic=atomic, device=device)
 
 
 def build_cowan_store_in_memory_batch(
@@ -498,11 +464,11 @@ def build_cowan_store_in_memory_batch(
 
     Every HAMILTONIAN block has shape (N, dim, dim); all other blocks are the
     (dim, dim) template tensors (broadcast-compatible). The decomposition is
-    computed once and shared, so the per-sample cost is two scalar-times-matrix
-    additions per block.
+    computed once and shared, so the per-sample cost is one scalar-times-matrix
+    addition per (block, parameter).
     """
-    slater_values = _as_scale(slater_values, device)
-    soc_values = _as_scale(soc_values, device)
+    slater_values = as_scale(slater_values, device)
+    soc_values = as_scale(soc_values, device)
     if slater_values.ndim != 1 or soc_values.ndim != 1:
         raise ValueError(
             f"slater_values and soc_values must be 1D, got {tuple(slater_values.shape)} "
@@ -514,18 +480,4 @@ def build_cowan_store_in_memory_batch(
             f"{soc_values.shape[0]} soc values"
         )
     template, dec = _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition)
-    a = (slater_values / dec.slater_reduction - 1.0)[:, None, None]
-    b = (soc_values / dec.soc_reduction - 1.0)[:, None, None]
-
-    result = [
-        [mat if device is None else mat.to(device=device) for mat in sec]
-        for sec in template
-    ]
-    for cfg in dec.configs:
-        for J, j in cfg.block_index.items():
-            result[cfg.section][j] = (
-                cfg.fixture[J].to(device=device)
-                + a * cfg.slater_part[J].to(device=device)
-                + b * cfg.soc_part[J].to(device=device)
-            )
-    return result
+    return rebuild_hamiltonian_store(template, dec, slater=slater_values, soc=soc_values, device=device)

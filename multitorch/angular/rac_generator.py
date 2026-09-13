@@ -121,6 +121,44 @@ def _irrep_block_size(
     return total
 
 
+def _ground_hamiltonian_operators(
+    l: int,
+    n: int,
+    j_sizes: Dict[float, int],
+) -> Dict[str, Dict[float, np.ndarray]]:
+    """Parameter-free HAMILTONIAN operators of the single-shell ground l^n, per J.
+
+    COWAN-store (reduced-matrix-element) convention, validated against
+    ttrcg HAMILTONIAN blocks (tests/test_angular/test_hamiltonian_operators.py)::
+
+        H_J = Σ_{k=2,4} F^k_eV · F{k}_11(J) + ζ_eV · zeta_1(J)
+
+    with ``F{k}_11`` from :func:`compute_coulomb_blocks` (Coulomb coefficients
+    relative to the configuration average, times sqrt(2J+1)) and ``zeta_1``
+    from :func:`compute_soc_blocks` (Σ_i l_i·s_i, times sqrt(2J+1)), in the
+    CFP term gauge of the ground CF and MULTIPOLE blocks. F^0 does not enter:
+    Cowan's E_av convention puts it into the configuration-average energy,
+    which is 0 for the ground configuration.
+
+    Before 2026-09 the builder multiplied F^k into the rank-k unit-tensor
+    SHELL blocks (crystal-field operators) and used the spin operator S as
+    the spin-orbit operator — both eV-scale errors.
+    """
+    coul = compute_coulomb_blocks(l, n)
+    soc = compute_soc_blocks(l, n)
+    ops: Dict[str, Dict[float, np.ndarray]] = {}
+    for k in range(2, 2 * l + 1, 2):
+        ops[f"F{k}_11"] = {J: coul.get((k, J), np.zeros((d, d))) for J, d in j_sizes.items()}
+    ops["zeta_1"] = {J: soc.get(J, np.zeros((d, d))) for J, d in j_sizes.items()}
+    return ops
+
+
+def _ground_reference_ev(l: int, raw_slater_ry: Dict[str, float], raw_zeta_ry, ry_to_ev: float) -> Dict[str, float]:
+    ref = {f"F{k}_11": raw_slater_ry.get(f"F{k}", 0.0) * ry_to_ev for k in range(2, 2 * l + 1, 2)}
+    ref["zeta_1"] = raw_zeta_ry * ry_to_ev
+    return ref
+
+
 def _build_hamiltonian_cowan_matrices(
     l: int,
     n: int,
@@ -130,45 +168,19 @@ def _build_hamiltonian_cowan_matrices(
     raw_zeta_ry: float,
     ry_to_ev: float,
 ) -> Tuple[Dict[float, np.ndarray], Dict[float, np.ndarray]]:
-    """Build pre-assembled ground-state Hamiltonian blocks for each J sector.
+    """Ground-state Hamiltonian blocks per J at fixed (Ry) parameters.
 
-    COWAN-store (reduced-matrix-element) convention, validated against
-    ttrcg HAMILTONIAN blocks (tests/test_angular/test_hamiltonian_operators.py)::
-
-        H_J = Σ_{k=2,4} F^k_eV · C_k(J) + ζ_eV · V(J)
-
-    with ``C_k`` from :func:`compute_coulomb_blocks` (Coulomb coefficients
-    relative to the configuration average, times sqrt(2J+1)) and ``V``
-    from :func:`compute_soc_blocks` (Σ_i l_i·s_i, times sqrt(2J+1)).
-    F^0 does not enter: Cowan's E_av convention puts it into the
-    configuration-average energy, which is 0 for the ground configuration.
-
-    Before 2026-09 this routine multiplied F^k into the rank-k unit-tensor
-    SHELL blocks (crystal-field operators) and used the spin operator S as
-    the spin-orbit operator — both eV-scale errors.
-
-    Returns (h_blocks, soc_blocks); the second element is the ζ-free
-    spin-orbit operator per J (kept for the autograd decomposition).
+    Float contraction of :func:`_ground_hamiltonian_operators`. Returns
+    (h_blocks, soc_blocks); the second element is the ζ-free spin-orbit
+    operator per J.
     """
-    coul = compute_coulomb_blocks(l, n)
-    soc = compute_soc_blocks(l, n)
-
-    h_blocks: Dict[float, np.ndarray] = {}
-    v11_blocks: Dict[float, np.ndarray] = {}
-    zeta_ev = raw_zeta_ry * ry_to_ev
-
-    for J, n_states in j_sizes.items():
-        H = np.zeros((n_states, n_states), dtype=np.float64)
-        for k in range(2, 2 * l + 1, 2):
-            fk_ry = raw_slater_ry.get(f"F{k}", 0.0)
-            if (k, J) in coul and abs(fk_ry) > 0.0:
-                H += (fk_ry * ry_to_ev) * coul[(k, J)]
-        v11 = soc.get(J, np.zeros((n_states, n_states), dtype=np.float64))
-        H += zeta_ev * v11
-        h_blocks[J] = H
-        v11_blocks[J] = v11
-
-    return h_blocks, v11_blocks
+    ops = _ground_hamiltonian_operators(l, n, j_sizes)
+    ref = _ground_reference_ev(l, raw_slater_ry, raw_zeta_ry, ry_to_ev)
+    h_blocks = {
+        J: sum((ref[name] * ops[name][J] for name in ops if ref[name] != 0.0), np.zeros((d, d)))
+        for J, d in j_sizes.items()
+    }
+    return h_blocks, ops["zeta_1"]
 
 
 def _build_cf_cowan_matrices(
@@ -209,6 +221,73 @@ def _get_excited_j_sizes(
     return {J: len(states) for J, states in two_shell_basis.items()}
 
 
+_EXCITED_PARAMETERS = (
+    # (raw_slater_ex_ry key | ('zeta', raw_zeta_ex_ry key), operator name)
+    ("F2_dd", "F2_22"),
+    ("F4_dd", "F4_22"),
+    ("F2_pd", "F2_12"),
+    ("G1_pd", "G1_12"),
+    ("G3_pd", "G3_12"),
+    (("zeta", "p"), "zeta_1"),
+    (("zeta", "d"), "zeta_2"),
+)
+
+
+def _excited_hamiltonian_operators(
+    l_val: int,
+    n_val_gs: int,
+    l_core: int,
+    n_core_gs: int,
+) -> Dict[str, Dict[float, np.ndarray]]:
+    """Parameter-free HAMILTONIAN operators of the excited l_core^(n-1) l_val^(n+1), per J.
+
+    COWAN-store (reduced-matrix-element, E_av-relative) convention, using
+    :func:`compute_two_shell_operators` (shell 1 = core, shell 2 = valence);
+    validated against ttrcg blocks with every parameter scaled separately
+    (tests/test_angular/test_hamiltonian_operators.py)::
+
+        H_J = Σ_k F^k_dd F{k}_22(J) + F^2_pd F2_12(J) + Σ_k G^k_pd G{k}_12(J)
+              + ζ_p zeta_1(J) + ζ_d zeta_2(J)
+
+    The excited CF (compute_two_shell_shell_blocks) and MULTIPOLE blocks are
+    in Cowan's valence-term phase, which differs from the CFP basis of
+    compute_two_shell_operators by sigma(t) = (-1)^(L+S-S_min) of the valence
+    term; the operators are returned in that gauge. Invisible for single-term
+    d^9 (Ni2+), eV-scale for every multi-term excited shell (oracle:
+    tests/test_integration/test_from_scratch_fortran_parity.py).
+    """
+    from multitorch.angular.cowan_operators import _term_gauge
+
+    n_core_ex = n_core_gs - 1
+    n_val_ex = n_val_gs + 1
+    basis, raw = compute_two_shell_operators(l_core, n_core_ex, l_val, n_val_ex)
+    val_sigma = _term_gauge(l_val, n_val_ex)
+    j_sizes = _get_excited_j_sizes(l_val, n_val_gs, l_core, n_core_gs)
+
+    ops: Dict[str, Dict[float, np.ndarray]] = {}
+    for _, name in _EXCITED_PARAMETERS:
+        if name not in raw:
+            continue
+        ops[name] = {}
+        for J, n_states in j_sizes.items():
+            if J not in basis:
+                ops[name][J] = np.zeros((n_states, n_states))
+                continue
+            assert len(basis[J]) == n_states, (J, len(basis[J]), n_states)
+            d = np.array([val_sigma[st.term2_idx] for st in basis[J]])
+            ops[name][J] = d[:, None] * raw[name][J] * d[None, :]
+    return ops
+
+
+def _excited_reference_ev(raw_slater_ry: Dict[str, float], raw_zeta_ry: Dict[str, float],
+                          ry_to_ev: float) -> Dict[str, float]:
+    ref = {}
+    for key, name in _EXCITED_PARAMETERS:
+        src = raw_zeta_ry.get(key[1], 0.0) if isinstance(key, tuple) else raw_slater_ry.get(key, 0.0)
+        ref[name] = src * ry_to_ev
+    return ref
+
+
 def _build_excited_hamiltonian_cowan(
     l_val: int,
     n_val_gs: int,
@@ -218,16 +297,9 @@ def _build_excited_hamiltonian_cowan(
     raw_zeta_ry: Dict[str, float],
     ry_to_ev: float,
 ) -> Dict[float, np.ndarray]:
-    """Build pre-assembled excited-state Hamiltonian blocks per J sector.
+    """Excited-state Hamiltonian blocks per J at fixed (Ry) parameters.
 
-    COWAN-store (reduced-matrix-element, E_av-relative) convention, using
-    :func:`compute_two_shell_operators` (shell 1 = core l_core^(n_core-1),
-    shell 2 = valence l_val^(n_val+1)); validated against ttrcg blocks with
-    every parameter scaled separately (tests/test_angular/
-    test_hamiltonian_operators.py)::
-
-        H_J = Σ_k F^k_dd C^dd_k(J) + F^2_pd D_2(J) + Σ_k G^k_pd X_k(J)
-              + ζ_d V_d(J) + ζ_p V_p(J)
+    Float contraction of :func:`_excited_hamiltonian_operators`.
 
     Parameters
     ----------
@@ -236,42 +308,13 @@ def _build_excited_hamiltonian_cowan(
     raw_zeta_ry : dict
         SOC constants in Rydberg: {'d': zeta_d, 'p': zeta_p}.
     """
-    n_core_ex = n_core_gs - 1
-    n_val_ex = n_val_gs + 1
-    basis, ops = compute_two_shell_operators(l_core, n_core_ex, l_val, n_val_ex)
-    # The excited CF (compute_two_shell_shell_blocks) and MULTIPOLE blocks are
-    # in Cowan's valence-term phase, which differs from the CFP basis of
-    # compute_two_shell_operators by sigma(t) = (-1)^(L+S-S_min) of the valence
-    # term. Put the Hamiltonian in the same gauge; invisible for single-term
-    # d^9 (Ni2+), eV-scale for every multi-term excited shell (oracle:
-    # tests/test_integration/test_from_scratch_fortran_parity.py).
-    from multitorch.angular.cowan_operators import _term_gauge
-    val_sigma = _term_gauge(l_val, n_val_ex)
-
+    ops = _excited_hamiltonian_operators(l_val, n_val_gs, l_core, n_core_gs)
+    ref = _excited_reference_ev(raw_slater_ry, raw_zeta_ry, ry_to_ev)
     j_sizes = _get_excited_j_sizes(l_val, n_val_gs, l_core, n_core_gs)
-    h_blocks: Dict[float, np.ndarray] = {}
-    for J, n_states in j_sizes.items():
-        H = np.zeros((n_states, n_states), dtype=np.float64)
-        if J not in basis:
-            h_blocks[J] = H
-            continue
-        assert len(basis[J]) == n_states, (J, len(basis[J]), n_states)
-        contributions = [
-            (raw_slater_ry.get("F2_dd", 0.0), "F2_22"),
-            (raw_slater_ry.get("F4_dd", 0.0), "F4_22"),
-            (raw_slater_ry.get("F2_pd", 0.0), "F2_12"),
-            (raw_slater_ry.get("G1_pd", 0.0), "G1_12"),
-            (raw_slater_ry.get("G3_pd", 0.0), "G3_12"),
-            (raw_zeta_ry.get("p", 0.0), "zeta_1"),
-            (raw_zeta_ry.get("d", 0.0), "zeta_2"),
-        ]
-        for value_ry, name in contributions:
-            if name in ops and abs(value_ry) > 0.0:
-                H += (value_ry * ry_to_ev) * ops[name][J]
-        d = np.array([val_sigma[st.term2_idx] for st in basis[J]])
-        h_blocks[J] = d[:, None] * H * d[None, :]
-
-    return h_blocks
+    return {
+        J: sum((ref[name] * ops[name][J] for name in ops if ref[name] != 0.0), np.zeros((d, d)))
+        for J, d in j_sizes.items()
+    }
 
 
 def _build_excited_cf_cowan(
@@ -1213,7 +1256,64 @@ def generate_ledge_rac(
     cf_rank: int = 4,
     sym: str = 'oh',
 ) -> Tuple[RACFileFull, List[List[torch.Tensor]]]:
-    """Generate angular RME structure for L-edge XAS.
+    """Generate the L-edge (RAC, COWAN store) pair at fixed atomic parameters.
+
+    :func:`generate_ledge_template` followed by the parameter-linear
+    contraction (:func:`~multitorch.hamiltonian.parametric.rebuild_hamiltonian_store`)
+    at the given Rydberg values. A configuration whose parameters are not
+    given (ground: ``raw_slater_gs_ry``; excited: both ``raw_slater_ex_ry``
+    and ``raw_zeta_ex_ry``) keeps identity HAMILTONIAN placeholders.
+    Parameter dictionaries are documented in :func:`generate_ledge_template`
+    and :func:`ledge_reference_ev`.
+    """
+    from multitorch.hamiltonian.parametric import HamiltonianDecomposition, rebuild_hamiltonian_store
+
+    rac, store, dec = generate_ledge_template(
+        l_val, n_val_gs, l_core, n_core_gs, cf_rank=cf_rank, sym=sym,
+    )
+    gs_ref, ex_ref = ledge_reference_ev(
+        l_val, raw_slater_gs_ry, raw_zeta_gs_ry, raw_slater_ex_ry, raw_zeta_ex_ry, ry_to_ev,
+    )
+    configs = []
+    for cfg, ref in ((dec.by_label('gs'), gs_ref), (dec.by_label('ex'), ex_ref)):
+        if ref is not None:
+            cfg.reference = ref
+            configs.append(cfg)
+    store = rebuild_hamiltonian_store(store, HamiltonianDecomposition(configs), slater=1.0, soc=1.0)
+    return rac, store
+
+
+def ledge_reference_ev(
+    l_val: int,
+    raw_slater_gs_ry: Optional[Dict[str, float]],
+    raw_zeta_gs_ry: float,
+    raw_slater_ex_ry: Optional[Dict[str, float]],
+    raw_zeta_ex_ry: Optional[Dict[str, float]],
+    ry_to_ev: float = RY_TO_EV_FLOAT,
+) -> Tuple[Optional[Dict[str, float]], Optional[Dict[str, float]]]:
+    """Rydberg parameter dicts → operator-keyed eV values for the 'gs' and 'ex' configurations.
+
+    Ground ``raw_slater_gs_ry = {'F2': .., 'F4': ..}`` (F0 ignored),
+    ``raw_zeta_gs_ry`` a float; excited ``raw_slater_ex_ry = {'F2_dd', 'F4_dd',
+    'F2_pd', 'G1_pd', 'G3_pd'}``, ``raw_zeta_ex_ry = {'p', 'd'}``. ``None``
+    for a configuration whose parameters are not given.
+    """
+    gs = (_ground_reference_ev(l_val, raw_slater_gs_ry, raw_zeta_gs_ry, ry_to_ev)
+          if raw_slater_gs_ry is not None else None)
+    ex = (_excited_reference_ev(raw_slater_ex_ry, raw_zeta_ex_ry, ry_to_ev)
+          if raw_slater_ex_ry is not None and raw_zeta_ex_ry is not None else None)
+    return gs, ex
+
+
+def generate_ledge_template(
+    l_val: int,
+    n_val_gs: int,
+    l_core: int = 1,
+    n_core_gs: int = 6,
+    cf_rank: int = 4,
+    sym: str = 'oh',
+):
+    """Generate the parameter-free angular structure for L-edge XAS.
 
     Produces ground state (gerade, d^n) + excited state (ungerade,
     p^5 d^(n+1)) + MULTIPOLE transition blocks.  Single-configuration
@@ -1225,6 +1325,16 @@ def generate_ledge_rac(
       [MULTIPOLE(J_gs,J_ex) ...] [GS_HAM(J) ...] [GS_CF(Jb,Jk) ...]
       [EX_HAM(J) ...] [EX_CF(Jb,Jk) ...]
 
+    The HAMILTONIAN blocks of the store are identity placeholders; the
+    returned :class:`~multitorch.hamiltonian.parametric.HamiltonianDecomposition`
+    holds, for the ground ('gs', d^n) and excited ('ex', core-first
+    p^5 d^(n+1)) configuration, the parameter-free operators and the store
+    positions of their J blocks, with a zero anchor and empty reference.
+    Fill ``reference`` (eV, operator names ``F2_11``/``zeta_1`` and
+    ``F2_22``/``F2_12``/``G1_12``/``zeta_1``/``zeta_2``) and contract with
+    :func:`~multitorch.hamiltonian.parametric.rebuild_hamiltonian_store`;
+    parameters may be tensors.
+
     Parameters
     ----------
     l_val : int
@@ -1235,17 +1345,6 @@ def generate_ledge_rac(
         Orbital AM of core shell (1 for p).
     n_core_gs : int
         Number of core electrons in ground state (6 for p^6).
-    raw_slater_gs_ry : dict, optional
-        Ground-state Slater integrals in Rydberg: {'F0': ..., 'F2': ..., 'F4': ...}.
-    raw_zeta_gs_ry : float
-        Ground-state SOC constant in Rydberg.
-    raw_slater_ex_ry : dict, optional
-        Excited-state Slater integrals: {'F2_dd': ..., 'F4_dd': ...,
-        'G1_pd': ..., 'G3_pd': ..., 'F2_pd': ...}.
-    raw_zeta_ex_ry : dict, optional
-        Excited-state SOC constants: {'d': zeta_d_ry, 'p': zeta_p_ry}.
-    ry_to_ev : float
-        Rydberg to eV conversion.
     cf_rank : int
         Crystal field operator rank (4 for Oh).
     sym : {'oh', 'd4h'}, default 'oh'
@@ -1264,10 +1363,13 @@ def generate_ledge_rac(
 
     Returns
     -------
-    (rac, cowan_store)
+    (rac, cowan_store, decomposition)
         rac: RACFileFull with TRANSI (MULTIPOLE), GROUND, and EXCITE blocks.
         cowan_store: List of 4 sections (only section 0 populated for nconf=1).
+        decomposition: HamiltonianDecomposition with configurations 'gs', 'ex'.
     """
+    from multitorch.hamiltonian.parametric import HamiltonianDecomposition, zero_anchor_config
+
     if sym not in ('oh', 'd4h'):
         raise ValueError(
             f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h'. "
@@ -1366,18 +1468,10 @@ def generate_ledge_rac(
         multipole_idx[(J_gs, J_ex)] = mat_idx
         mat_idx += 1
 
-    # --- Ground-state Hamiltonian matrices ---
-    if raw_slater_gs_ry is not None:
-        gs_h_blocks, _ = _build_hamiltonian_cowan_matrices(
-            l_val, n_val_gs, gs_terms, gs_j_sizes,
-            raw_slater_gs_ry, raw_zeta_gs_ry, ry_to_ev)
-    else:
-        gs_h_blocks = {J: np.eye(sz) for J, sz in gs_j_sizes.items()}
-
+    # --- Ground-state Hamiltonian matrices (identity placeholders) ---
     gs_ham_idx: Dict[float, int] = {}
     for J in sorted(gs_j_sizes.keys()):
-        mat = gs_h_blocks[J]
-        section_0_matrices.append(torch.as_tensor(mat, dtype=DTYPE))
+        section_0_matrices.append(torch.eye(gs_j_sizes[J], dtype=DTYPE))
         gs_ham_idx[J] = mat_idx
         mat_idx += 1
 
@@ -1403,18 +1497,10 @@ def generate_ledge_rac(
             gs_cf_idx_rank2[(Jb, Jk)] = mat_idx
             mat_idx += 1
 
-    # --- Excited-state Hamiltonian matrices ---
-    if raw_slater_ex_ry is not None and raw_zeta_ex_ry is not None:
-        ex_h_blocks = _build_excited_hamiltonian_cowan(
-            l_val, n_val_gs, l_core, n_core_gs,
-            raw_slater_ex_ry, raw_zeta_ex_ry, ry_to_ev)
-    else:
-        ex_h_blocks = {J: np.eye(sz) for J, sz in ex_j_sizes.items()}
-
+    # --- Excited-state Hamiltonian matrices (identity placeholders) ---
     ex_ham_idx: Dict[float, int] = {}
     for J in sorted(ex_j_sizes.keys()):
-        mat = ex_h_blocks[J]
-        section_0_matrices.append(torch.as_tensor(mat, dtype=DTYPE))
+        section_0_matrices.append(torch.eye(ex_j_sizes[J], dtype=DTYPE))
         ex_ham_idx[J] = mat_idx
         mat_idx += 1
 
@@ -1784,7 +1870,22 @@ def generate_ledge_rac(
         }
     except Exception:  # pragma: no cover - diagnostics only
         pass
-    return rac, cowan_store
+
+    decomposition = HamiltonianDecomposition([
+        zero_anchor_config(
+            0, 'GROUND', ((l_val, n_val_gs),),
+            {J: i - 1 for J, i in gs_ham_idx.items()},
+            _ground_hamiltonian_operators(l_val, n_val_gs, gs_j_sizes),
+            gs_j_sizes, label='gs',
+        ),
+        zero_anchor_config(
+            0, 'EXCITE', ((l_core, n_core_gs - 1), (l_val, n_val_gs + 1)),
+            {J: i - 1 for J, i in ex_ham_idx.items()},
+            _excited_hamiltonian_operators(l_val, n_val_gs, l_core, n_core_gs),
+            ex_j_sizes, label='ex',
+        ),
+    ])
+    return rac, cowan_store, decomposition
 
 
 def _make_operator_adds(
