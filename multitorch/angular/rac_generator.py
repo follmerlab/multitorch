@@ -239,6 +239,14 @@ def _build_excited_hamiltonian_cowan(
     n_core_ex = n_core_gs - 1
     n_val_ex = n_val_gs + 1
     basis, ops = compute_two_shell_operators(l_core, n_core_ex, l_val, n_val_ex)
+    # The excited CF (compute_two_shell_shell_blocks) and MULTIPOLE blocks are
+    # in Cowan's valence-term phase, which differs from the CFP basis of
+    # compute_two_shell_operators by sigma(t) = (-1)^(L+S-S_min) of the valence
+    # term. Put the Hamiltonian in the same gauge; invisible for single-term
+    # d^9 (Ni2+), eV-scale for every multi-term excited shell (oracle:
+    # tests/test_integration/test_from_scratch_fortran_parity.py).
+    from multitorch.angular.cowan_operators import _term_gauge
+    val_sigma = _term_gauge(l_val, n_val_ex)
 
     j_sizes = _get_excited_j_sizes(l_val, n_val_gs, l_core, n_core_gs)
     h_blocks: Dict[float, np.ndarray] = {}
@@ -260,7 +268,8 @@ def _build_excited_hamiltonian_cowan(
         for value_ry, name in contributions:
             if name in ops and abs(value_ry) > 0.0:
                 H += (value_ry * ry_to_ev) * ops[name][J]
-        h_blocks[J] = H
+        d = np.array([val_sigma[st.term2_idx] for st in basis[J]])
+        h_blocks[J] = d[:, None] * H * d[None, :]
 
     return h_blocks
 

@@ -1,12 +1,21 @@
 """End-to-end parity of the from-scratch pipeline against the Fortran chain.
 
-The bundled ``ni2_d8_oh`` fixture is a pyctm/ttmult run at 80 % Slater
-reduction (verified 2026-09-09 against regenerated runs, max |Δ| ≤ 2e-5).
-Feeding the from-scratch generator the *same* atomic parameters (the RCG
-input values of that run) must reproduce the fixture-path spectrum with the
-ligand-hole configuration decoupled (lmct = 0): eigenvalues, transition
-matrices and stick intensities. Before 2026-09-10 the from-scratch path was
-at cosine 0.47 (audit S3/S4/S5/S7).
+Oracle: the bundled pyctm/ttmult Oh fixtures, run through the fixture path at
+their own Slater reduction (which reproduces the Fortran store exactly) with
+the ligand-hole configuration decoupled (lmct = 0, Δ = 100 eV). The
+from-scratch generator gets the *same* atomic parameters, read off the
+fixture's HAMILTONIAN blocks by the S1a decomposition (each equals the ttrcg
+input deck value to ≤ 1.3e-5 eV). Stick energies (relative to the lowest bright
+stick), absolute stick intensities and the broadened spectrum must agree.
+
+D4h at dt = ds = 0 is the Oh limit and is checked against the same Oh fixture;
+its degenerate ground components sit in several D4h irreps, so both sides use
+a T = 80 K Boltzmann pool (Known residual 15: max_gs=1 is ill-posed there).
+
+History: cosine 0.47 before 2026-09-10 (audit S3/S4/S5/S7); exact for Ni d⁸
+only until 2026-09-13, when the excited Hamiltonian was put in the valence-term
+gauge of the excited CF/MULTIPOLE blocks (V³⁺ was at 0.853, Fe²⁺ at 0.991).
+Half-integer J (Cr³⁺, Mn²⁺, Fe³⁺, Co²⁺) is WP-B.
 """
 from __future__ import annotations
 
@@ -18,58 +27,70 @@ from multitorch._constants import DTYPE
 from multitorch.angular.rac_generator import generate_ledge_rac
 from multitorch.api.calc import _build_ban_from_rac, _run_phase5_pipeline
 from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
+from multitorch.hamiltonian.build_cowan import load_hamiltonian_decomposition
 from multitorch.spectrum.broaden import pseudo_voigt
+from multitorch.spectrum.parity import spectral_parity
 from multitorch.spectrum.sticks import get_sticks_from_banresult
+from pathlib import Path
 
 RY = 13.605693122994
+REFDATA = Path(__file__).parent.parent / "reference_data"
+POOL = dict(T=80.0, max_gs=40)
 
-# RCG input of the ni2_d8_oh run (pyctm writes the reduced values to 3 decimals).
-NI_80PCT = dict(
-    raw_slater_gs_ry={"F2": 9.787 / RY, "F4": 6.078 / RY},
-    raw_zeta_gs_ry=0.083 / RY,
-    raw_slater_ex_ry={"F2_pd": 6.177 / RY, "G1_pd": 4.630 / RY, "G3_pd": 2.633 / RY,
-                      "F2_dd": 0.0, "F4_dd": 0.0},
-    raw_zeta_ex_ry={"p": 11.507 / RY, "d": 0.102 / RY},
-)
+# (fixture, element, valence, d electrons, fixture 10Dq)
+IONS = [
+    ("v3_d2_oh", "V", "iii", 2, 1.8),
+    ("fe2_d6_oh", "Fe", "ii", 6, 1.0),
+    ("ni2_d8_oh", "Ni", "ii", 8, 1.0),
+]
 
 
-def _sticks_fixture():
-    res = _run_phase5_pipeline("Ni", "ii", "oh", "l", {"tendq": 1.0},
-                               slater=0.8, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
-    E, M, _ = get_sticks_from_banresult(res, T=80.0, max_gs=1)
-    keep = E < E.min() + 40.0          # drop the decoupled ligand-hole final states
+def _fixture_parameters(name):
+    """Fortran store parameters (eV) → generate_ledge_rac keyword arguments (Ry)."""
+    dec = load_hamiltonian_decomposition(REFDATA / name / f"{name}.rme_rcg")
+    g = dec.config(2, "GROUND").params           # d^n
+    e = dec.config(3, "GROUND").params           # 2p^5 d^(n+1), core first
+    return dict(
+        raw_slater_gs_ry={"F2": g.get("F2_11", 0.0) / RY, "F4": g.get("F4_11", 0.0) / RY},
+        raw_zeta_gs_ry=g["zeta_1"] / RY,
+        raw_slater_ex_ry={"F2_pd": e["F2_12"] / RY, "G1_pd": e["G1_12"] / RY, "G3_pd": e["G3_12"] / RY,
+                          "F2_dd": e.get("F2_22", 0.0) / RY, "F4_dd": e.get("F4_22", 0.0) / RY},
+        raw_zeta_ex_ry={"p": e["zeta_1"] / RY, "d": e["zeta_2"] / RY},
+    )
+
+
+def _bright(E, M):
+    keep = M > 1e-10 * M.max()
     return E[keep], M[keep]
 
 
-def _sticks_from_scratch(sym):
-    rac, cowan = generate_ledge_rac(2, 8, sym=sym, **NI_80PCT)
-    ban = _build_ban_from_rac(rac, tendq=1.0, dt=0.0, ds=0.0, sym=sym)
-    res = assemble_and_diagonalize_in_memory(cowan, rac, ban)
-    return get_sticks_from_banresult(res, T=80.0, max_gs=1)[:2]
-
-
-def _spectrum(E, M):
-    x = torch.linspace(float(E.min()) - 3, float(E.max()) + 3, 4000, dtype=DTYPE)
-    y = pseudo_voigt(x, E, M, fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.4,
-                     med_energy=0.5 * float(E.min() + E.max()), mode="legacy")
-    return y / y.max()
+def _spectrum(E, M, hi):
+    x = torch.linspace(-3.0, hi, 6000, dtype=DTYPE)
+    y = pseudo_voigt(x, E, M, fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.4, med_energy=0.5 * hi, mode="legacy")
+    return x, y
 
 
 @pytest.mark.parametrize("sym", ["oh", "d4h"])
-def test_from_scratch_ni_d8_matches_fortran_fixture(sym):
-    Ef, Mf = _sticks_fixture()
-    Es, Ms = _sticks_from_scratch(sym)
-    # stick energies relative to the lowest one, matched exactly
-    ef = np.round(Ef.numpy() - Ef.numpy().min(), 4)
-    es = np.round(Es.numpy() - Es.numpy().min(), 4)
-    mf = Mf.numpy() / Mf.numpy().sum()
-    ms = Ms.numpy() / Ms.numpy().sum()
-    strong = {e for e, m in zip(ef, mf) if m > 1e-4}
-    assert strong <= set(es), sorted(strong - set(es))
-    for e in strong:
-        assert abs(ms[es == e].sum() - mf[ef == e].sum()) < 1e-5, e
-    # broadened spectrum on a common relative grid
-    ys = _spectrum(Es - Es.min(), Ms)
-    yf = _spectrum(Ef - Ef.min(), Mf)
-    cos = float((ys @ yf) / (ys.norm() * yf.norm()))
-    assert cos > 0.99999, cos
+@pytest.mark.parametrize("name,element,valence,n,tendq", IONS, ids=[i[0] for i in IONS])
+def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, sym):
+    res_f = _run_phase5_pipeline(element, valence, "oh", "l", {"tendq": tendq},
+                                 slater=0.8, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
+    Ef, Mf = _bright(*get_sticks_from_banresult(res_f, **POOL)[:2])
+
+    rac, cowan = generate_ledge_rac(2, n, sym=sym, **_fixture_parameters(name))
+    ban = _build_ban_from_rac(rac, tendq=tendq, dt=0.0, ds=0.0, sym=sym)
+    Es, Ms = _bright(*get_sticks_from_banresult(assemble_and_diagonalize_in_memory(cowan, rac, ban), **POOL)[:2])
+
+    ef, es = (Ef - Ef.min()).numpy(), (Es - Es.min()).numpy()
+    mf, ms = Mf.numpy(), Ms.numpy()
+    # absolute intensities (no normalisation); floor: the store prints 6 decimals
+    assert ms.sum() == pytest.approx(mf.sum(), rel=2e-5)
+    # every strong Fortran stick: same energy (±2e-5 eV) and summed intensity
+    for e in ef[mf > 1e-4 * mf.sum()]:
+        near_s, near_f = np.abs(es - e) < 2e-5, np.abs(ef - e) < 2e-5
+        assert near_s.any(), e
+        assert abs(ms[near_s].sum() - mf[near_f].sum()) < 2e-5 * mf.sum(), e
+    hi = float(max(ef.max(), es.max())) + 3.0
+    p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
+    assert p.cosine > 0.99999, p
+    assert p.area_ratio == pytest.approx(1.0, abs=1e-5), p
