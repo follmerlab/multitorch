@@ -9,6 +9,12 @@ and the overrides are tested in separate cases. Loss: fixed-weight sum of the
 broadened spectrum on a pinned grid, normalised to O(1). h = 1e-4,
 rel ≤ 1e-5 (the S8 contract).
 
+Near-degenerate coverage stays *off* exact ground-level crossings (dt = ds =
+1e-3 with a T = 80 K pool; ζ scale 1e-3): with pyctm's unnormalised Boltzmann
+weights the spectrum has one-sided derivatives exactly at dt = ds = 0 or ζ = 0
+(decision D-1 and Known residual 18 in docs/DEVELOPMENT_PLAN_2026-09.md), so no
+finite-difference oracle exists there.
+
 Also at the contraction seam: ∂H/∂p_i is the operator block O_i, ∂H/∂slater
 is Σ_Slater HFS_i·O_i and ∂H/∂soc is Σ_ζ HFS_i·O_i (gradient isolation).
 """
@@ -48,7 +54,7 @@ def _atomic_at(element, valence, sym, slater=0.8, soc=1.0):
     return out
 
 
-def _spectrum(element, valence, sym, p):
+def _spectrum(element, valence, sym, p, sticks=None):
     cf = {k: p[k] for k in ("tendq", "dt", "ds") if k in p}
     atomic = {}
     for key, v in p.items():
@@ -56,7 +62,7 @@ def _spectrum(element, valence, sym, p):
             label, name = key.split(".")
             atomic.setdefault(label, {})[name] = v
     _, y = calcXAS_from_scratch(element, valence, cf, slater=p.get("slater", 0.8), soc=p.get("soc", 1.0),
-                                sym=sym, atomic=atomic or None, **GRIDS[(element, valence)])
+                                sym=sym, atomic=atomic or None, **(sticks or {}), **GRIDS[(element, valence)])
     return y
 
 
@@ -64,22 +70,29 @@ CF = {"oh": dict(tendq=1.0), "d4h": dict(tendq=1.0, dt=0.05, ds=0.1)}
 SYSTEMS = [("Ni", "ii", "oh"), ("Ni", "ii", "d4h"), ("Fe", "ii", "oh")]
 
 
+POOL = dict(T=80.0, max_gs=40)
+
+
 def _cases():
     for el, val, sym in SYSTEMS:
-        yield pytest.param(el, val, sym, "scale", id=f"{el}{val}_{sym}_scale")
-        yield pytest.param(el, val, sym, "atomic", id=f"{el}{val}_{sym}_atomic")
+        yield pytest.param(el, val, sym, "scale", {}, None, id=f"{el}{val}_{sym}_scale")
+        yield pytest.param(el, val, sym, "atomic", {}, None, id=f"{el}{val}_{sym}_atomic")
+    # near (not at) ground-level crossings, decision D-1
+    yield pytest.param("Ni", "ii", "d4h", "scale", dict(dt=1e-3, ds=1e-3), POOL, id="Niii_d4h_dtds1e-3_pool")
+    yield pytest.param("Fe", "ii", "oh", "scale", dict(soc=1e-3), POOL, id="Feii_oh_soc1e-3_pool")
 
 
-@pytest.mark.parametrize("element,valence,sym,mode", list(_cases()))
-def test_from_scratch_autograd_matches_finite_difference(element, valence, sym, mode):
+@pytest.mark.parametrize("element,valence,sym,mode,shift,sticks", list(_cases()))
+def test_from_scratch_autograd_matches_finite_difference(element, valence, sym, mode, shift, sticks):
     base = dict(CF[sym])
     if mode == "scale":
         base.update(slater=0.8, soc=1.0)
     else:
         base.update(_atomic_at(element, valence, sym))
+    base.update(shift)
     nbins = GRIDS[(element, valence)]["nbins"]
     w = torch.linspace(0.5, 1.5, nbins, dtype=DTYPE)
-    loss_of = lambda p: (w * _spectrum(element, valence, sym, p)).sum()
+    loss_of = lambda p: (w * _spectrum(element, valence, sym, p, sticks)).sum()
     scale = float(loss_of(base))
 
     leaves = {k: torch.tensor(float(v), dtype=DTYPE, requires_grad=True) for k, v in base.items()}

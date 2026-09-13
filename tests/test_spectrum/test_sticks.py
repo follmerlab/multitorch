@@ -121,3 +121,27 @@ def test_get_sticks_thermal_redistribution_with_max_gs_pool(nid8ct_ban):
         f"Thermal redistribution invisible: I(10K)={int_low:.4f}, "
         f"I(5000K)={int_high:.4f} — Boltzmann weighting may be broken."
     )
+
+
+def test_boltzmann_weights_are_unnormalised_pyctm_convention():
+    """Decision D-1 (docs/DEVELOPMENT_PLAN_2026-09.md): weight = exp((E_min − E_g)/kT), no 1/Z.
+
+    Analytic oracle on a two-level ground manifold. This test is meant to fail
+    if the convention is changed; update D-1 and the parity tests together.
+    """
+    import math
+    from types import SimpleNamespace
+    from multitorch._constants import DTYPE, K_B_FLOAT
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    gap, T = 0.01, 300.0
+    triad = SimpleNamespace(
+        Eg=torch.tensor([0.0, gap], dtype=DTYPE),
+        Ef=torch.tensor([10.0], dtype=DTYPE),
+        T=torch.tensor([[1.0], [1.0]], dtype=DTYPE),
+    )
+    E, M, _ = get_sticks_from_banresult(SimpleNamespace(triads=[triad]), T=T, max_gs=2)
+    lower, upper = M[(E - 10.0).abs().argmin()], M[(E - (10.0 - gap)).abs().argmin()]
+    assert lower.item() == 1.0                     # lowest level: weight exactly 1
+    assert upper.item() == pytest.approx(math.exp(-gap / (K_B_FLOAT * T)), rel=1e-12)
+    assert M.sum().item() > 1.0                    # not normalised by Z

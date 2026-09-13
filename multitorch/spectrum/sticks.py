@@ -48,6 +48,14 @@ def get_sticks(
         ``max_gs=10, T=300`` is the recommended way to enable physical
         thermal redistribution at room temperature for systems with a
         low-lying multiplet ladder.
+
+        **Weight convention (decision D-1, docs/DEVELOPMENT_PLAN_2026-09.md).**
+        Weights are ``exp((E_min − E_g)/kT)``, *not* divided by the partition
+        function, as in pyctm. Total intensity therefore varies with the
+        pool, and the spectrum has a kink (one-sided derivatives) wherever the
+        lowest ground level changes branch, e.g. D4h at dt = ds = 0 or ζ = 0.
+        Gradients are reliable only away from such exact crossings. Kept for
+        pyctm/Fortran parity; to be revisited.
     device : str
         PyTorch device string ('cpu', 'cuda:0', etc.)
 
@@ -173,6 +181,8 @@ def get_sticks_from_banresult(
         Temperature in Kelvin (0 = no Boltzmann weighting).
     max_gs : int
         Number of lowest distinct ground-state energies to keep.
+        Boltzmann weights are unnormalised (pyctm convention, decision D-1):
+        see :func:`get_sticks` for the consequences for gradients.
     device : str
         PyTorch device.
 
