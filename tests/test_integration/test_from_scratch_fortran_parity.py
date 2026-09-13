@@ -94,3 +94,37 @@ def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, 
     p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
     assert p.cosine > 0.99999, p
     assert p.area_ratio == pytest.approx(1.0, abs=1e-5), p
+
+
+@pytest.mark.parametrize("sym", ["oh", "d4h"])
+@pytest.mark.parametrize("name,element,valence,n,tendq", IONS, ids=[i[0] for i in IONS])
+def test_from_scratch_cache_with_fortran_atomic_overrides(name, element, valence, n, tendq, sym):
+    """WP-A6: preload_from_scratch + calcXAS_cached, every integral an ``atomic`` override.
+
+    slater = soc = 0 so nothing comes from HFS; the overrides are the fixture's
+    ttrcg parameters under their shell-letter aliases. Same Fortran oracle and
+    tolerances as above, through the public cached API.
+    """
+    from multitorch.api.calc import calcXAS_cached, preload_from_scratch
+
+    res_f = _run_phase5_pipeline(element, valence, "oh", "l", {"tendq": tendq},
+                                 slater=0.8, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
+    Ef, Mf = _bright(*get_sticks_from_banresult(res_f, **POOL)[:2])
+
+    dec = load_hamiltonian_decomposition(REFDATA / name / f"{name}.rme_rcg")
+    atomic = {}
+    for label, (section, kind) in (("gs", (2, "GROUND")), ("ex", (3, "GROUND"))):
+        cfg = dec.config(section, kind)
+        atomic[label] = {alias: cfg.params[op] for alias, op in cfg.aliases().items()}
+    cache = preload_from_scratch(element, valence, sym)
+    _, _, sticks = calcXAS_cached(cache, cf={"tendq": tendq}, slater=0.0, soc=0.0, atomic=atomic,
+                                  return_sticks=True, **POOL)
+    Es, Ms = _bright(sticks[:, 0], sticks[:, 1])
+
+    ef, es = (Ef - Ef.min()).numpy(), (Es - Es.min()).numpy()
+    mf, ms = Mf.numpy(), Ms.numpy()
+    assert ms.sum() == pytest.approx(mf.sum(), rel=2e-5)
+    for e in ef[mf > 1e-4 * mf.sum()]:
+        near_s, near_f = np.abs(es - e) < 2e-5, np.abs(ef - e) < 2e-5
+        assert near_s.any(), e
+        assert abs(ms[near_s].sum() - mf[near_f].sum()) < 2e-5 * mf.sum(), e

@@ -822,7 +822,7 @@ def test_d4h_collapses_to_oh_when_dt_ds_zero():
     from multitorch.api.calc import calcXAS_from_scratch
 
     x_oh, y_oh = calcXAS_from_scratch(
-        "Ni", "ii", sym="oh", cf={"10dq": 1.0},
+        "Ni", "ii", sym="oh", cf={"tendq": 1.0},
     )
     x_d4h, y_d4h = calcXAS_from_scratch(
         "Ni", "ii", sym="d4h",

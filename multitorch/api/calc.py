@@ -88,7 +88,11 @@ class CachedFixture:
     cowan_template : list of list of torch.Tensor
         Parsed COWAN store matrices (template before rebuild).
     cowan_metadata : list of list of CowanBlockMeta
-        Block metadata for each COWAN store matrix.
+        Block metadata for each COWAN store matrix (``None`` from scratch).
+    source : {'fixture', 'scratch'}
+        ``'scratch'`` for :func:`preload_from_scratch`: no plan/metadata, the
+        decomposition's references are HFS values, the BAN has no charge
+        transfer and its crystal field is Ballhausen 10Dq/Dt/Ds directly.
     """
     ban: object          # BanData
     decomposition: object  # HamiltonianDecomposition
@@ -102,6 +106,59 @@ class CachedFixture:
     element: Optional[str] = None
     valence: Optional[str] = None
     sym: Optional[str] = None
+    source: str = "fixture"
+
+
+def preload_from_scratch(
+    element: str,
+    valence: str,
+    sym: str = "oh",
+    zeta_method: str = "blume_watson",
+) -> CachedFixture:
+    """From-scratch counterpart of :func:`preload_fixture` (no Fortran files).
+
+    Runs HFS (cached per ion) and the angular generator once; the result
+    drives :func:`calcXAS_cached` and :func:`calcXAS_batch` exactly like a
+    fixture cache, with ``slater``/``soc`` relative to the HFS values and
+    ``atomic`` overrides keyed ``'gs'`` / ``'ex'``. Charge-transfer arguments
+    raise (single configuration). ``calcXAS_from_scratch`` is this cache
+    plus :func:`calcXAS_cached`.
+    """
+    rac, template, dec = _from_scratch_structure(element, valence, sym, zeta_method)
+    return CachedFixture(
+        ban=_build_ban_from_rac(rac, sym=sym),
+        decomposition=dec,
+        rac=rac,
+        plan=None,
+        cowan_template=template,
+        cowan_metadata=None,
+        element=element,
+        valence=valence,
+        sym=sym,
+        source="scratch",
+    )
+
+
+def _cache_ban(cache: CachedFixture, cf, delta, u, lmct, mlct):
+    """BanData for one evaluation: fixture template with overrides, or the from-scratch XHAM."""
+    import copy
+    from multitorch.hamiltonian.build_ban import modify_ban_params
+    from multitorch.io.read_ban import XHAMEntry
+
+    cf = cf or {}
+    if cache.source != "scratch":
+        return modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
+    if any(x is not None for x in (delta, u, lmct, mlct)):
+        raise ValueError("from-scratch caches are single-configuration: delta/u/lmct/mlct are not supported")
+    unknown = set(cf) - {"tendq", "dt", "ds"}
+    if unknown:
+        raise ValueError(f"unknown crystal-field keys {sorted(unknown)}")
+    ban = copy.copy(cache.ban)
+    values = [1.0, cf.get("tendq", 1.0)]
+    if cache.sym == "d4h":
+        values += [cf.get("dt", 0.0), cf.get("ds", 0.0)]
+    ban.xham = [XHAMEntry(values=values, combos=list(cache.ban.xham[0].combos))]
+    return ban
 
 
 def preload_fixture(
@@ -184,6 +241,7 @@ def calcXAS_cached(
     xmin=None, xmax=None, nbins: int = 2000,
     return_sticks: bool = False,
     device: str = "cpu",
+    atomic: Optional[dict] = None,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor],
            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Calculate XAS from a pre-loaded fixture cache (no file I/O).
@@ -201,32 +259,32 @@ def calcXAS_cached(
     Parameters
     ----------
     cache : CachedFixture
-        Pre-parsed fixture data from :func:`preload_fixture`.
+        From :func:`preload_fixture` or :func:`preload_from_scratch`.
     cf : dict, optional
-        Crystal-field parameters (same as ``calcXAS``).
+        Crystal-field parameters (same as ``calcXAS``). From scratch,
+        missing keys default to 10Dq = 1, Dt = Ds = 0.
     slater, soc : float or torch.Tensor
         Absolute Slater / spin-orbit reductions (fractions of the
         Hartree-Fock values; supports ``requires_grad=True``).
     delta, u, lmct, mlct : float, optional
-        Charge-transfer parameters.
+        Charge-transfer parameters (fixture caches only).
     T, beam_fwhm, gamma1, gamma2, med_energy, max_gs, broaden_mode,
     xmin, xmax, nbins, return_sticks, device
         Same as ``calcXAS``.
+    atomic : dict, optional
+        Absolute per-parameter overrides by configuration label (see
+        ``calcXAS_from_scratch``; fixture labels are ``'<section>.GROUND'`` /
+        ``'<section>.EXCITE'``).
 
     Returns
     -------
     (x, y) or (x, y, sticks)
         Same as ``calcXAS``.
     """
-    import copy
     from multitorch.device_utils import suggest_device_for_xas
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
-    from multitorch.hamiltonian.build_ban import modify_ban_params
-    from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
+    from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
     from multitorch.spectrum.sticks import get_sticks_from_banresult
-
-    if cf is None:
-        cf = {}
 
     # Resolve device='auto' via the cache's element/valence stamp.
     if device == "auto":
@@ -235,15 +293,13 @@ def calcXAS_cached(
         )
 
     # Apply parameter overrides to a copy of the cached BAN
-    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
+    ban = _cache_ban(cache, cf, delta, u, lmct, mlct)
 
-    # Build COWAN store from cached template + decomposition (no file I/O)
-    cowan = build_cowan_store_in_memory(
-        cache.plan, slater=slater, soc=soc,
-        cowan_template=cache.cowan_template,
-        cowan_metadata=cache.cowan_metadata,
-        decomposition=cache.decomposition,
-        device=device,
+    # COWAN store from the cached template + decomposition (no file I/O;
+    # layout validated at preload)
+    cowan = rebuild_hamiltonian_store(
+        cache.cowan_template, cache.decomposition,
+        slater=slater, soc=soc, atomic=atomic, device=device,
     )
 
     # Assemble and diagonalize
@@ -293,6 +349,7 @@ def calcXAS_batch(
     broaden_mode: str = "legacy",
     xmin=None, xmax=None, nbins: int = 2000,
     device=None,
+    atomic: Optional[dict] = None,
 ) -> torch.Tensor:
     """Batch calculate N XAS spectra with different (slater, soc) parameters.
     
@@ -309,7 +366,7 @@ def calcXAS_batch(
     Parameters
     ----------
     cache : CachedFixture
-        Pre-loaded fixture from :func:`preload_fixture`.
+        From :func:`preload_fixture` or :func:`preload_from_scratch`.
     slater_values : torch.Tensor, shape (N,)
         Absolute Slater reductions (one per spectrum).
         If ``requires_grad=True``, per-spectrum gradients preserved.
@@ -379,10 +436,8 @@ def calcXAS_batch(
     Crystal-field parameters (cf) are applied uniformly across the batch.
     For per-spectrum CF variation, batch over cf externally and stack results.
     """
-    import copy
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
-    from multitorch.hamiltonian.build_ban import modify_ban_params
-    from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory_batch
+    from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
     from multitorch.spectrum.sticks import get_sticks_from_banresult
     
     # Validate inputs
@@ -410,20 +465,14 @@ def calcXAS_batch(
     slater_values = slater_values.to(device=device)
     soc_values = soc_values.to(device=device)
     
-    if cf is None:
-        cf = {}
-    
     # Apply parameter overrides (same for all spectra)
-    ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
+    ban = _cache_ban(cache, cf, delta, u, lmct, mlct)
     
     # Batch COWAN rebuild: every HAMILTONIAN block becomes (N, dim, dim)
     # from the shared decomposition.
-    cowan_batch = build_cowan_store_in_memory_batch(
-        cache.plan, slater_values=slater_values, soc_values=soc_values,
-        cowan_template=cache.cowan_template,
-        cowan_metadata=cache.cowan_metadata,
-        decomposition=cache.decomposition,
-        device=device,
+    cowan_batch = rebuild_hamiltonian_store(
+        cache.cowan_template, cache.decomposition,
+        slater=slater_values, soc=soc_values, atomic=atomic, device=device,
     )
     
     # Pass 1 — diagonalize and extract sticks for every sample.
@@ -1218,49 +1267,16 @@ def calcXAS_from_scratch(
         Absorption intensity.
     sticks : torch.Tensor  shape (N, 2)  (only if return_sticks=True)
     """
-    from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
-    from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
-    from multitorch.spectrum.sticks import get_sticks_from_banresult
-
-    # Steps 1-3: HFS constants + parameter-free angular structure, then the
+    # HFS constants + parameter-free angular structure (preload), then the
     # parameter-linear contraction H = Σ p_i O_i (p_i = HFS_i × slater|soc or
     # an `atomic` override; tensors keep their gradients).
-    rac, template, dec = _from_scratch_structure(element, valence, sym, zeta_method)
-    cowan = rebuild_hamiltonian_store(template, dec, slater=slater, soc=soc, atomic=atomic, device=device)
-
-    # Step 4: Build BanData from RAC (D4h carries 4 XHAM operators).
-    tendq = cf.get('tendq', 1.0)
-    dt = cf.get('dt', 0.0)
-    ds = cf.get('ds', 0.0)
-    ban = _build_ban_from_rac(rac, tendq=tendq, dt=dt, ds=ds, sym=sym)
-
-    # Step 5: Assemble and diagonalize
-    result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
-
-    # Step 6: Extract stick spectrum
-    E_sticks, M_sticks, _ = get_sticks_from_banresult(
-        result, T=T, max_gs=max_gs, device=device,
+    cache = preload_from_scratch(element, valence, sym, zeta_method)
+    return calcXAS_cached(
+        cache, cf=cf, slater=slater, soc=soc, T=T, beam_fwhm=beam_fwhm,
+        gamma1=gamma1, gamma2=gamma2, med_energy=med_energy, max_gs=max_gs,
+        broaden_mode=broaden_mode, xmin=xmin, xmax=xmax, nbins=nbins,
+        return_sticks=return_sticks, device=device, atomic=atomic,
     )
-
-    if E_sticks.numel() == 0:
-        raise ValueError(
-            f"No transitions found for {element} {valence}"
-        )
-
-    # Step 7: Broaden
-    xmin, xmax, med = _stick_window(E_sticks, M_sticks, xmin, xmax, med_energy)
-    x = torch.linspace(xmin, xmax, nbins, dtype=DTYPE, device=device)
-
-    y = pseudo_voigt(
-        x, E_sticks, M_sticks,
-        fwhm_g=beam_fwhm, fwhm_l=gamma1, fwhm_l2=gamma2,
-        med_energy=med, mode=broaden_mode,
-    )
-
-    if return_sticks:
-        sticks = torch.stack([E_sticks, M_sticks], dim=1)
-        return x, y, sticks
-    return x, y
 
 
 def calcXES(
