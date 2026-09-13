@@ -1,67 +1,59 @@
 """
-In-memory COWAN store builder for the Track C Phase 5 pipeline (C3e).
+In-memory COWAN store builder for the fixture (Phase 5) pipeline.
 
 Scope and approach
 ------------------
-This module uses a **loader-builder hybrid** to produce a COWAN store
-(``List[List[torch.Tensor]]``) that matches the parsed ``.rme_rcg`` fixture
-element-wise at ``atol=0`` when scales are 1.0, while allowing autograd-
-carrying gradient flow through ``slater_scale`` and ``soc_scale``.
+A fixture ``.rme_rcg`` store is Fortran ttrcg output for one fixed set of
+atomic parameters. Every HAMILTONIAN block in it is linear in those
+parameters (all energies in eV)::
 
-The strategy:
+    H(J) = E_av·sqrt(2J+1)·I + Σ F^k·O_F^k(J) + Σ G^k·O_G^k(J) + Σ ζ_i·O_ζi(J)
 
-  1. Parse the template COWAN store from the ``.rme_rcg`` fixture.
-  2. For **single-shell config-1 HAMILTONIAN blocks** in the ground-state
-     manifold (section 2): decompose into Coulomb + spin-orbit, then
-     rebuild with autograd-carrying scaled atomic parameters.
-  3. For **everything else** (SHELL1, SPIN1, MULTIPOLE, TRANSI blocks,
-     config-2 HAMILTONIAN, excited-manifold HAMILTONIAN): pass through
-     from the template as constants.
+with parameter-free operators O in the Fortran basis
+(:func:`~multitorch.angular.cowan_operators.configuration_operators`). This
+module decomposes every HAMILTONIAN block of the store onto those operators by
+a joint least-squares fit over all J of a configuration, asserts the fit is
+exact (elementwise residual ≤ 1e-5·max(1, |H|)), and rebuilds the blocks with
 
-This is sufficient for the C3f autograd test because the ground-state
-eigenvalues ``Eg`` flow through the section-2 Hamiltonian, and the
-config-1 d^N HAMILTONIAN blocks are one of the dominant diagonal
-contributions.
+    F^k, G^k  →  F^k · slater / slater_reduction
+    ζ_i       →  ζ_i · soc / soc_reduction
 
-Why decomposition is algebraically exact at scale=1
-----------------------------------------------------
-Let the parsed HAMILTONIAN block be ``H``, and let ``F^k``, ``ζ`` be
-*any* approximate parameter values (possibly rounded).
+anchored on the fixture block itself::
 
-Define::
+    H(J) = H_fixture(J) + (a − 1)·S(J) + (b − 1)·Z(J),
+    a = slater / slater_reduction,  b = soc / soc_reduction,
 
-    V(11) := (H - Σ_k F^k × SHELL_k) / ζ
+with S = Σ F^k O_F + Σ G^k O_G and Z = Σ ζ_i O_ζi from the fit. At the
+fixture's own reduction the store is returned unchanged (bit-exact parity with
+the Fortran chain); elsewhere it differs from E_av + a·S + b·Z only by the fit
+residual, i.e. Fortran print noise. ``slater_reduction`` is the reduction the
+fixture was generated at (0.8 for every bundled fixture except
+``nid8ct_ems``), so ``slater`` and ``soc`` are absolute: fractions of the
+Hartree-Fock values, as in pyctm and CTM4XAS. E_av is a constant of the fixture (pyctm fixes it; Δ enters via the
+BAN EG/EF offsets). All non-HAMILTONIAN blocks pass through unchanged.
 
-Then the rebuild at scale=1 is::
+The configurations of each section are read from the ``%P06  D08  D10`` header
+lines (GROUND first, EXCITE second); shell order is whatever the fixture used
+(core-first for pyctm, valence-first for parts of ``nid8ct``). No
+``.rcn31_out`` is needed.
 
-    H_new = Σ_k F^k × SHELL_k + ζ × V(11)
-          = Σ_k F^k × SHELL_k + H - Σ_k F^k × SHELL_k
-          = H
-
-This algebraic cancellation holds regardless of parameter accuracy.
-Only floating-point rounding (~1e-14) introduces error.
-
-When ``slater_scale ≠ 1`` or ``soc_scale ≠ 1``, the rebuild mixes the
-Coulomb and SOC contributions with the user-supplied scale factors,
-and autograd flows through both.
-
-Extension point
----------------
-To decompose config-2 or excited-manifold HAMILTONIAN blocks in the
-future, add cases in :func:`_classify_for_rebuild` and supply the
-appropriate shell-pair and ζ-shell labels.
+Precision: pyctm rounds every RCG input parameter to 3 decimals, so a fixture
+rebuilt at a different ``slater`` agrees with a Fortran run at that reduction
+only to the propagated rounding (≈1e-3 eV per parameter), not to 1e-6.
 """
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Optional, Tuple
 
+import numpy as np
 import torch
 
-from multitorch._constants import DTYPE, RY_TO_EV
-from multitorch.atomic.parameter_fixtures import AtomicParams, ConfigParams
-from multitorch.atomic.scaled_params import ScaledAtomicParams, ScaledConfigParams
+from multitorch._constants import DTYPE
+from multitorch.angular.cowan_operators import Shell, configuration_operators
 from multitorch.hamiltonian.build_rac import SectionPlan
 from multitorch.io.read_rme import read_cowan_store
 
@@ -82,7 +74,7 @@ class CowanBlockMeta:
 
     block_type: str  # GROUND, EXCITE, TRANSITION
     operator: str    # HAMILTONIAN, SHELL1, SPIN1, MULTIPOLE
-    bra_sym: str     # e.g. '0+', '1-', '^0+'
+    bra_sym: str     # e.g. '0+', '1-', 's0+' (J = 1/2)
     op_sym: str      # e.g. '0+', '1+', '2+', '4+'
     ket_sym: str     # e.g. '0+', '1-'
 
@@ -142,490 +134,398 @@ def read_cowan_metadata(path: str | Path) -> List[List[CowanBlockMeta]]:
     return sections
 
 
-# ─────────────────────────────────────────────────────────────
-# Internal helpers for HAMILTONIAN decomposition
-# ─────────────────────────────────────────────────────────────
+_CONFIG_LINE = re.compile(r"^%\s*(?:[SPDFGH]\s?\d{1,2}\s*)+$")
+_SHELL_TOKEN = re.compile(r"([SPDFGH])\s?(\d{1,2})")
+_L_OF = {"S": 0, "P": 1, "D": 2, "F": 3, "G": 4, "H": 5}
 
 
-def _find_shell_diagonals(
-    section_meta: List[CowanBlockMeta],
-    section_mats: List[torch.Tensor],
+def read_cowan_configurations(path: str | Path) -> List[Dict[str, Tuple[Shell, ...]]]:
+    """Open shells of the GROUND and EXCITE configuration of every section.
+
+    Each FINISHED-delimited section of a ttrcg store starts with two
+    configuration lines such as ``%P06  D08  D10`` (ground) and
+    ``%P05  D09  D10`` (excited). Returns ``[{'GROUND': shells, 'EXCITE': shells}, ...]``
+    with ``shells`` the open ``(l, n)`` in file order; closed and empty shells
+    are dropped because they do not enter the coupling.
+    """
+    sections: List[Dict[str, Tuple[Shell, ...]]] = []
+    current: List[Tuple[Shell, ...]] = []
+
+    def close():
+        if len(current) != 2:
+            raise ValueError(
+                f"{path}: section {len(sections)} has {len(current)} configuration "
+                f"lines, expected 2"
+            )
+        sections.append({"GROUND": current[0], "EXCITE": current[1]})
+
+    with open(path) as f:
+        for raw in f:
+            line = raw.strip()
+            if line == "FINISHED":
+                close()
+                current = []
+            elif _CONFIG_LINE.match(line):
+                shells = []
+                for letter, n in _SHELL_TOKEN.findall(line[1:]):
+                    l, n = _L_OF[letter], int(n)
+                    if 0 < n < 4 * l + 2:
+                        shells.append((l, n))
+                current.append(tuple(shells))
+    if current:
+        close()
+    return sections
+
+
+def j_value(sym: str) -> float:
+    """J of a store symmetry label: ``'2+'`` → 2, ``'s0+'`` → 1/2, ``'s3-'`` → 7/2."""
+    s = sym.lstrip("^").rstrip("+-")
+    return int(s[1:]) + 0.5 if s.startswith("s") else float(int(s))
+
+
+# ─────────────────────────────────────────────────────────────
+# Fixture metadata
+# ─────────────────────────────────────────────────────────────
+
+# Slater reduction each bundled fixture was generated at (store stem → factor).
+# pyctm Oh fixtures: verified against Fortran reruns at 1.0 and 0.8
+# (/data/ahf/multitorch/fixtures/oracle_oh8). ttmult examples: inferred from the
+# fitted F²(3d,3d) = 9.7872 eV against the HF value 12.2341 eV of
+# nid8.rcn31_out (ttrcg applies the reduction internally; nid8ct's G³ sits at
+# 64%, so only the relative rescale is uniform there). nid8ct_ems fits the
+# unreduced HF values.
+FIXTURE_SLATER_REDUCTION: Dict[str, float] = {
+    "ti4_d0_oh": 0.8, "v3_d2_oh": 0.8, "cr3_d3_oh": 0.8, "mn2_d5_oh": 0.8,
+    "fe3_d5_oh": 0.8, "fe2_d6_oh": 0.8, "co2_d7_oh": 0.8, "ni2_d8_oh": 0.8,
+    "nid8": 0.8, "nid8ct": 0.8, "als1ni2": 0.8, "nid8ct_ems": 1.0,
+}
+FIXTURE_SOC_REDUCTION_DEFAULT = 1.0
+
+
+def fixture_slater_reduction(rcg_path: str | Path) -> float:
+    stem = Path(rcg_path).stem
+    try:
+        return FIXTURE_SLATER_REDUCTION[stem]
+    except KeyError:
+        raise KeyError(
+            f"No slater_reduction recorded for fixture '{stem}'. Pass "
+            f"slater_reduction explicitly (the reduction the store was "
+            f"generated at)."
+        ) from None
+
+
+# ─────────────────────────────────────────────────────────────
+# Exact decomposition of HAMILTONIAN blocks
+# ─────────────────────────────────────────────────────────────
+
+RESIDUAL_REL_TOL = 1e-5
+
+
+@dataclass
+class ConfigDecomposition:
+    """One configuration's HAMILTONIAN blocks split into Slater and spin-orbit parts.
+
+    ``fixture[J] ≈ E_av·sqrt(2J+1)·I + slater_part[J] + soc_part[J]`` to
+    ``max_residual`` (relative, elementwise); rebuilt as
+    ``fixture[J] + (a−1)·slater_part[J] + (b−1)·soc_part[J]``.
+    """
+
+    section: int
+    block_type: str
+    shells: Tuple[Shell, ...]
+    block_index: Dict[float, int]
+    e_av: float
+    params: Dict[str, float]
+    max_residual: float
+    fixture: Dict[float, torch.Tensor]
+    slater_part: Dict[float, torch.Tensor]
+    soc_part: Dict[float, torch.Tensor]
+
+
+@dataclass
+class HamiltonianDecomposition:
+    configs: List[ConfigDecomposition]
+    slater_reduction: float
+    soc_reduction: float = FIXTURE_SOC_REDUCTION_DEFAULT
+
+    def config(self, section: int, block_type: str) -> ConfigDecomposition:
+        for c in self.configs:
+            if c.section == section and c.block_type == block_type:
+                return c
+        raise KeyError((section, block_type))
+
+
+def _decompose_config(
+    section: int,
     block_type: str,
-    j_sym: str,
-) -> Dict[int, torch.Tensor]:
-    """Find diagonal SHELL blocks for a given config and J symmetry.
+    shells: Tuple[Shell, ...],
+    blocks: Dict[float, Tuple[int, np.ndarray]],
+    rel_tol: float,
+) -> ConfigDecomposition:
+    ops = configuration_operators(shells)
+    for J, (_, M) in blocks.items():
+        if ops.dims.get(J) != M.shape[0]:
+            raise ValueError(
+                f"section {section} {block_type} {shells}: J={J} block has dim "
+                f"{M.shape[0]}, operators give {ops.dims.get(J)}"
+            )
+    names = [n for n in ops.blocks
+             if any(np.abs(ops.blocks[n][J]).max() > 1e-12 for J in blocks)]
 
-    Matches any ``SHELLn`` operator (SHELL1, SHELL2, etc.) — the suffix
-    number refers to the shell index within the Cowan configuration, which
-    varies between fixtures (nid8ct uses SHELL1 for the 3d shell, while
-    the Oh series uses SHELL2).
+    cols: Dict[str, List[np.ndarray]] = {n: [] for n in ["E_av"] + names}
+    y: List[np.ndarray] = []
+    for J, (_, M) in blocks.items():
+        iu = np.triu_indices(M.shape[0])
+        y.append(M[iu])
+        cols["E_av"].append(np.full(len(iu[0]), math.sqrt(2 * J + 1)) * (iu[0] == iu[1]))
+        for n in names:
+            cols[n].append(ops.blocks[n][J][iu])
+    A = np.stack([np.concatenate(c) for c in cols.values()], axis=1)
+    rhs = np.concatenate(y)
+    coef, *_ = np.linalg.lstsq(A, rhs, rcond=None)
+    params = dict(zip(cols, (float(c) for c in coef)))
 
-    Parameters
-    ----------
-    section_meta, section_mats : aligned metadata and matrices for one section.
-    block_type : the target block_type (e.g. ``'GROUND'``).
-    j_sym : the target symmetry label (e.g. ``'2+'``).
+    fixture, s_part, z_part = {}, {}, {}
+    worst = 0.0
+    for J, (_, M) in blocks.items():
+        d = M.shape[0]
+        b = params["E_av"] * math.sqrt(2 * J + 1) * np.eye(d)
+        s = sum((params[n] * ops.blocks[n][J] for n in names if not ops.is_soc(n)), np.zeros((d, d)))
+        z = sum((params[n] * ops.blocks[n][J] for n in names if ops.is_soc(n)), np.zeros((d, d)))
+        rel = np.abs(b + s + z - M) / np.maximum(1.0, np.abs(M))
+        worst = max(worst, float(rel.max()))
+        fixture[J] = torch.as_tensor(M, dtype=DTYPE)
+        s_part[J] = torch.as_tensor(s, dtype=DTYPE)
+        z_part[J] = torch.as_tensor(z, dtype=DTYPE)
+    if worst > rel_tol:
+        raise ValueError(
+            f"HAMILTONIAN blocks of section {section} {block_type} {shells} are "
+            f"not a combination of the configuration operators: max relative "
+            f"residual {worst:.2e} > {rel_tol:.0e} (params {params})"
+        )
+    return ConfigDecomposition(
+        section=section, block_type=block_type, shells=shells,
+        block_index={J: idx for J, (idx, _) in blocks.items()},
+        e_av=params.pop("E_av"), params=params, max_residual=worst,
+        fixture=fixture, slater_part=s_part, soc_part=z_part,
+    )
 
-    Returns
-    -------
-    dict mapping rank ``k`` (0, 2, 4, ...) to the SHELL tensor.
+
+def decompose_cowan_hamiltonians(
+    cowan_template: List[List[torch.Tensor]],
+    cowan_metadata: List[List[CowanBlockMeta]],
+    configurations: List[Dict[str, Tuple[Shell, ...]]],
+    *,
+    slater_reduction: float,
+    soc_reduction: float = FIXTURE_SOC_REDUCTION_DEFAULT,
+    rel_tol: float = RESIDUAL_REL_TOL,
+) -> HamiltonianDecomposition:
+    """Decompose every HAMILTONIAN block of a store onto the configuration operators.
+
+    Raises ``ValueError`` if any configuration's blocks are not reproduced to
+    ``rel_tol`` (elementwise, relative to max(1, |H|)): the floor observed on
+    the bundled fixtures is ≤ 3e-6, set by Fortran's print precision on
+    diagonals up to ~100 eV (E_av·sqrt(2J+1)).
     """
-    result: Dict[int, torch.Tensor] = {}
-    for idx, m in enumerate(section_meta):
-        if (m.operator.startswith("SHELL")
-                and m.block_type == block_type
-                and m.bra_sym == j_sym
-                and m.ket_sym == j_sym):
-            k = int(m.op_sym.rstrip("+-"))
-            result[k] = section_mats[idx]
-    return result
+    if len(configurations) != len(cowan_template):
+        raise ValueError(
+            f"{len(configurations)} configuration headers for "
+            f"{len(cowan_template)} store sections"
+        )
+    configs: List[ConfigDecomposition] = []
+    for s, (mats, meta) in enumerate(zip(cowan_template, cowan_metadata)):
+        for kind in ("GROUND", "EXCITE"):
+            blocks = {
+                j_value(m.bra_sym): (j, mats[j].detach().cpu().numpy().astype(np.float64))
+                for j, m in enumerate(meta)
+                if m.operator == "HAMILTONIAN" and m.block_type == kind
+            }
+            if blocks:
+                configs.append(_decompose_config(s, kind, configurations[s][kind], blocks, rel_tol))
+    return HamiltonianDecomposition(configs, float(slater_reduction), float(soc_reduction))
 
 
-def _rebuild_hamiltonian_block(
-    h_parsed: torch.Tensor,
-    shell_blocks: Dict[int, torch.Tensor],
-    raw_cfg: ConfigParams,
-    scaled_cfg: ScaledConfigParams,
-    shell_pair: Tuple[str, str],
-    zeta_shell: str,
-) -> torch.Tensor:
-    """Decompose one HAMILTONIAN block and rebuild with autograd params.
+_DECOMPOSITION_CACHE: Dict[Tuple[str, int, float, float], HamiltonianDecomposition] = {}
 
-    Steps:
 
-    1. Compute Coulomb contribution using raw (plain-float) params::
-
-           H_coulomb = Σ_k F^k_raw_eV × SHELL_k(J,J)
-
-    2. Extract V(11) (spin-orbit + average-energy residual)::
-
-           V(11) = (H_parsed - H_coulomb) / ζ_raw_eV
-
-    3. Rebuild with scaled (autograd-carrying) params::
-
-           H_new = Σ_k (scaled_F^k × RY_TO_EV) × SHELL_k + (scaled_ζ × RY_TO_EV) × V(11)
-
-    At scale=1.0, the raw and scaled params are identical, so
-    ``H_new == H_parsed`` algebraically (up to ~1e-14 from IEEE 754).
-    """
-    a, b = shell_pair
-    ry_to_ev = float(RY_TO_EV)
-
-    # ── Step 1: Coulomb with raw params ──────────────────────
-    h_coulomb_raw = torch.zeros_like(h_parsed)
-    for k, shell_mat in shell_blocks.items():
-        fk_raw_ev = raw_cfg.f(a, b, k) * ry_to_ev
-        h_coulomb_raw = h_coulomb_raw + fk_raw_ev * shell_mat
-
-    # ── Step 2: Extract V(11) ────────────────────────────────
-    zeta_raw_ev = raw_cfg.zeta(zeta_shell) * ry_to_ev
-    v11 = (h_parsed - h_coulomb_raw) / zeta_raw_ev
-
-    # ── Step 3: Rebuild with scaled params ───────────────────
-    h_new = torch.zeros_like(h_parsed)
-    for k, shell_mat in shell_blocks.items():
-        fk_scaled_ev = scaled_cfg.f(a, b, k) * ry_to_ev  # tensor × float
-        h_new = h_new + fk_scaled_ev * shell_mat
-
-    zeta_scaled_ev = scaled_cfg.z(zeta_shell) * ry_to_ev  # tensor × float
-    h_new = h_new + zeta_scaled_ev * v11
-
-    return h_new
+def load_hamiltonian_decomposition(
+    rcg_path: str | Path,
+    *,
+    cowan_template: Optional[List[List[torch.Tensor]]] = None,
+    cowan_metadata: Optional[List[List[CowanBlockMeta]]] = None,
+    slater_reduction: Optional[float] = None,
+    soc_reduction: float = FIXTURE_SOC_REDUCTION_DEFAULT,
+) -> HamiltonianDecomposition:
+    """Cached :func:`decompose_cowan_hamiltonians` for a ``.rme_rcg`` file."""
+    rcg_path = Path(rcg_path).resolve()
+    if slater_reduction is None:
+        slater_reduction = fixture_slater_reduction(rcg_path)
+    key = (str(rcg_path), rcg_path.stat().st_mtime_ns, float(slater_reduction), float(soc_reduction))
+    if key not in _DECOMPOSITION_CACHE:
+        template = cowan_template if cowan_template is not None else read_cowan_store(rcg_path)
+        meta = cowan_metadata if cowan_metadata is not None else read_cowan_metadata(rcg_path)
+        _DECOMPOSITION_CACHE[key] = decompose_cowan_hamiltonians(
+            template, meta, read_cowan_configurations(rcg_path),
+            slater_reduction=slater_reduction, soc_reduction=soc_reduction,
+        )
+    return _DECOMPOSITION_CACHE[key]
 
 
 # ─────────────────────────────────────────────────────────────
-# Public entry point
+# Public entry points
 # ─────────────────────────────────────────────────────────────
+
+
+def _as_scale(x, device) -> torch.Tensor:
+    if isinstance(x, torch.Tensor):
+        return x.to(dtype=DTYPE, device=device)
+    return torch.as_tensor(float(x), dtype=DTYPE, device=device)
+
+
+def _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition):
+    if cowan_template is not None and cowan_metadata is not None:
+        template, meta = cowan_template, cowan_metadata
+    elif source_rcg_path is not None:
+        template = read_cowan_store(source_rcg_path)
+        meta = read_cowan_metadata(source_rcg_path)
+    else:
+        raise ValueError(
+            "Either source_rcg_path or (cowan_template, cowan_metadata) must be provided"
+        )
+    if decomposition is None:
+        if source_rcg_path is None:
+            raise ValueError(
+                "decomposition is required when the store is given without source_rcg_path"
+            )
+        decomposition = load_hamiltonian_decomposition(
+            source_rcg_path, cowan_template=template, cowan_metadata=meta,
+        )
+
+    if len(template) != len(meta):
+        raise ValueError(
+            f"Template has {len(template)} sections but metadata has "
+            f"{len(meta)} — the .rme_rcg file may be malformed"
+        )
+    for s in range(len(template)):
+        if len(template[s]) != len(meta[s]):
+            raise ValueError(
+                f"Section {s}: {len(template[s])} matrices vs "
+                f"{len(meta[s])} metadata entries"
+            )
+    if len(template) != plan.n_sections:
+        raise ValueError(
+            f"Template has {len(template)} sections but plan expects "
+            f"{plan.n_sections}"
+        )
+    for s in range(len(template)):
+        if len(template[s]) != plan.section_size(s):
+            raise ValueError(
+                f"Section {s}: {len(template[s])} matrices but plan "
+                f"expects {plan.section_size(s)}"
+            )
+    return template, decomposition
 
 
 def build_cowan_store_in_memory(
-    scaled_params: ScaledAtomicParams,
-    raw_params: AtomicParams,
     plan: SectionPlan,
     *,
+    slater=0.8,
+    soc=1.0,
     source_rcg_path: Optional[str | Path] = None,
     cowan_template: Optional[List[List[torch.Tensor]]] = None,
     cowan_metadata: Optional[List[List[CowanBlockMeta]]] = None,
+    decomposition: Optional[HamiltonianDecomposition] = None,
     device=None,
 ) -> List[List[torch.Tensor]]:
-    """Build a COWAN store with autograd-carrying HAMILTONIAN blocks.
+    """Build a COWAN store whose HAMILTONIAN blocks carry ``slater`` and ``soc``.
 
     Parameters
     ----------
-    scaled_params : ScaledAtomicParams
-        Atomic parameters as torch tensors, produced by
-        :func:`~multitorch.atomic.scaled_params.scale_atomic_params`.
-        If ``slater_scale`` or ``soc_scale`` are ``requires_grad=True``
-        tensors, the returned COWAN store carries an autograd graph
-        back to them (through the rebuilt HAMILTONIAN blocks).
-    raw_params : AtomicParams
-        Plain-float atomic parameters from
-        :func:`~multitorch.atomic.parameter_fixtures.read_rcn31_out_params`.
-        Used for the V(11) extraction step of the decomposition. The
-        raw values need not exactly match the ones used by Fortran to
-        build the template — the algebraic-exactness property at
-        scale=1.0 holds regardless (see module docstring).
     plan : SectionPlan
-        The section plan from :func:`~multitorch.hamiltonian.build_rac.build_rac_in_memory`.
-        Used as a cross-check on section count.
+        Section plan from :func:`~multitorch.hamiltonian.build_rac.build_rac_in_memory`
+        (cross-check on section sizes).
+    slater, soc : float or torch.Tensor
+        Absolute reductions of the Hartree-Fock Slater integrals (all F^k and
+        G^k) and spin-orbit parameters. ``slater == decomposition.slater_reduction``
+        and ``soc == decomposition.soc_reduction`` reproduce the fixture. Tensors
+        with ``requires_grad=True`` carry gradients into every HAMILTONIAN block.
     source_rcg_path : path-like, optional
-        Path to the ``.rme_rcg`` fixture. Parsed both for the template
-        matrices (``read_cowan_store``) and for block metadata
-        (``read_cowan_metadata``). Not needed if ``cowan_template`` and
-        ``cowan_metadata`` are provided.
-    cowan_template : list of list of torch.Tensor, optional
-        Pre-parsed COWAN store template. If provided together with
-        ``cowan_metadata``, skips file I/O entirely.
-    cowan_metadata : list of list of CowanBlockMeta, optional
-        Pre-parsed block metadata. Must be provided alongside
-        ``cowan_template``.
+        ``.rme_rcg`` fixture; parsed for the template, metadata and (cached)
+        decomposition when those are not supplied.
+    cowan_template, cowan_metadata : optional
+        Pre-parsed store and metadata (skip file I/O).
+    decomposition : HamiltonianDecomposition, optional
+        Pre-computed decomposition (e.g. from :func:`load_hamiltonian_decomposition`).
 
     Returns
     -------
     List[List[torch.Tensor]]
-        A COWAN store with the same shape as the template. Config-1
-        HAMILTONIAN blocks in section 2 are rebuilt with autograd;
-        all other matrices are passed through verbatim.
-
-    Notes
-    -----
-    The returned store satisfies the :class:`SectionPlan` contract:
-    ``len(result) == plan.n_sections`` and
-    ``len(result[s]) == plan.section_size(s)`` for every ``s``.
-
-    For the C3f parity test, use ``slater_scale=1.0, soc_scale=1.0``.
-    The parity is exact (``atol=0``) because the decomposition is
-    algebraically self-consistent.
+        Store with the template's layout; every HAMILTONIAN block rebuilt as
+        ``H_fixture + (slater/slater_reduction − 1)·S + (soc/soc_reduction − 1)·Z``
+        (equal to the template at the fixture's reductions), every other block
+        the template tensor itself.
     """
-    if cowan_template is not None and cowan_metadata is not None:
-        template = cowan_template
-        meta = cowan_metadata
-    elif source_rcg_path is not None:
-        source_rcg_path = Path(source_rcg_path)
-        template = read_cowan_store(source_rcg_path)
-        meta = read_cowan_metadata(source_rcg_path)
-    else:
-        raise ValueError(
-            "Either source_rcg_path or (cowan_template, cowan_metadata) "
-            "must be provided"
-        )
+    template, dec = _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition)
+    a = _as_scale(slater, device) / dec.slater_reduction - 1.0
+    b = _as_scale(soc, device) / dec.soc_reduction - 1.0
 
-    # Alignment sanity
-    if len(template) != len(meta):
-        raise ValueError(
-            f"Template has {len(template)} sections but metadata has "
-            f"{len(meta)} — the .rme_rcg file may be malformed"
-        )
-    for s in range(len(template)):
-        if len(template[s]) != len(meta[s]):
-            raise ValueError(
-                f"Section {s}: {len(template[s])} matrices vs "
-                f"{len(meta[s])} metadata entries"
+    result = [
+        [mat if device is None else mat.to(device=device) for mat in sec]
+        for sec in template
+    ]
+    for cfg in dec.configs:
+        for J, j in cfg.block_index.items():
+            result[cfg.section][j] = (
+                cfg.fixture[J].to(device=device)
+                + a * cfg.slater_part[J].to(device=device)
+                + b * cfg.soc_part[J].to(device=device)
             )
-
-    # Cross-check against SectionPlan
-    if len(template) != plan.n_sections:
-        raise ValueError(
-            f"Template has {len(template)} sections but plan expects "
-            f"{plan.n_sections}"
-        )
-    for s in range(len(template)):
-        if len(template[s]) != plan.section_size(s):
-            raise ValueError(
-                f"Section {s}: {len(template[s])} matrices but plan "
-                f"expects {plan.section_size(s)}"
-            )
-
-    # Move template tensors to target device
-    if device is not None:
-        template = [
-            [mat.to(device=device) for mat in sec]
-            for sec in template
-        ]
-
-    result: List[List[torch.Tensor]] = []
-
-    for s in range(len(template)):
-        section: List[torch.Tensor] = []
-
-        for j in range(len(template[s])):
-            m = meta[s][j]
-            mat = template[s][j]
-
-            # Only rebuild config-1 HAMILTONIAN blocks in section 2
-            # (ground manifold, single-shell d^N).
-            #
-            # Section 3 (excited manifold) config 1 is a two-shell
-            # system (2p^5 3d^(N+1)), requiring inter-shell Slater
-            # decomposition — deferred for now. Config-2 blocks are
-            # always two-shell in the CT picture. Both pass through.
-            if (s == 2
-                    and m.operator == "HAMILTONIAN"
-                    and m.block_type == "GROUND"):
-                shell_blocks = _find_shell_diagonals(
-                    meta[s], template[s], "GROUND", m.bra_sym,
-                )
-                if not shell_blocks:
-                    # Safety: if no matching SHELL blocks, pass through
-                    section.append(mat)
-                else:
-                    # Check that the raw params have the required Fk
-                    # values for this shell pair. For d⁰ configurations,
-                    # there are no d-d Slater integrals and the rebuild
-                    # is not possible — pass through instead.
-                    try:
-                        _ = raw_params.ground.f("3D", "3D", 0)
-                    except KeyError:
-                        section.append(mat)
-                        continue
-                    h_new = _rebuild_hamiltonian_block(
-                        mat, shell_blocks,
-                        raw_cfg=raw_params.ground,
-                        scaled_cfg=scaled_params.ground,
-                        shell_pair=("3D", "3D"),
-                        zeta_shell="3D",
-                    )
-                    section.append(h_new)
-            else:
-                section.append(mat)
-
-        result.append(section)
-
     return result
 
 
-# ─────────────────────────────────────────────────────────────
-# Batch version for parameter sweeps
-# ─────────────────────────────────────────────────────────────
-
-
-def _rebuild_hamiltonian_block_batch(
-    h_parsed: torch.Tensor,
-    shell_blocks: Dict[int, torch.Tensor],
-    raw_cfg: ConfigParams,
-    scaled_cfg: ScaledConfigParams,  # now has (N,) tensors
-    shell_pair: Tuple[str, str],
-    zeta_shell: str,
-) -> torch.Tensor:
-    """Batch rebuild: N Hamiltonians with shared V(11) residual.
-    
-    Returns (N, dim, dim) stacked Hamiltonians. V(11) is computed once
-    from the template and raw params, then reused for all N rebuilds.
-    This eliminates redundant work - a key source of Phase 2 speedup.
-    
-    Parameters
-    ----------
-    h_parsed : torch.Tensor, shape (dim, dim)
-        Template HAMILTONIAN block from .rme_rcg fixture
-    shell_blocks : Dict[int, torch.Tensor]
-        Shell diagonal blocks, each (dim, dim)
-    raw_cfg : ConfigParams
-        Raw atomic params (plain floats) for V(11) extraction
-    scaled_cfg : ScaledConfigParams
-        Scaled params where each Fk/Gk/ζ is (N,) instead of scalar
-    shell_pair : Tuple[str, str]
-        Shell labels for Fk lookup, e.g. ("3D", "3D")
-    zeta_shell : str
-        Shell label for ζ lookup, e.g. "3D"
-        
-    Returns
-    -------
-    torch.Tensor, shape (N, dim, dim)
-        Stacked Hamiltonians, one per parameter set.
-        Each H_batch[i] carries autograd to scaled_cfg Fk[i] and ζ[i].
-    """
-    a, b = shell_pair
-    ry_to_ev = float(RY_TO_EV)
-    
-    # ── Step 1: Coulomb with raw params (same as sequential) ──
-    h_coulomb_raw = torch.zeros_like(h_parsed)
-    for k, shell_mat in shell_blocks.items():
-        fk_raw_ev = raw_cfg.f(a, b, k) * ry_to_ev
-        h_coulomb_raw = h_coulomb_raw + fk_raw_ev * shell_mat
-    
-    # ── Step 2: Extract V(11) ONCE (shared across batch) ──────
-    zeta_raw_ev = raw_cfg.zeta(zeta_shell) * ry_to_ev
-    v11 = (h_parsed - h_coulomb_raw) / zeta_raw_ev  # (dim, dim)
-    
-    # ── Step 3: Batch rebuild with (N,) scaled params ─────────
-    # Extract batch size from any Fk value
-    N = None
-    for k in shell_blocks.keys():
-        fk_batch = scaled_cfg.f(a, b, k)  # (N,)
-        N = fk_batch.shape[0]
-        break
-    
-    if N is None:
-        raise RuntimeError("No shell blocks found for batch rebuild")
-    
-    dim = h_parsed.shape[0]
-    device = h_parsed.device
-    dtype = h_parsed.dtype
-    
-    # Initialize batch result: (N, dim, dim)
-    h_batch = torch.zeros(N, dim, dim, device=device, dtype=dtype)
-    
-    # Coulomb term: Σ_k F_batch[i,k] × SHELL_k
-    for k, shell_mat in shell_blocks.items():
-        fk_batch_ev = scaled_cfg.f(a, b, k) * ry_to_ev  # (N,)
-        # Broadcasting: (N,) × (dim, dim) → (N, dim, dim)
-        h_batch = h_batch + fk_batch_ev[:, None, None] * shell_mat
-    
-    # Spin-orbit term: ζ_batch[i] × V(11)
-    zeta_batch_ev = scaled_cfg.z(zeta_shell) * ry_to_ev  # (N,)
-    # Broadcasting: (N,) × (dim, dim) → (N, dim, dim)
-    h_batch = h_batch + zeta_batch_ev[:, None, None] * v11
-    
-    return h_batch
-
-
 def build_cowan_store_in_memory_batch(
-    scaled_params: ScaledAtomicParams,  # now has (N,) batched tensors
-    raw_params: AtomicParams,
     plan: SectionPlan,
     *,
+    slater_values: torch.Tensor,
+    soc_values: torch.Tensor,
     source_rcg_path: Optional[str | Path] = None,
     cowan_template: Optional[List[List[torch.Tensor]]] = None,
     cowan_metadata: Optional[List[List[CowanBlockMeta]]] = None,
+    decomposition: Optional[HamiltonianDecomposition] = None,
     device=None,
 ) -> List[List[torch.Tensor]]:
-    """Batch version: build N COWAN stores from N parameter sets.
-    
-    Optimizes parameter sweeps by:
-    1. Computing V(11) residual ONCE (shared across N parameter sets)
-    2. Batch rebuilding N Hamiltonians in single tensor operations
-    3. Eliminating redundant file I/O and metadata parsing
-    
-    Expected speedup: 2-3× faster than N sequential calls to 
-    build_cowan_store_in_memory() with the same template.
-    
-    Parameters
-    ----------
-    scaled_params : ScaledAtomicParams
-        Batched scaled parameters where each Fk/Gk/ζ is shape (N,).
-        Produced by :func:`~multitorch.atomic.scaled_params.batch_scale_atomic_params`.
-    raw_params : AtomicParams
-        Plain-float atomic params for V(11) extraction (same as sequential).
-    plan : SectionPlan
-        Section plan for cross-check (same as sequential).
-    source_rcg_path, cowan_template, cowan_metadata : optional
-        Template source (same as sequential).
-    device : torch.device, optional
-        Device for all tensors.
-        
-    Returns
-    -------
-    List[List[torch.Tensor]]
-        COWAN store where HAMILTONIAN blocks in section 2 now have shape
-        (N, dim, dim) instead of (dim, dim). All other matrices are
-        broadcast-compatible (dim, dim) constants.
-        
-    Notes
-    -----
-    The returned store can be passed to a batch-aware diagonalizer
-    (safe_eigh_batch) to compute N sets of eigenvalues/eigenvectors
-    in one GPU kernel call instead of N separate calls.
-    
-    Memory usage for Ni d8 L-edge (17×17 matrices):
-    - N=100: ~5 MB
-    - N=1000: ~50 MB  
-    - N=5000: ~250 MB
-    
-    Example
-    -------
-    >>> from multitorch.atomic.scaled_params import batch_scale_atomic_params
-    >>> slater_vals = torch.linspace(0.6, 1.0, 100)
-    >>> soc_vals = torch.linspace(0.8, 1.2, 100)
-    >>> scaled = batch_scale_atomic_params(params, slater_vals, soc_vals)
-    >>> store_batch = build_cowan_store_in_memory_batch(
-    ...     scaled, params, plan, source_rcg_path=rcg_path
-    ... )
-    >>> # Section 2 HAMILTONIAN blocks now have shape (100, dim, dim)
+    """Batch version: N stores from (N,) ``slater_values`` and ``soc_values``.
+
+    Every HAMILTONIAN block has shape (N, dim, dim); all other blocks are the
+    (dim, dim) template tensors (broadcast-compatible). The decomposition is
+    computed once and shared, so the per-sample cost is two scalar-times-matrix
+    additions per block.
     """
-    # Parse template and metadata (same as sequential)
-    if cowan_template is not None and cowan_metadata is not None:
-        template = cowan_template
-        meta = cowan_metadata
-    elif source_rcg_path is not None:
-        source_rcg_path = Path(source_rcg_path)
-        template = read_cowan_store(source_rcg_path)
-        meta = read_cowan_metadata(source_rcg_path)
-    else:
+    slater_values = _as_scale(slater_values, device)
+    soc_values = _as_scale(soc_values, device)
+    if slater_values.ndim != 1 or soc_values.ndim != 1:
         raise ValueError(
-            "Either source_rcg_path or (cowan_template, cowan_metadata) "
-            "must be provided"
+            f"slater_values and soc_values must be 1D, got {tuple(slater_values.shape)} "
+            f"and {tuple(soc_values.shape)}"
         )
-    
-    # Validation (same as sequential)
-    if len(template) != len(meta):
+    if slater_values.shape[0] != soc_values.shape[0]:
         raise ValueError(
-            f"Template has {len(template)} sections but metadata has "
-            f"{len(meta)} — the .rme_rcg file may be malformed"
+            f"Batch size mismatch: {slater_values.shape[0]} slater vs "
+            f"{soc_values.shape[0]} soc values"
         )
-    for s in range(len(template)):
-        if len(template[s]) != len(meta[s]):
-            raise ValueError(
-                f"Section {s}: {len(template[s])} matrices vs "
-                f"{len(meta[s])} metadata entries"
+    template, dec = _resolve_inputs(plan, source_rcg_path, cowan_template, cowan_metadata, decomposition)
+    a = (slater_values / dec.slater_reduction - 1.0)[:, None, None]
+    b = (soc_values / dec.soc_reduction - 1.0)[:, None, None]
+
+    result = [
+        [mat if device is None else mat.to(device=device) for mat in sec]
+        for sec in template
+    ]
+    for cfg in dec.configs:
+        for J, j in cfg.block_index.items():
+            result[cfg.section][j] = (
+                cfg.fixture[J].to(device=device)
+                + a * cfg.slater_part[J].to(device=device)
+                + b * cfg.soc_part[J].to(device=device)
             )
-    
-    if len(template) != plan.n_sections:
-        raise ValueError(
-            f"Template has {len(template)} sections but plan expects "
-            f"{plan.n_sections}"
-        )
-    for s in range(len(template)):
-        if len(template[s]) != plan.section_size(s):
-            raise ValueError(
-                f"Section {s}: {len(template[s])} matrices but plan "
-                f"expects {plan.section_size(s)}"
-            )
-    
-    # Move template tensors to target device
-    if device is not None:
-        template = [
-            [mat.to(device=device) for mat in sec]
-            for sec in template
-        ]
-    
-    result: List[List[torch.Tensor]] = []
-    
-    for s in range(len(template)):
-        section: List[torch.Tensor] = []
-        
-        for j in range(len(template[s])):
-            m = meta[s][j]
-            mat = template[s][j]
-            
-            # Only rebuild config-1 HAMILTONIAN blocks in section 2
-            if (s == 2
-                    and m.operator == "HAMILTONIAN"
-                    and m.block_type == "GROUND"):
-                shell_blocks = _find_shell_diagonals(
-                    meta[s], template[s], "GROUND", m.bra_sym,
-                )
-                if not shell_blocks:
-                    section.append(mat)
-                else:
-                    # Check for d-d Slater integrals (needed for d^N)
-                    try:
-                        _ = raw_params.ground.f("3D", "3D", 0)
-                    except KeyError:
-                        section.append(mat)
-                        continue
-                    
-                    # *** KEY DIFFERENCE: batch rebuild ***
-                    h_batch = _rebuild_hamiltonian_block_batch(
-                        mat, shell_blocks,
-                        raw_cfg=raw_params.ground,
-                        scaled_cfg=scaled_params.ground,  # has (N,) tensors
-                        shell_pair=("3D", "3D"),
-                        zeta_shell="3D",
-                    )
-                    section.append(h_batch)  # (N, dim, dim)
-            else:
-                section.append(mat)  # (dim, dim) - broadcast compatible
-        
-        result.append(section)
-    
     return result

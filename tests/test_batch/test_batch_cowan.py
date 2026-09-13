@@ -7,7 +7,6 @@ speedup over sequential processing.
 import pytest
 import torch
 
-from multitorch.atomic.scaled_params import batch_scale_atomic_params, scale_atomic_params
 from multitorch.hamiltonian.build_cowan import (
     build_cowan_store_in_memory,
     build_cowan_store_in_memory_batch,
@@ -95,28 +94,21 @@ def test_batch_cowan_rebuild(ni_d4h_cache):
     slater_vals = torch.linspace(0.7, 0.9, N)
     soc_vals = torch.linspace(0.9, 1.1, N)
     
-    # Batch version
-    scaled_batch = batch_scale_atomic_params(ni_d4h_cache.raw_params, slater_vals, soc_vals)
     cowan_batch = build_cowan_store_in_memory_batch(
-        scaled_batch, ni_d4h_cache.raw_params, ni_d4h_cache.plan,
+        ni_d4h_cache.plan, slater_values=slater_vals, soc_values=soc_vals,
         cowan_template=ni_d4h_cache.cowan_template,
         cowan_metadata=ni_d4h_cache.cowan_metadata,
+        decomposition=ni_d4h_cache.decomposition,
     )
-    
-    # Check that at least some section 2 HAMILTONIAN blocks are batched
-    # (Not all will be - only those that can be rebuilt)
-    batched_hamilt_count = 0
+
+    # Every HAMILTONIAN block is batched; everything else is the template
     for sec_idx, section in enumerate(cowan_batch):
         for mat_idx, mat in enumerate(section):
             meta_entry = ni_d4h_cache.cowan_metadata[sec_idx][mat_idx]
-            
-            if sec_idx == 2 and meta_entry.operator == "HAMILTONIAN":
-                if mat.ndim == 3:
-                    batched_hamilt_count += 1
-                    assert mat.shape[0] == N
-    
-    # Should have at least one batched HAMILTONIAN block
-    assert batched_hamilt_count > 0, "Expected at least one batched HAMILTONIAN block"
+            if meta_entry.operator == "HAMILTONIAN":
+                assert mat.ndim == 3 and mat.shape[0] == N
+            else:
+                assert mat is ni_d4h_cache.cowan_template[sec_idx][mat_idx]
 
 
 def test_batch_cowan_vs_sequential_parity(ni_d4h_cache):
@@ -125,25 +117,20 @@ def test_batch_cowan_vs_sequential_parity(ni_d4h_cache):
     slater_vals = torch.tensor([0.7, 0.8, 0.9])
     soc_vals = torch.tensor([0.9, 1.0, 1.1])
     
-    # Batch version
-    scaled_batch = batch_scale_atomic_params(ni_d4h_cache.raw_params, slater_vals, soc_vals)
     cowan_batch = build_cowan_store_in_memory_batch(
-        scaled_batch, ni_d4h_cache.raw_params, ni_d4h_cache.plan,
+        ni_d4h_cache.plan, slater_values=slater_vals, soc_values=soc_vals,
         cowan_template=ni_d4h_cache.cowan_template,
         cowan_metadata=ni_d4h_cache.cowan_metadata,
+        decomposition=ni_d4h_cache.decomposition,
     )
-    
+
     # Sequential version
     for i in range(N):
-        scaled_i = scale_atomic_params(
-            ni_d4h_cache.raw_params, 
-            slater_scale=float(slater_vals[i]), 
-            soc_scale=float(soc_vals[i])
-        )
         cowan_i = build_cowan_store_in_memory(
-            scaled_i, ni_d4h_cache.raw_params, ni_d4h_cache.plan,
+            ni_d4h_cache.plan, slater=float(slater_vals[i]), soc=float(soc_vals[i]),
             cowan_template=ni_d4h_cache.cowan_template,
             cowan_metadata=ni_d4h_cache.cowan_metadata,
+            decomposition=ni_d4h_cache.decomposition,
         )
         
         # Compare each matrix
@@ -165,30 +152,23 @@ def test_batch_cowan_autograd(ni_d4h_cache):
     slater_vals = torch.tensor([0.7, 0.8, 0.9], requires_grad=True)
     soc_vals = torch.tensor([0.9, 1.0, 1.1], requires_grad=True)
     
-    scaled_batch = batch_scale_atomic_params(ni_d4h_cache.raw_params, slater_vals, soc_vals)
     cowan_batch = build_cowan_store_in_memory_batch(
-        scaled_batch, ni_d4h_cache.raw_params, ni_d4h_cache.plan,
+        ni_d4h_cache.plan, slater_values=slater_vals, soc_values=soc_vals,
         cowan_template=ni_d4h_cache.cowan_template,
         cowan_metadata=ni_d4h_cache.cowan_metadata,
+        decomposition=ni_d4h_cache.decomposition,
     )
     
-    # Find a batched HAMILTONIAN block and compute loss
-    loss = None
-    for sec_idx, section in enumerate(cowan_batch):
-        for mat in section:
-            if mat.ndim == 3:  # Batched HAMILTONIAN
-                # Loss on sample 1 only
-                loss = mat[1, :3, :3].sum()
-                break
-        if loss is not None:
-            break
-    
-    assert loss is not None
+    # Loss on sample 1 of a ground d8 block (sections 0/1 carry no parameters)
+    cfg = ni_d4h_cache.decomposition.config(2, "GROUND")
+    j = cfg.block_index[2.0]
+    loss = cowan_batch[2][j][1].sum()
     loss.backward()
     
     # Check gradients
     assert slater_vals.grad is not None
     assert soc_vals.grad is not None
     
-    # Sample 1 should have nonzero gradient
-    assert slater_vals.grad[1].abs() > 1e-10 or soc_vals.grad[1].abs() > 1e-10
+    # Only sample 1 is in the loss
+    assert slater_vals.grad[1].abs() > 1e-10 and soc_vals.grad[1].abs() > 1e-10
+    assert slater_vals.grad[0] == 0 and slater_vals.grad[2] == 0

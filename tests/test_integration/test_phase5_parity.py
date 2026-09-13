@@ -11,21 +11,19 @@ What this validates
    - ``Ef`` (excited eigenvalues) match at ``atol=1e-12``
    - ``T`` (transition matrix) matches at ``atol=1e-12``
 
-2. Autograd through ``slater_scale``: ``torch.autograd.grad(Eg.sum(),
-   slater_scale)`` returns a finite, nonzero gradient. This is the
+2. Autograd through ``slater``: ``torch.autograd.grad(Eg.sum(),
+   slater)`` returns a finite, nonzero gradient. This is the
    **gating test** for the entire Track C autograd story — it exercises
    every link in the chain from the autograd leaf through the COWAN
    store, assembly, and eigenvalue solver.
 
-3. Autograd through ``soc_scale``: same contract.
+3. Autograd through ``soc``: same contract.
 
 4. The triad count matches the file-based result.
 
-This test uses the nid8 ``.rcn31_out`` for raw atomic parameters
-(the nid8ct fixture has no ``.rcn31_out``). The d^8 NCONF=1 params
-from nid8 are used; parity is algebraically exact at scale=1.0
-regardless of the exact parameter values (see
-``build_cowan.py`` module docstring for the proof).
+At ``slater=0.8`` (the reduction nid8ct was generated at) the rebuilt
+store equals the fixture, so the parity is exact; gradients are taken at
+that point. No ``.rcn31_out`` is involved.
 """
 from __future__ import annotations
 
@@ -35,8 +33,6 @@ import pytest
 import torch
 
 from multitorch._constants import DTYPE
-from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
-from multitorch.atomic.scaled_params import scale_atomic_params
 from multitorch.hamiltonian.assemble import (
     assemble_and_diagonalize,
     assemble_and_diagonalize_in_memory,
@@ -50,7 +46,6 @@ NID8CT = REFDATA / "nid8ct"
 NID8CT_BAN = NID8CT / "nid8ct.ban"
 NID8CT_RCG = NID8CT / "nid8ct.rme_rcg"
 NID8CT_RAC = NID8CT / "nid8ct.rme_rac"
-NID8_RCN31 = REFDATA / "nid8" / "nid8.rcn31_out"
 
 
 # ─────────────────────────────────────────────────────────────
@@ -63,25 +58,19 @@ def ban():
 
 
 @pytest.fixture(scope="module")
-def raw_params():
-    return read_rcn31_out_params(NID8_RCN31)
-
-
-@pytest.fixture(scope="module")
 def from_disk():
     """File-based reference result (the oracle)."""
     return assemble_and_diagonalize(NID8CT_RCG, NID8CT_RAC, NID8CT_BAN)
 
 
 @pytest.fixture(scope="module")
-def in_memory_result(ban, raw_params):
-    """Full in-memory pipeline at scale=1.0."""
-    scaled = scale_atomic_params(raw_params, slater_scale=1.0, soc_scale=1.0)
+def in_memory_result(ban):
+    """Full in-memory pipeline at the fixture's own reduction."""
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=NID8CT_RAC, source_rcg_path=NID8CT_RCG,
     )
     cowan = build_cowan_store_in_memory(
-        scaled, raw_params, plan, source_rcg_path=NID8CT_RCG,
+        plan, slater=0.8, soc=1.0, source_rcg_path=NID8CT_RCG,
     )
     return assemble_and_diagonalize_in_memory(cowan, rac, ban)
 
@@ -138,61 +127,58 @@ def test_symmetry_labels_match(in_memory_result, from_disk):
 # Autograd: the reason Track C exists
 # ─���───────────────────────────────────────────────────────────
 
-def _build_with_grad(raw_params, ban, slater_scale, soc_scale):
+def _build_with_grad(ban, slater, soc):
     """Helper: run the full in-memory pipeline with given scale tensors."""
-    scaled = scale_atomic_params(
-        raw_params, slater_scale=slater_scale, soc_scale=soc_scale,
-    )
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=NID8CT_RAC, source_rcg_path=NID8CT_RCG,
     )
     cowan = build_cowan_store_in_memory(
-        scaled, raw_params, plan, source_rcg_path=NID8CT_RCG,
+        plan, slater=slater, soc=soc, source_rcg_path=NID8CT_RCG,
     )
     return assemble_and_diagonalize_in_memory(cowan, rac, ban)
 
 
 @pytest.mark.phase4
-def test_autograd_through_slater_scale(ban, raw_params):
-    """Backward through Eg.sum() must land on slater_scale with finite nonzero grad.
+def test_autograd_through_slater(ban):
+    """Backward through Eg.sum() must land on slater with finite nonzero grad.
 
     This is the gating test for the Track C autograd story. If the
     vectorized ``assemble_matrix_from_adds`` (C3-pre), the scaled
     atomic params (C3c), or the COWAN store rebuild (C3e) sever the
     gradient, this test will fail with ``grad is None`` or zero.
     """
-    slater_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale, soc_scale=1.0)
+    slater = torch.tensor(0.8, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater, soc=1.0)
 
     loss = result.triads[0].Eg.sum()
-    grad, = torch.autograd.grad(loss, slater_scale)
+    grad, = torch.autograd.grad(loss, slater)
 
-    assert torch.isfinite(grad), f"slater_scale grad is not finite: {grad}"
-    assert grad.abs() > 1e-6, f"slater_scale grad is too small: {grad}"
+    assert torch.isfinite(grad), f"slater grad is not finite: {grad}"
+    assert grad.abs() > 1e-6, f"slater grad is too small: {grad}"
 
 
 @pytest.mark.phase4
-def test_autograd_through_soc_scale(ban, raw_params):
-    """Backward through Eg.sum() must land on soc_scale."""
-    soc_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=soc_scale)
+def test_autograd_through_soc(ban):
+    """Backward through Eg.sum() must land on soc."""
+    soc = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater=0.8, soc=soc)
 
     loss = result.triads[0].Eg.sum()
-    grad, = torch.autograd.grad(loss, soc_scale)
+    grad, = torch.autograd.grad(loss, soc)
 
-    assert torch.isfinite(grad), f"soc_scale grad is not finite: {grad}"
-    assert grad.abs() > 1e-6, f"soc_scale grad is too small: {grad}"
+    assert torch.isfinite(grad), f"soc grad is not finite: {grad}"
+    assert grad.abs() > 1e-6, f"soc grad is too small: {grad}"
 
 
 @pytest.mark.phase4
-def test_autograd_both_scales_independent(ban, raw_params):
-    """Both slater_scale and soc_scale must receive independent gradients."""
-    slater_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    soc_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale, soc_scale)
+def test_autograd_both_scales_independent(ban):
+    """Both slater and soc must receive independent gradients."""
+    slater = torch.tensor(0.8, dtype=DTYPE, requires_grad=True)
+    soc = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater, soc)
 
     loss = result.triads[0].Eg.sum()
-    grad_sl, grad_soc = torch.autograd.grad(loss, [slater_scale, soc_scale])
+    grad_sl, grad_soc = torch.autograd.grad(loss, [slater, soc])
 
     assert torch.isfinite(grad_sl) and grad_sl.abs() > 1e-6
     assert torch.isfinite(grad_soc) and grad_soc.abs() > 1e-6
@@ -201,15 +187,15 @@ def test_autograd_both_scales_independent(ban, raw_params):
 
 
 @pytest.mark.phase4
-def test_autograd_all_triads(ban, raw_params):
-    """Every triad's Eg.sum() must produce a finite slater_scale gradient."""
-    slater_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale, soc_scale=1.0)
+def test_autograd_all_triads(ban):
+    """Every triad's Eg.sum() must produce a finite slater gradient."""
+    slater = torch.tensor(0.8, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater, soc=1.0)
 
     for i, triad in enumerate(result.triads):
-        slater_scale.grad = None  # reset between triads
+        slater.grad = None  # reset between triads
         loss = triad.Eg.sum()
-        grad, = torch.autograd.grad(loss, slater_scale, retain_graph=True)
+        grad, = torch.autograd.grad(loss, slater, retain_graph=True)
         assert torch.isfinite(grad), (
             f"Triad {i} ({triad.gs_sym}): slater grad not finite"
         )
@@ -219,7 +205,7 @@ def test_autograd_all_triads(ban, raw_params):
 
 
 @pytest.mark.phase4
-def test_autograd_slater_finite_difference(ban, raw_params):
+def test_autograd_slater_finite_difference(ban):
     """Verify autograd gradient matches a finite-difference estimate.
 
     This is a stronger check than 'grad.abs() > 1e-6': it confirms
@@ -230,16 +216,16 @@ def test_autograd_slater_finite_difference(ban, raw_params):
     h = 1e-5
 
     # Autograd gradient
-    slater_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale, soc_scale=1.0)
+    slater = torch.tensor(0.8, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater, soc=1.0)
     loss = result.triads[0].Eg.sum()
-    grad_auto, = torch.autograd.grad(loss, slater_scale)
+    grad_auto, = torch.autograd.grad(loss, slater)
 
     # Finite difference: f(1+h) and f(1-h)
-    result_plus = _build_with_grad(raw_params, ban, 1.0 + h, soc_scale=1.0)
+    result_plus = _build_with_grad(ban, 0.8 + h, soc=1.0)
     loss_plus = result_plus.triads[0].Eg.sum()
 
-    result_minus = _build_with_grad(raw_params, ban, 1.0 - h, soc_scale=1.0)
+    result_minus = _build_with_grad(ban, 0.8 - h, soc=1.0)
     loss_minus = result_minus.triads[0].Eg.sum()
 
     grad_fd = (loss_plus - loss_minus) / (2 * h)
@@ -254,8 +240,8 @@ def test_autograd_slater_finite_difference(ban, raw_params):
 
 
 @pytest.mark.phase4
-def test_autograd_soc_finite_difference(ban, raw_params):
-    """Verify autograd gradient for soc_scale matches finite-difference estimate.
+def test_autograd_soc_finite_difference(ban):
+    """Verify autograd gradient for soc matches finite-difference estimate.
 
     Analogous to test_autograd_slater_finite_difference but for the
     spin-orbit coupling scale factor.
@@ -263,16 +249,16 @@ def test_autograd_soc_finite_difference(ban, raw_params):
     h = 1e-5
 
     # Autograd gradient
-    soc_scale = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
-    result = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=soc_scale)
+    soc = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
+    result = _build_with_grad(ban, slater=0.8, soc=soc)
     loss = result.triads[0].Eg.sum()
-    grad_auto, = torch.autograd.grad(loss, soc_scale)
+    grad_auto, = torch.autograd.grad(loss, soc)
 
     # Finite difference: f(1+h) and f(1-h)
-    result_plus = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=1.0 + h)
+    result_plus = _build_with_grad(ban, slater=0.8, soc=1.0 + h)
     loss_plus = result_plus.triads[0].Eg.sum()
 
-    result_minus = _build_with_grad(raw_params, ban, slater_scale=1.0, soc_scale=1.0 - h)
+    result_minus = _build_with_grad(ban, slater=0.8, soc=1.0 - h)
     loss_minus = result_minus.triads[0].Eg.sum()
 
     grad_fd = (loss_plus - loss_minus) / (2 * h)

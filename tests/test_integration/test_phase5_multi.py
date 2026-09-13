@@ -9,21 +9,19 @@ every fixture.
 Parity metric
 -------------
 Cosine similarity between the broadened spectra.  The Phase 5 path
-rebuilds section-2 GROUND HAMILTONIAN blocks with autograd-carrying
-parameters at ``slater=1.0, soc=1.0``, while the bootstrap path reads
-pre-computed ``.ban_out`` files that used the Fortran pipeline with
-those same fixture ``.ban`` parameters.  The two paths differ in:
+rebuilds every HAMILTONIAN block with autograd-carrying parameters at
+``slater=0.8, soc=1.0`` (the reductions the fixtures were generated at),
+while the bootstrap path reads pre-computed ``.ban_out`` files that used
+the Fortran pipeline with those same fixture ``.ban`` parameters.  The two
+paths differ in:
 
 1. **Stick intensities**: Phase 5 squares transition-matrix amplitudes
    (``T**2``), while ``.ban_out`` files contain pre-squared intensities.
    These are algebraically identical.
 
-2. **Slater scaling**: Phase 5 applies ``slater=1.0`` to the ``.rcn31_out``
-   parameters (which are already the Fortran-scaled values), so at
-   ``slater=1.0`` the result is identical to the Fortran pipeline.
-
-3. **HAMILTONIAN decomposition**: Only section-2 GROUND config-1 blocks
-   are rebuilt; everything else passes through from the fixture.
+2. **Slater scaling**: ``slater`` is absolute (fraction of Hartree-Fock);
+   at the fixture's own reduction the rebuilt store equals the fixture, so
+   the result is identical to the Fortran pipeline.
 
 Expected cosine similarity ≥ 0.99 for all fixtures.
 """
@@ -104,11 +102,11 @@ def test_phase5_vs_bootstrap_parity(case_id, element, valence, sym, cos_min):
         ban_output_path=str(ban_out), T=80, max_gs=1,
     )
 
-    # Phase 5 path (template-based, slater=1.0, soc=1.0 → matches fixture)
+    # Phase 5 path (template-based, slater=0.8, soc=1.0 → matches fixture)
     x_p5, y_p5 = calcXAS(
         element=element, valence=valence, sym=sym, edge='l',
         cf={},  # empty cf → uses template defaults from .ban
-        slater=1.0, soc=1.0, T=80, max_gs=1,
+        slater=0.8, soc=1.0, T=80, max_gs=1,
         xmin=float(x_ref.min()), xmax=float(x_ref.max()),
         nbins=x_ref.numel(),
     )
@@ -148,7 +146,7 @@ def test_phase5_autograd_slater(case_id, element, valence, sym):
     """Autograd through slater must produce finite nonzero gradient."""
     from multitorch.api.calc import calcXAS
 
-    slater = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
+    slater = torch.tensor(0.8, dtype=DTYPE, requires_grad=True)
     x, y = calcXAS(
         element=element, valence=valence, sym=sym, edge='l',
         cf={}, slater=slater, soc=1.0,
@@ -168,7 +166,7 @@ def test_phase5_autograd_soc(case_id, element, valence, sym):
     soc = torch.tensor(1.0, dtype=DTYPE, requires_grad=True)
     x, y = calcXAS(
         element=element, valence=valence, sym=sym, edge='l',
-        cf={}, slater=1.0, soc=soc,
+        cf={}, slater=0.8, soc=soc,
     )
 
     loss = y.sum()
@@ -190,7 +188,7 @@ def test_phase5_autograd_cf_tendq():
     tendq = torch.tensor(1.2, dtype=DTYPE, requires_grad=True)
     x, y = calcXAS(
         element="Ni", valence="ii", sym="oh", edge="l",
-        cf={"tendq": tendq}, slater=1.0, soc=1.0,
+        cf={"tendq": tendq}, slater=0.8, soc=1.0,
     )
 
     loss = y.sum()
@@ -206,7 +204,7 @@ def test_phase5_autograd_delta():
     delta = torch.tensor(4.0, dtype=DTYPE, requires_grad=True)
     x, y = calcXAS(
         element="Ni", valence="ii", sym="oh", edge="l",
-        cf={}, delta=delta, slater=1.0, soc=1.0,
+        cf={}, delta=delta, slater=0.8, soc=1.0,
     )
 
     loss = y.sum()
@@ -222,7 +220,7 @@ def test_phase5_autograd_lmct():
     lmct = torch.tensor(2.0, dtype=DTYPE, requires_grad=True)
     x, y = calcXAS(
         element="Ni", valence="ii", sym="oh", edge="l",
-        cf={}, lmct=lmct, slater=1.0, soc=1.0,
+        cf={}, lmct=lmct, slater=0.8, soc=1.0,
     )
 
     loss = y.sum()

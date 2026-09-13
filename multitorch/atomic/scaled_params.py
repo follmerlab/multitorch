@@ -1,6 +1,11 @@
 """
 Slater / spin-orbit scaling pipeline for the Track C Phase 5 builder.
 
+Note (2026-09, WP-S S1a): no longer used by the fixture pipeline, which now
+applies ``slater``/``soc`` to an exact operator decomposition of the stored
+HAMILTONIAN blocks (``hamiltonian/build_cowan.py``). The notes below describe
+the superseded design.
+
 Why this module exists
 ----------------------
 Cowan's empirical practice is to multiply the bare HFS Slater Fk/Gk

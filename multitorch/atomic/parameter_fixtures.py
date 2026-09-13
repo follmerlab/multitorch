@@ -1,6 +1,12 @@
 """
 Atomic-parameter fixture loader for the Track C Phase 5 parity tests.
 
+Note (2026-09, WP-S S1a): the fixture pipeline no longer reads ``.rcn31_out``.
+``hamiltonian/build_cowan.py`` decomposes the stored HAMILTONIAN blocks
+directly; the bundled ``.rcn31_out`` files describe the d^(n+1) ligand-hole
+configuration, not the store's parameters. This parser remains for HF
+reference values in tests.
+
 Why this module exists
 ----------------------
 The C3f parity test in Track C compares an in-memory COWAN store builder

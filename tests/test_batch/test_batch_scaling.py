@@ -4,6 +4,8 @@ Tests for batch atomic parameter scaling (Phase 2A step 1).
 Validates that batch_scale_atomic_params produces correct results and
 preserves per-sample autograd for parameter refinement workflows.
 """
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -12,14 +14,14 @@ from multitorch.atomic.scaled_params import (
     batch_scale_atomic_params,
 )
 from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
-from multitorch.api.calc import preload_fixture
+
+REFDATA = Path(__file__).parent.parent / "reference_data"
 
 
 @pytest.fixture
 def ni_params():
     """Load Ni d8 atomic parameters."""
-    cache = preload_fixture("Ni", "ii", "d4h")
-    return cache.raw_params
+    return read_rcn31_out_params(REFDATA / "nid8" / "nid8.rcn31_out")
 
 
 def test_batch_scale_basic(ni_params):

@@ -35,7 +35,7 @@ NI_80PCT = dict(
 
 def _sticks_fixture():
     res = _run_phase5_pipeline("Ni", "ii", "oh", "l", {"tendq": 1.0},
-                               slater=1.0, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
+                               slater=0.8, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
     E, M, _ = get_sticks_from_banresult(res, T=80.0, max_gs=1)
     keep = E < E.min() + 40.0          # drop the decoupled ligand-hole final states
     return E[keep], M[keep]

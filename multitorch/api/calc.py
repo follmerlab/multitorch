@@ -51,8 +51,9 @@ class CachedFixture:
     ----------
     ban : BanData
         Parsed BAN template (before parameter overrides).
-    raw_params : AtomicParams
-        Parsed atomic parameters from ``.rcn31_out``.
+    decomposition : HamiltonianDecomposition
+        Exact decomposition of the fixture HAMILTONIAN blocks onto the
+        configuration operators (E_av + Slater part + spin-orbit part).
     rac : RACFileFull
         Parsed RAC assembly recipe.
     plan : SectionPlan
@@ -63,7 +64,7 @@ class CachedFixture:
         Block metadata for each COWAN store matrix.
     """
     ban: object          # BanData
-    raw_params: object   # AtomicParams
+    decomposition: object  # HamiltonianDecomposition
     rac: object          # RACFileFull
     plan: object         # SectionPlan
     cowan_template: list  # List[List[torch.Tensor]]
@@ -100,8 +101,9 @@ def preload_fixture(
     CachedFixture
         Reusable cache holding all parsed fixture data.
     """
-    from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
-    from multitorch.hamiltonian.build_cowan import read_cowan_metadata
+    from multitorch.hamiltonian.build_cowan import (
+        load_hamiltonian_decomposition, read_cowan_metadata,
+    )
     from multitorch.hamiltonian.build_rac import build_rac_in_memory
     from multitorch.io.read_ban import read_ban
     from multitorch.io.read_rme import read_cowan_store, read_rme_rac_full
@@ -110,15 +112,16 @@ def preload_fixture(
     ban_path = _find_primary_fixture(fixture_dir, "*.ban")
     rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
     rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
-    rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
 
     ban = read_ban(ban_path)
-    raw_params = read_rcn31_out_params(rcn31_path)
 
     # Parse the heavy files once
     parsed_rac = read_rme_rac_full(rac_path)
     cowan_template = read_cowan_store(rcg_path)
     cowan_metadata = read_cowan_metadata(rcg_path)
+    decomposition = load_hamiltonian_decomposition(
+        rcg_path, cowan_template=cowan_template, cowan_metadata=cowan_metadata,
+    )
 
     # Build RAC + plan from pre-parsed data (no file I/O)
     rac, plan = build_rac_in_memory(
@@ -127,7 +130,7 @@ def preload_fixture(
 
     return CachedFixture(
         ban=ban,
-        raw_params=raw_params,
+        decomposition=decomposition,
         rac=rac,
         plan=plan,
         cowan_template=cowan_template,
@@ -175,7 +178,8 @@ def calcXAS_cached(
     cf : dict, optional
         Crystal-field parameters (same as ``calcXAS``).
     slater, soc : float or torch.Tensor
-        Slater / SOC scaling (supports ``requires_grad=True``).
+        Absolute Slater / spin-orbit reductions (fractions of the
+        Hartree-Fock values; supports ``requires_grad=True``).
     delta, u, lmct, mlct : float, optional
         Charge-transfer parameters.
     T, beam_fwhm, gamma1, gamma2, med_energy, max_gs, broaden_mode,
@@ -188,7 +192,6 @@ def calcXAS_cached(
         Same as ``calcXAS``.
     """
     import copy
-    from multitorch.atomic.scaled_params import scale_atomic_params
     from multitorch.device_utils import suggest_device_for_xas
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
@@ -207,16 +210,12 @@ def calcXAS_cached(
     # Apply parameter overrides to a copy of the cached BAN
     ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)
 
-    # Scale atomic params (fast tensor ops, no file I/O)
-    scaled_params = scale_atomic_params(
-        cache.raw_params, slater_scale=slater, soc_scale=soc,
-    )
-
-    # Build COWAN store from cached template + metadata (no file I/O)
+    # Build COWAN store from cached template + decomposition (no file I/O)
     cowan = build_cowan_store_in_memory(
-        scaled_params, cache.raw_params, cache.plan,
+        cache.plan, slater=slater, soc=soc,
         cowan_template=cache.cowan_template,
         cowan_metadata=cache.cowan_metadata,
+        decomposition=cache.decomposition,
         device=device,
     )
 
@@ -279,8 +278,7 @@ def calcXAS_batch(
     
     Optimized for parameter sweeps: computes N spectra 2-5× faster than
     N sequential calls to calcXAS_cached() by:
-    - Computing V(11) residual once (shared across all parameter sets)
-    - Batching atomic parameter scaling
+    - Sharing the HAMILTONIAN decomposition across all parameter sets
     - Amortizing fixture loading overhead
     
     Expected speedup vs sequential calcXAS_cached():
@@ -293,10 +291,10 @@ def calcXAS_batch(
     cache : CachedFixture
         Pre-loaded fixture from :func:`preload_fixture`.
     slater_values : torch.Tensor, shape (N,)
-        Array of Slater scale factors (one per spectrum).
+        Absolute Slater reductions (one per spectrum).
         If ``requires_grad=True``, per-spectrum gradients preserved.
     soc_values : torch.Tensor, shape (N,)
-        Array of spin-orbit scale factors (one per spectrum).
+        Absolute spin-orbit reductions (one per spectrum).
         If ``requires_grad=True``, per-spectrum gradients preserved.
     cf, delta, u, lmct, mlct : optional
         Physics parameters (same for all N spectra in the batch).
@@ -356,13 +354,12 @@ def calcXAS_batch(
     - N=5000: ~2.5 GB
     
     For large N (>1000), consider splitting into smaller batches if
-    memory constrained. Each batch still benefits from V(11) sharing.
+    memory constrained. Each batch still shares the decomposition.
     
     Crystal-field parameters (cf) are applied uniformly across the batch.
     For per-spectrum CF variation, batch over cf externally and stack results.
     """
     import copy
-    from multitorch.atomic.scaled_params import batch_scale_atomic_params
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory_batch
@@ -399,21 +396,13 @@ def calcXAS_batch(
     # Apply parameter overrides (same for all spectra)
     ban = modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, lmct=lmct, mlct=mlct)
     
-    # *** KEY OPTIMIZATION 1: Batch scale atomic params ***
-    # Produces ScaledAtomicParams with (N,) tensors instead of scalars
-    scaled_params_batch = batch_scale_atomic_params(
-        cache.raw_params, 
-        slater_values=slater_values, 
-        soc_values=soc_values,
-    )
-    
-    # *** KEY OPTIMIZATION 2: Batch COWAN rebuild with shared V(11) ***
-    # Computes V(11) once, then rebuilds N Hamiltonians
-    # This is the 2-3× speedup source
+    # Batch COWAN rebuild: every HAMILTONIAN block becomes (N, dim, dim)
+    # from the shared decomposition.
     cowan_batch = build_cowan_store_in_memory_batch(
-        scaled_params_batch, cache.raw_params, cache.plan,
+        cache.plan, slater_values=slater_values, soc_values=soc_values,
         cowan_template=cache.cowan_template,
         cowan_metadata=cache.cowan_metadata,
+        decomposition=cache.decomposition,
         device=device,
     )
     
@@ -652,10 +641,12 @@ def calcXAS(
         X-ray edge ('l' for L-edge 2p→3d, 'k' for K-edge 1s→3p).
     cf : dict
         Crystal field parameters: {'tendq': float, 'ds': float, 'dt': float}.
-    slater : float
-        Slater integral reduction factor (0-1, default 0.8).
-    soc : float
-        Spin-orbit coupling reduction factor (0-1, default 1.0).
+    slater : float or torch.Tensor
+        Slater integral reduction: fraction of the Hartree-Fock F^k and G^k
+        (default 0.8). On the fixture path it applies to every configuration
+        (ground, ligand-hole, core-hole); 0.8 reproduces the bundled fixtures.
+    soc : float or torch.Tensor
+        Spin-orbit reduction: fraction of the Hartree-Fock ζ (default 1.0).
     delta : dict or None
         Charge transfer energies: {'lmct': float, 'mlct': float}.
     u : list or None
@@ -728,7 +719,7 @@ def calcXAS(
     # Uses fixture-template approach: angular RME data from pre-computed
     # Fortran .rme_rcg/.rme_rac files, with user-supplied physics params
     # (cf, delta, slater, soc) applied as overrides. Autograd flows through
-    # slater_scale and soc_scale into the COWAN store Hamiltonian blocks.
+    # slater and soc into every COWAN store HAMILTONIAN block.
     return _calcXAS_phase5(
         element=element, valence=valence, sym=sym, edge=edge,
         cf=cf, slater=slater, soc=soc, delta=delta, u=u,
@@ -851,33 +842,6 @@ def _find_fixture_dir(element: str, valence: str, sym: str) -> Path:
     )
 
 
-def _find_rcn31_out(fixture_dir: Path, element: str, valence: str) -> Path:
-    """Find the .rcn31_out file for atomic parameters.
-
-    Some fixtures (e.g. nid8ct) don't have their own .rcn31_out.
-    Fall back to the single-config fixture for the same element/valence.
-    """
-    from multitorch.atomic.tables import get_d_electrons
-
-    # Try in the fixture dir itself
-    for f in fixture_dir.glob("*.rcn31_out"):
-        return f
-
-    # Fall back: look in the reference_data root for {elem}d{n_d}
-    refdata = fixture_dir.parent
-    n_d = get_d_electrons(element, valence)
-
-    # Try common naming patterns
-    for pattern in [f"*d{n_d}*/*.rcn31_out", f"*{element.lower()}*/*.rcn31_out"]:
-        matches = sorted(refdata.glob(pattern))
-        if matches:
-            return matches[0]
-
-    raise FileNotFoundError(
-        f"No .rcn31_out found for {element} d{n_d} in {refdata}"
-    )
-
-
 def _find_primary_fixture(fixture_dir: Path, pattern: str) -> Path:
     """Find a fixture file, excluding _abs/_ems RIXS variants."""
     candidates = sorted(fixture_dir.glob(pattern))
@@ -918,8 +882,6 @@ def _calcXAS_phase5(
     flows through ``slater`` and ``soc`` into the COWAN store Hamiltonian
     blocks via :mod:`~multitorch.hamiltonian.build_cowan`.
     """
-    from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
-    from multitorch.atomic.scaled_params import scale_atomic_params
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
@@ -933,32 +895,25 @@ def _calcXAS_phase5(
     ban_path = _find_primary_fixture(fixture_dir, "*.ban")
     rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
     rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
-    rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
 
     # Step 2: Parse template BanData and apply user overrides (C2)
     ban = read_ban(ban_path)
     ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
 
-    # Step 3: Load and scale atomic parameters (C3b + C3c)
-    raw_params = read_rcn31_out_params(rcn31_path)
-    scaled_params = scale_atomic_params(
-        raw_params, slater_scale=slater, soc_scale=soc,
-    )
-
-    # Step 4: Build RAC structure from fixture (C3d)
+    # Step 3: Build RAC structure from fixture (C3d)
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
     )
 
-    # Step 5: Build COWAN store with autograd-carrying params (C3e)
+    # Step 4: COWAN store with every HAMILTONIAN block rebuilt at (slater, soc)
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
+        plan, slater=slater, soc=soc, source_rcg_path=rcg_path, device=device,
     )
 
-    # Step 6: Assemble Hamiltonian and diagonalize (C1)
+    # Step 5: Assemble Hamiltonian and diagonalize (C1)
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
-    # Step 7: Extract stick spectrum
+    # Step 6: Extract stick spectrum
     E_sticks, M_sticks, _ = get_sticks_from_banresult(
         result, T=T, max_gs=max_gs, device=device,
     )
@@ -968,7 +923,7 @@ def _calcXAS_phase5(
             f"No transitions found for {element} {valence} {sym}"
         )
 
-    # Step 8: Set energy range and broaden
+    # Step 7: Set energy range and broaden
     E_min = float(E_sticks.min())
     E_max = float(E_sticks.max())
     if xmin is None:
@@ -1151,10 +1106,12 @@ def calcXAS_from_scratch(
         Oxidation state ('i', 'ii', 'iii', 'iv').
     cf : dict
         Crystal field parameters. Must include 'tendq' (10Dq in eV).
-    slater : float
-        Slater integral reduction factor (0-1, default 0.8).
-    soc : float
-        Spin-orbit coupling reduction factor (0-1, default 1.0).
+    slater : float or torch.Tensor
+        Slater integral reduction: fraction of the Hartree-Fock F^k and G^k
+        (default 0.8). On the fixture path it applies to every configuration
+        (ground, ligand-hole, core-hole); 0.8 reproduces the bundled fixtures.
+    soc : float or torch.Tensor
+        Spin-orbit reduction: fraction of the Hartree-Fock ζ (default 1.0).
     T : float
         Temperature in Kelvin.
     beam_fwhm, gamma1, gamma2, med_energy : float
@@ -1362,7 +1319,7 @@ def calcRIXS(
     elif element and valence and sym and edge:
         store = _build_rixs_store_phase5(
             element, valence, sym, edge,
-            cf or {}, kwargs.get('slater', 1.0), kwargs.get('soc', 1.0),
+            cf or {}, kwargs.get('slater', 0.8), kwargs.get('soc', 1.0),
             kwargs.get('delta'), kwargs.get('lmct'), kwargs.get('mlct'),
             device,
         )
@@ -1445,8 +1402,6 @@ def _run_phase5_pipeline(
         If non-empty, look for fixture files named ``{case_id}{suffix}.*``
         instead of the default. Used for emission fixtures (suffix='_ems').
     """
-    from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
-    from multitorch.atomic.scaled_params import scale_atomic_params
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
@@ -1474,21 +1429,14 @@ def _run_phase5_pipeline(
         rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
         rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
 
-    rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
-
     ban = read_ban(ban_path)
     ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
-
-    raw_params = read_rcn31_out_params(rcn31_path)
-    scaled_params = scale_atomic_params(
-        raw_params, slater_scale=slater, soc_scale=soc,
-    )
 
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
     )
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
+        plan, slater=slater, soc=soc, source_rcg_path=rcg_path, device=device,
     )
     return assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
@@ -1703,18 +1651,15 @@ def _calcDOC_phase5(
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
     from multitorch.hamiltonian.build_rac import build_rac_in_memory
-    from multitorch.atomic.scaled_params import scale_atomic_params
-    from multitorch.atomic.parameter_fixtures import read_rcn31_out_params
     from multitorch.io.read_ban import read_ban
 
     fixture_dir = _find_fixture_dir(element, valence, sym)
     ban_path = _find_primary_fixture(fixture_dir, "*.ban")
     rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
     rac_path = _find_primary_fixture(fixture_dir, "*.rme_rac")
-    rcn31_path = _find_rcn31_out(fixture_dir, element, valence)
     ban = read_ban(str(ban_path))
 
-    slater = kwargs.pop('slater', 1.0)
+    slater = kwargs.pop('slater', 0.8)
     soc = kwargs.pop('soc', 1.0)
     delta = kwargs.pop('delta', None)
     lmct = kwargs.pop('lmct', None)
@@ -1722,16 +1667,11 @@ def _calcDOC_phase5(
 
     ban = modify_ban_params(ban, cf=cf, delta=delta, lmct=lmct, mlct=mlct)
 
-    raw_params = read_rcn31_out_params(str(rcn31_path))
-    scaled_params = scale_atomic_params(
-        raw_params, slater_scale=slater, soc_scale=soc,
-    )
-
     rac, plan = build_rac_in_memory(
         ban, source_rac_path=rac_path, source_rcg_path=rcg_path,
     )
     cowan = build_cowan_store_in_memory(
-        scaled_params, raw_params, plan, source_rcg_path=rcg_path, device=device,
+        plan, slater=slater, soc=soc, source_rcg_path=rcg_path, device=device,
     )
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban, device=device)
 
