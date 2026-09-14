@@ -1161,9 +1161,24 @@ def _oh_irrep_matrices_real_std() -> Dict[str, List[np.ndarray]]:
     for i in range(24):
         P_E += e_chars[i] * D2_real[i]
     P_E *= 2.0 / 24.0
-    eigvals, eigvecs = np.linalg.eigh(P_E)
-    idx = np.argsort(-eigvals)
-    e_basis = eigvecs[:, idx[:2]]  # 5×2
+    # The E subspace of the l=2 real harmonics is span{d(x²−y²), d(z²)}
+    # (standard m-ordering: index 4 and index 2). Pin the partner basis to
+    # those two functions explicitly. Taking it from np.linalg.eigh(P_E) left
+    # it to LAPACK's choice inside a degenerate eigenspace. Every choice is a
+    # valid Oh irrep basis, but the D4h emitters are not invariant under it:
+    # the partner-resolved Oh→D4h subduction needs partner 0 ∝ x²−y² (B1g),
+    # partner 1 ∝ z² (A1g), with equal signs (a relative sign flip also breaks
+    # them, so the emitters carry a hidden E-partner sign convention; plan
+    # residual 21). With another LAPACK's rotation, from-scratch D4h at
+    # Dt, Ds ≠ 0 was wrong by up to 0.64 eV (Ni d8 vs the Fortran store,
+    # 2026-09-14). Oracle: tests/test_integration/test_from_scratch_fortran_parity.py
+    # (D4h at nonzero Dt, Ds, with eigenvectors scrambled inside degenerate
+    # subspaces).
+    e_basis = np.zeros((5, 2), dtype=np.float64)
+    e_basis[4, 0] = 1.0   # partner 0: d(x²−y²)
+    e_basis[2, 1] = 1.0   # partner 1: d(z²)
+    if not np.allclose(P_E @ e_basis, e_basis, atol=1e-12):
+        raise RuntimeError("E projector does not fix the d(x²−y²), d(z²) basis; check real-SH ordering")
     result['E'] = [e_basis.T @ D @ e_basis for D in D2_real]
 
     return result
