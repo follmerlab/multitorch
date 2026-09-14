@@ -243,6 +243,31 @@ def assemble_and_diagonalize_in_memory(
     -------
     BanResult with eigenvalues, eigenvectors, and transition matrices per triad.
     """
+    c = _assembly_context(rac, ban)
+
+    # 2. Process each triad
+    results = []
+    for gs_sym, act_sym, fs_sym in ban.triads:
+        triad = _assemble_one_triad(
+            rac, cowan, ban,
+            gs_sym, act_sym, fs_sym,
+            c["operators"], c["hybr_channels"],
+            c["xham"], c["xmix"],
+            c["eg_offsets"], c["ef_offsets"],
+            c["gs_dims"], c["fs_dims"],
+            c["irrep_dim"],
+            c["gs_cowan_sec"], c["fs_cowan_sec"],
+            c["nconf"],
+            device,
+        )
+        if triad is not None:
+            results.append(triad)
+
+    return BanResult(triads=results, ban=ban)
+
+
+def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
+    """Operator names, parameters, offsets, sections and per-config dimensions shared by all triads."""
     nconf = ban.nconf_gs
     xham = ban.xham[0].values if ban.xham else [1.0]
     xmix = ban.xmix[0].values if ban.xmix else []
@@ -287,25 +312,34 @@ def assemble_and_diagonalize_in_memory(
     # gives the ground state size, the ket dimension gives the final state size.
     gs_dims, fs_dims = _get_config_dims_from_transi(rac, nconf)
 
-    # 2. Process each triad
-    results = []
-    for gs_sym, act_sym, fs_sym in ban.triads:
-        triad = _assemble_one_triad(
-            rac, cowan, ban,
-            gs_sym, act_sym, fs_sym,
-            operators, hybr_channels,
-            xham, xmix,
-            eg_offsets, ef_offsets,
-            gs_dims, fs_dims,
-            irrep_dim,
-            gs_cowan_sec, fs_cowan_sec,
-            nconf,
-            device,
-        )
-        if triad is not None:
-            results.append(triad)
+    return dict(
+        nconf=nconf, xham=xham, xmix=xmix, eg_offsets=eg_offsets, ef_offsets=ef_offsets,
+        operators=operators, hybr_channels=hybr_channels, irrep_dim=irrep_dim,
+        gs_dims=gs_dims, fs_dims=fs_dims, gs_cowan_sec=gs_cowan_sec, fs_cowan_sec=fs_cowan_sec,
+    )
 
-    return BanResult(triads=results, ban=ban)
+
+def assemble_ground_hamiltonians(cowan, rac: RACFileFull, ban: BanData, device=None) -> Dict[str, tuple]:
+    """Ground-state Hamiltonian of every ground irrep, without the final states.
+
+    Returns ``{gs_sym: (H_gs, conf_labels, conf_sizes)}``, each ``H_gs``
+    exactly the matrix :func:`assemble_and_diagonalize_in_memory` diagonalises
+    for that irrep (configuration blocks, energy offsets, hybridisation).
+    Used for ground-state analysis (:mod:`multitorch.analysis.ground_state`),
+    where assembling the much larger final-state blocks would be wasted work.
+    """
+    c = _assembly_context(rac, ban)
+    out: Dict[str, tuple] = {}
+    for gs_sym, _, _ in ban.triads:
+        if gs_sym in out:
+            continue
+        built = _ground_hamiltonian(
+            rac, cowan, gs_sym, c["operators"], c["hybr_channels"], c["xham"], c["xmix"],
+            c["eg_offsets"], c["gs_dims"], c["irrep_dim"], c["gs_cowan_sec"], c["nconf"], device,
+        )
+        if built is not None:
+            out[gs_sym] = built
+    return out
 
 
 def _get_config_dims_from_transi(
@@ -340,7 +374,15 @@ def _get_config_dims_from_transi(
     fs_dims: Dict[str, List[int]] = {}
 
     for (gs_sym, act_sym, fs_sym, geom), blocks in transi_groups.items():
-        # blocks are in config order: conf 1, conf 2, ...
+        # blocks are in config order: conf 1, conf 2, ... A triad with a
+        # repeated (PRMULT) coupling lists every copy, grouped by configuration
+        # (conf 1 copy 1, conf 1 copy 2, conf 2 copy 1, ...). Counting each copy
+        # as a configuration duplicated the ligand-hole block without its energy
+        # offset or hybridisation for the Γ8 irreps of every half-integer-J
+        # fixture (Cr3+, Mn2+, Fe3+, Co2+): dark phantom states, a 3810- instead
+        # of 1410-state Fe3+ final block (ttban prints 1410).
+        if len(blocks) > nconf and len(blocks) % nconf == 0:
+            blocks = blocks[::len(blocks) // nconf]
         if gs_sym not in gs_dims:
             gs_dims[gs_sym] = []
         if fs_sym not in fs_dims:
@@ -356,30 +398,22 @@ def _get_config_dims_from_transi(
     return gs_dims, fs_dims
 
 
-def _assemble_one_triad(
-    rac, cowan, ban,
-    gs_sym, act_sym, fs_sym,
+def _ground_hamiltonian(
+    rac, cowan, gs_sym,
     operators, hybr_channels,
     xham, xmix,
-    eg_offsets, ef_offsets,
-    gs_dims, fs_dims,
-    irrep_dim,
-    gs_cowan_sec, fs_cowan_sec,
-    nconf, device,
-) -> Optional[TriadResult]:
-    """Assemble and diagonalize one symmetry triad."""
-
+    eg_offsets, gs_dims, irrep_dim,
+    gs_cowan_sec, nconf, device,
+):
+    """Assemble one ground irrep's Hamiltonian: ``(H_gs, conf_labels, conf_sizes)`` or ``None``."""
     # Get dimensions per config for this irrep
     gs_conf_sizes = gs_dims.get(gs_sym, [])
-    fs_conf_sizes = fs_dims.get(fs_sym, [])
 
     if not gs_conf_sizes:
         return None
 
     idim_gs = irrep_dim.get(gs_sym, 1)
-    idim_fs = irrep_dim.get(fs_sym, 1)
     idim_scale_gs = 1.0 / math.sqrt(idim_gs)
-    idim_scale_fs = 1.0 / math.sqrt(idim_fs)
 
     # ── Build ground state Hamiltonian ──
     n_gs = sum(gs_conf_sizes)
@@ -427,6 +461,34 @@ def _assemble_one_triad(
         V *= idim_scale_gs
         H_gs[:d1, d1:d1 + d2] = V
         H_gs[d1:d1 + d2, :d1] = V.T
+
+    return H_gs, conf_labels_gs, gs_conf_sizes
+
+
+def _assemble_one_triad(
+    rac, cowan, ban,
+    gs_sym, act_sym, fs_sym,
+    operators, hybr_channels,
+    xham, xmix,
+    eg_offsets, ef_offsets,
+    gs_dims, fs_dims,
+    irrep_dim,
+    gs_cowan_sec, fs_cowan_sec,
+    nconf, device,
+) -> Optional[TriadResult]:
+    """Assemble and diagonalize one symmetry triad."""
+
+    built = _ground_hamiltonian(
+        rac, cowan, gs_sym, operators, hybr_channels, xham, xmix,
+        eg_offsets, gs_dims, irrep_dim, gs_cowan_sec, nconf, device,
+    )
+    if built is None:
+        return None
+    H_gs, conf_labels_gs, gs_conf_sizes = built
+    n_gs = H_gs.shape[0]
+    fs_conf_sizes = fs_dims.get(fs_sym, [])
+    idim_fs = irrep_dim.get(fs_sym, 1)
+    idim_scale_fs = 1.0 / math.sqrt(idim_fs)
 
     # Diagonalize ground state
     Eg, Ug = safe_eigh(H_gs)
