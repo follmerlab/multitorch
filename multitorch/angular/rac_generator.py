@@ -153,6 +153,22 @@ def _ground_hamiltonian_operators(
     return ops
 
 
+def _ground_basis_states(l: int, n: int, j_sizes: Dict[float, int]) -> Dict[float, List[Tuple[float, float]]]:
+    """Total (S, L) of every row of the ground HAMILTONIAN J blocks (the Coulomb/SOC operator basis)."""
+    from multitorch.angular.rme import _j_basis_for_terms, _lsterms_and_cfp
+
+    basis = _j_basis_for_terms(_lsterms_and_cfp(l, n)[0])
+    return {J: [(float(st.ls_term.S), float(st.ls_term.L)) for st in basis[J]] for J in j_sizes}
+
+
+def _excited_basis_states(l_val: int, n_val_gs: int, l_core: int, n_core_gs: int,
+                          j_sizes: Dict[float, int]) -> Dict[float, List[Tuple[float, float]]]:
+    """Total (S, L) of every row of the excited HAMILTONIAN J blocks (``compute_two_shell_operators`` basis)."""
+    basis, _ = compute_two_shell_operators(l_core, n_core_gs - 1, l_val, n_val_gs + 1)
+    return {J: [(float(st.S_total), float(st.L_total)) for st in basis[J]] if J in basis else []
+            for J in j_sizes}
+
+
 def _ground_reference_ev(l: int, raw_slater_ry: Dict[str, float], raw_zeta_ry, ry_to_ev: float) -> Dict[str, float]:
     ref = {f"F{k}_11": raw_slater_ry.get(f"F{k}", 0.0) * ry_to_ev for k in range(2, 2 * l + 1, 2)}
     ref["zeta_1"] = raw_zeta_ry * ry_to_ev
@@ -1877,12 +1893,14 @@ def generate_ledge_template(
             {J: i - 1 for J, i in gs_ham_idx.items()},
             _ground_hamiltonian_operators(l_val, n_val_gs, gs_j_sizes),
             gs_j_sizes, label='gs',
+            states=_ground_basis_states(l_val, n_val_gs, gs_j_sizes),
         ),
         zero_anchor_config(
             0, 'EXCITE', ((l_core, n_core_gs - 1), (l_val, n_val_gs + 1)),
             {J: i - 1 for J, i in ex_ham_idx.items()},
             _excited_hamiltonian_operators(l_val, n_val_gs, l_core, n_core_gs),
             ex_j_sizes, label='ex',
+            states=_excited_basis_states(l_val, n_val_gs, l_core, n_core_gs, ex_j_sizes),
         ),
     ])
     return rac, cowan_store, decomposition

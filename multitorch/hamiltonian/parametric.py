@@ -35,7 +35,7 @@ Parameter names: operators are keyed by shell index (``F2_11``, ``F2_12``,
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Tuple, Union
 
 import torch
@@ -83,6 +83,8 @@ class ConfigDecomposition:
     reference_soc: float = 1.0
     max_residual: float = 0.0
     label: Optional[str] = None
+    # total (S, L) of every basis row of each J block, in store order
+    states: Dict[float, List[Tuple[float, float]]] = field(default_factory=dict)
 
     # ── fixture-path vocabulary (S1a) ──
     @property
@@ -195,6 +197,7 @@ def zero_anchor_config(
     dims: Mapping[float, int],
     reference: Optional[Mapping[str, float]] = None,
     label: Optional[str] = None,
+    states: Optional[Mapping[float, List[Tuple[float, float]]]] = None,
 ) -> ConfigDecomposition:
     """Decomposition with zero anchor (E_av = 0): ``H = Σ p_i O_i`` (from scratch)."""
     ops = {
@@ -209,6 +212,7 @@ def zero_anchor_config(
         operators=ops,
         anchor={J: torch.zeros(dims[J], dims[J], dtype=DTYPE) for J in block_index},
         label=label,
+        states={J: list(states[J]) for J in block_index} if states else {},
     )
 
 

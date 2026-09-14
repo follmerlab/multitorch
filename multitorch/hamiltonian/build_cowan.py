@@ -285,6 +285,7 @@ def _decompose_config(
         operators={n: {J: torch.as_tensor(ops.blocks[n][J], dtype=DTYPE) for J in blocks} for n in names},
         anchor=fixture, reference_slater=slater_reduction, reference_soc=soc_reduction,
         max_residual=worst, label=f"{section}.{block_type}",
+        states={J: list(ops.states[J]) for J in blocks},
     )
 
 

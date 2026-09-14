@@ -33,7 +33,7 @@ parameters on the third shell would fail the decomposition residual check.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from typing import Dict, List, Tuple
 
@@ -59,12 +59,14 @@ class ConfigurationOperators:
     ``blocks[name][J]`` is a (dim_J, dim_J) array carrying sqrt(2J+1) and
     relative to the configuration average. Names: ``F{k}_{ii}`` (intra-shell
     Coulomb), ``F{k}_12`` / ``G{k}_12`` (inter-shell direct / exchange),
-    ``zeta_{i}`` (spin-orbit of shell i).
+    ``zeta_{i}`` (spin-orbit of shell i). ``states[J]`` lists the total
+    ``(S, L)`` of every basis row, in block order.
     """
 
     shells: Tuple[Shell, ...]
     dims: Dict[float, int]
     blocks: Dict[str, Dict[float, np.ndarray]]
+    states: Dict[float, List[Tuple[float, float]]] = field(default_factory=dict)
 
     @staticmethod
     def is_soc(name: str) -> bool:
@@ -104,7 +106,8 @@ def _one_shell(l: int, n: int) -> ConfigurationOperators:
         blocks.setdefault(f"F{k}_11", {})[J] = M
     blocks = {name: _gauged(b, signs) for name, b in blocks.items()}
     blocks["zeta_1"] = _gauged(compute_soc_blocks(l, n), signs)
-    return ConfigurationOperators(((l, n),), {J: len(st) for J, st in basis.items()}, blocks)
+    states = {J: [(float(s.ls_term.S), float(s.ls_term.L)) for s in st] for J, st in basis.items()}
+    return ConfigurationOperators(((l, n),), {J: len(st) for J, st in basis.items()}, blocks, states)
 
 
 def _two_shell(s1: Shell, s2: Shell) -> ConfigurationOperators:
@@ -112,7 +115,8 @@ def _two_shell(s1: Shell, s2: Shell) -> ConfigurationOperators:
     g1, g2 = _term_gauge(*s1), _term_gauge(*s2)
     signs = {J: np.array([g1[s.term1_idx] * g2[s.term2_idx] for s in st]) for J, st in basis.items()}
     blocks = {name: _gauged(b, signs) for name, b in ops.items()}
-    return ConfigurationOperators((s1, s2), {J: len(st) for J, st in basis.items()}, blocks)
+    states = {J: [(float(s.S_total), float(s.L_total)) for s in st] for J, st in basis.items()}
+    return ConfigurationOperators((s1, s2), {J: len(st) for J, st in basis.items()}, blocks, states)
 
 
 def _three_shell_spectator(s1: Shell, s2: Shell, s3: Shell) -> ConfigurationOperators:
@@ -203,7 +207,8 @@ def _three_shell_spectator(s1: Shell, s2: Shell, s3: Shell) -> ConfigurationOper
         signs = np.array([g1[pairs[p][0].index] * g2[pairs[p][1].index] * g3[c.index] for p, c, _, _ in st])
         for name in names:
             blocks[name][J] = signs[:, None] * mats[name] * signs[None, :]
-    return ConfigurationOperators((s1, s2, s3), {J: len(st) for J, st in basis.items()}, blocks)
+    states = {J: [(float(S), float(L)) for _, _, S, L in st] for J, st in basis.items()}
+    return ConfigurationOperators((s1, s2, s3), {J: len(st) for J, st in basis.items()}, blocks, states)
 
 
 @lru_cache(maxsize=64)
@@ -218,7 +223,7 @@ def configuration_operators(open_shells: Tuple[Shell, ...]) -> ConfigurationOper
         if not 0 < n < 4 * l + 2:
             raise ValueError(f"shell (l={l}, n={n}) is not open")
     if len(shells) == 0:
-        return ConfigurationOperators((), {0.0: 1}, {})
+        return ConfigurationOperators((), {0.0: 1}, {}, {0.0: [(0.0, 0.0)]})
     if len(shells) == 1:
         return _one_shell(*shells[0])
     if len(shells) == 2:
