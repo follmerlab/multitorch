@@ -22,4 +22,4 @@ from multitorch.device_utils import (
     get_optimal_device, suggest_device_for_xas, suggest_device_for_rixs,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.2.0.dev0"

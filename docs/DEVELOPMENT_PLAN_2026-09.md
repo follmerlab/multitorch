@@ -235,6 +235,17 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
 
 ---
 
+### Decisions after the v2 Fe fits (2026-09-15)
+
+The v2 fits (17 fits, report `fits/results/v2_final/latex/fe_macrocycle_multiplet_fits.pdf`, data `/data/ahf/multitorch/fits/v2_2026-09/final/`) showed: charge transfer lowered the loss for every spectrum and is required for Fe(III)Pc-Cl; tetragonal symmetry changes the FePc ground state; no fit reproduces FePc's S = 1; the lowest-loss fits of FePc and Fe(TPC)Cl sit on spin crossovers. The decisive missing model is D4h + charge transfer.
+
+- **D-2: WP-C comes next, before WP-B, built on the existing Oh/D4h emitters for integer J.** Fe(II) D4h + LMCT answers the FePc/corrole questions without half-integer J; `nid8ct` (Fortran Ni d⁸ D4h + CT) is the ready oracle. WP-B2a (half-integer J, Fe(III) D4h) follows; B1–B3 (general gauge-covariant point groups) after that. This reverses the §3 arrow B → C for the D4h case only; WP-C's lower-symmetry hybridisation channels still come with WP-B.
+- **Side items, in this order:**
+  1. *Residual 21 first* (before WP-C adds emitters): find why a relative sign flip of the Oh E partners breaks the D4h emitters; make them gauge-covariant or pin the convention with a test. Every new WP-C emitter gets the LAPACK-scramble test (`tests/tools/lapack_scramble.py`).
+  2. *Merge develop → main* as 0.2.0.dev0 (WP-S, WP-A, the three 2026-09-14 fixes and `multitorch.analysis`; suite 718 passing).
+  3. *Fit driver* (`fits/fit_v2.py`, outside the package): GPU stage-1 option, and spin-restricted fits (keep or penalise starts by ⟨S²⟩ via `analyze_ground_state`); first run: FePc D4h ionic restricted to S = 1.
+- **Not changed:** D-1 (pyctm Boltzmann weights) stays deferred; residuals 14 (Cr³⁺) and 15 (max_gs) stay open.
+
 ## 3. Sequencing
 
 ```mermaid
