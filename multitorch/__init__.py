@@ -14,7 +14,7 @@ Usage:
 # Public API
 from multitorch.api.calc import (
     calcXAS, calcXAS_from_scratch, calcXES, calcRIXS, calcDOC,
-    preload_fixture, calcXAS_cached, CachedFixture,
+    preload_fixture, preload_from_scratch, calcXAS_cached, CachedFixture,
     calcXAS_batch, batch_parameter_sweep,  # Phase 2 batch API
 )
 from multitorch.api.plot import getXAS, getXES

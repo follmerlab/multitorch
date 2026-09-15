@@ -1442,6 +1442,11 @@ def generate_ledge_template(
     # Half-integer J would require D4h double-group tables (not yet
     # tabulated). cf_rank is fixed at 4 because the d4h dispatcher uses
     # rank-4 (TENDQ/DT) and rank-2 (DS) operators by construction.
+    if sym == 'oh' and (is_half_gs or is_half_ex):
+        raise NotImplementedError(
+            "half-integer J (odd electron count: Cr3+, Mn2+, Fe3+, Co2+, Cu2+, ...) is not supported from "
+            "scratch: the legacy Oh double-group emission breaks the dipole sum rule "
+            "(non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5). Planned in WP-B2a; use the Fortran fixtures meanwhile.")
     if sym == 'd4h':
         if is_half_gs or is_half_ex:
             raise NotImplementedError(

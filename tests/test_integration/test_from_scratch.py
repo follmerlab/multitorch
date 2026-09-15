@@ -109,23 +109,22 @@ def test_from_scratch_soc_changes_spectrum():
 # ─────────────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("element,valence", [
-    ("Co", "ii"),     # d7 — half-integer J
-    ("Mn", "ii"),     # d5 — half-integer J, high-spin
-    ("Cr", "iii"),    # d3 — half-integer J
-    ("Fe", "iii"),    # d5 — half-integer J
-    ("Ni", "iii"),    # d7 — half-integer J
-    ("Cu", "ii"),     # d9 — half-integer J, requires double-group support
+    ("Co", "ii"),     # d7
+    ("Mn", "ii"),     # d5
+    ("Cr", "iii"),    # d3
+    ("Fe", "iii"),    # d5
+    ("Ni", "iii"),    # d7
+    ("Cu", "ii"),     # d9
 ])
-def test_from_scratch_multi_element(element, valence):
-    """calcXAS_from_scratch works across the 3d series."""
-    x, y = calcXAS_from_scratch(
-        element=element, valence=valence,
-        cf={'tendq': 1.0},
-        slater=0.8, soc=1.0,
-        nbins=200,
-    )
-    assert y.max() > 0, f"Zero spectrum for {element} {valence}"
-    assert torch.isfinite(y).all()
+def test_from_scratch_refuses_half_integer_j(element, valence):
+    """Odd electron counts raise until WP-B2a.
+
+    These calls used to return finite, nonzero spectra that broke the dipole
+    sum rule (non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5); the
+    old test only checked "nonzero and finite".
+    """
+    with pytest.raises(NotImplementedError, match="half-integer"):
+        calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200)
 
 
 # ─────────────────────────────────────────────────────────────

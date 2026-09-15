@@ -468,8 +468,8 @@ def build_cowan_store_in_memory_batch(
     computed once and shared, so the per-sample cost is one scalar-times-matrix
     addition per (block, parameter).
     """
-    slater_values = as_scale(slater_values, device)
-    soc_values = as_scale(soc_values, device)
+    slater_values = as_scale(slater_values, device, "slater")
+    soc_values = as_scale(soc_values, device, "soc")
     if slater_values.ndim != 1 or soc_values.ndim != 1:
         raise ValueError(
             f"slater_values and soc_values must be 1D, got {tuple(slater_values.shape)} "

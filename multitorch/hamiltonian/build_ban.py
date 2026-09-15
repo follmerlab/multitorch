@@ -113,6 +113,11 @@ def modify_ban_params(
 
     # ── Crystal field ────────────────────────────────────────
     if cf and out.xham:
+        allowed = {'tendq', 'dt', 'ds'} if len(out.xham[0].values) >= 4 else {'tendq'}
+        unknown = set(cf) - allowed
+        if unknown:
+            raise ValueError(f"unknown crystal-field keys {sorted(unknown)} for this "
+                             f"{'D4h' if len(allowed) == 3 else 'Oh'} fixture; allowed {sorted(allowed)}")
         # Only override if cf contains actual keys; empty dict = no override.
         # Values may be torch tensors (for autograd); do NOT call float().
         n_ops = len(out.xham[0].values)

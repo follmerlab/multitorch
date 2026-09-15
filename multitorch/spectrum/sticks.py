@@ -5,6 +5,9 @@ Ported from pyctm/pyctm/get_spectrum.py::get_sticks() with numpy
 replaced by torch.Tensor. Fully differentiable w.r.t. temperature T.
 """
 from __future__ import annotations
+
+import math
+import numbers
 from typing import Optional, Tuple
 import torch
 
@@ -14,6 +17,23 @@ from multitorch.io.read_oba import BanOutput
 from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from multitorch.hamiltonian.assemble import BanResult
+
+
+def _check_pool(T, max_gs) -> None:
+    """Validate the Boltzmann pool: T >= 0; max_gs a positive integer; T = 0 only with max_gs = 1.
+
+    ``T = 0`` applies no Boltzmann weighting, so with ``max_gs > 1`` every pooled
+    level would count fully: not the T → 0 limit (nid8ct max_gs=10: 6.6x the
+    intensity of T = 1e-3 K).
+    """
+    if isinstance(max_gs, bool) or not isinstance(max_gs, numbers.Integral) or max_gs < 1:
+        raise ValueError(f"max_gs must be a positive integer, got {max_gs!r}")
+    T = float(T)
+    if not math.isfinite(T) or T < 0:
+        raise ValueError(f"T must be a finite temperature >= 0 K, got {T!r}")
+    if T == 0 and max_gs > 1:
+        raise ValueError("T = 0 applies no Boltzmann weighting, so max_gs > 1 would weight every pooled level "
+                         "equally; use max_gs=1 or a small T > 0")
 
 
 def get_sticks(
@@ -30,7 +50,7 @@ def get_sticks(
     ban : BanOutput
         Parsed ttban output from read_ban_output().
     T : float
-        Temperature in Kelvin (0 = no Boltzmann weighting).
+        Temperature in Kelvin (0 = no Boltzmann weighting; only with ``max_gs=1``).
     max_gs : int
         Keep only this many lowest *distinct* ground state energies in the
         Boltzmann population pool. Higher values include more thermally
@@ -96,6 +116,7 @@ def get_sticks(
         return empty, empty, torch.tensor(0.0, dtype=DTYPE, device=device)
 
     # Find global minimum ground state energy (in eV — see docstring note)
+    _check_pool(T, max_gs)
     all_Eg_flat = torch.cat(all_Eg)
     Eg_min = all_Eg_flat.min()
 
@@ -178,7 +199,7 @@ def get_sticks_from_banresult(
     result : BanResult
         Output of ``assemble_and_diagonalize_in_memory``.
     T : float
-        Temperature in Kelvin (0 = no Boltzmann weighting).
+        Temperature in Kelvin (0 = no Boltzmann weighting; only with ``max_gs=1``).
     max_gs : int
         Number of lowest distinct ground-state energies to keep.
         Boltzmann weights are unnormalised (pyctm convention, decision D-1):
@@ -207,6 +228,7 @@ def get_sticks_from_banresult(
         empty = torch.zeros(0, dtype=DTYPE, device=device)
         return empty, empty, torch.tensor(0.0, dtype=DTYPE, device=device)
 
+    _check_pool(T, max_gs)
     all_Eg_flat = torch.cat(all_Eg)
     Eg_min = all_Eg_flat.min()
 

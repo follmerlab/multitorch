@@ -152,11 +152,12 @@ def analyze_ground_state(
     Real splittings smaller than the tolerance (e.g. a cubic zero-field
     splitting) are merged too; lower it for those.
     """
-    from multitorch.api.calc import _cache_ban
+    from multitorch.api.calc import _cache_ban, _check_atomic
     from multitorch.hamiltonian.assemble import assemble_ground_hamiltonians
     from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
 
     with torch.no_grad():
+        _check_atomic(cache, atomic)
         ban = _cache_ban(cache, cf, delta, u, lmct, None)
         store = rebuild_hamiltonian_store(cache.cowan_template, cache.decomposition,
                                           slater=slater, soc=soc, atomic=atomic)

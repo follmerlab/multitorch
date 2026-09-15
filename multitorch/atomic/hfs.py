@@ -537,6 +537,7 @@ class HFSResult:
     MESH: int                # number of mesh points
     converged: bool = False
     n_iter: int = 0
+    delta: float = float("nan")   # max |ΔV| (Ry) of the last iteration
 
     def orbital(self, nl: str) -> Optional[OrbitalState]:
         """Get orbital by label, e.g. '2P', '3D'."""
@@ -764,5 +765,6 @@ def hfs_scf(
         MESH=mesh,
         converged=converged,
         n_iter=niter if not converged else niter,
+        delta=DELTA_new,
     )
     return result

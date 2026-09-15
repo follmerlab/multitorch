@@ -156,6 +156,17 @@ def preload_from_scratch(
     )
 
 
+def _check_atomic(cache: CachedFixture, atomic) -> None:
+    """Reject overrides the XAS assembler never reads (fixture sections 0/1 of a two-configuration store)."""
+    if not atomic or cache.source == "scratch" or cache.ban.nconf_gs < 2:
+        return
+    unused = sorted(c.label for c in cache.decomposition.configs if c.section < 2 and c.label in atomic)
+    if unused:
+        raise ValueError(f"atomic overrides {unused} address HAMILTONIAN blocks of store sections 0/1, which the "
+                         f"charge-transfer assembler does not use; override '2.GROUND', '2.EXCITE', '3.GROUND' "
+                         f"or '3.EXCITE' instead")
+
+
 def _cache_ban(cache: CachedFixture, cf, delta, u, lmct, mlct):
     """BanData for one evaluation: fixture template with overrides, or the from-scratch XHAM."""
     import copy
@@ -317,6 +328,7 @@ def calcXAS_cached(
         )
 
     # Apply parameter overrides to a copy of the cached BAN
+    _check_atomic(cache, atomic)
     ban = _cache_ban(cache, cf, delta, u, lmct, mlct)
 
     # COWAN store from the cached template + decomposition (no file I/O;
@@ -490,6 +502,7 @@ def calcXAS_batch(
     soc_values = soc_values.to(device=device)
     
     # Apply parameter overrides (same for all spectra)
+    _check_atomic(cache, atomic)
     ban = _cache_ban(cache, cf, delta, u, lmct, mlct)
     
     # Batch COWAN rebuild: every HAMILTONIAN block becomes (N, dim, dim)
@@ -1072,6 +1085,20 @@ def _hfs_to_slater_params(
     return _hfs_to_slater_params_cached(*key)
 
 
+# Largest last-iteration |ΔV| (Ry) accepted from an SCF that did not reach its
+# 1e-8 tolerance. Ni 2p5 3d10 (the Ni2+ ligand-hole final configuration) settles
+# into a 3.7e-6 Ry limit cycle with every integral stable to 1e-5 eV between 130
+# and 1500 iterations; a genuinely unconverged SCF is far above this.
+HFS_STALL_TOL = 1e-4
+
+
+def _checked(result, Z, config):
+    if not result.converged and not result.delta <= HFS_STALL_TOL:
+        raise RuntimeError(f"HFS SCF did not converge for Z={Z} {config}: last |dV| = {result.delta:.2e} Ry "
+                           f"after {result.n_iter} iterations")
+    return result
+
+
 @functools.lru_cache(maxsize=32)
 def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
     gs_config, ex_config = dict(gs_items), dict(ex_items)
@@ -1085,14 +1112,14 @@ def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
     # is the HX correction term (WP-S S3b).
     exf = 0.65
     # Ground state HFS
-    hfs_gs = hfs_scf(Z, gs_config, zeta_method=zeta_method, EXF=exf)
+    hfs_gs = _checked(hfs_scf(Z, gs_config, zeta_method=zeta_method, EXF=exf), Z, gs_config)
     pnl_gs = {orb.nl_label.lower(): orb.P for orb in hfs_gs.orbitals
               if orb.P is not None}
     slater_gs = compute_slater_from_wavefunctions(
         pnl_gs, hfs_gs.r, hfs_gs.r[1].item() - hfs_gs.r[0].item())
 
     # Excited state HFS
-    hfs_ex = hfs_scf(Z, ex_config, zeta_method=zeta_method, EXF=exf)
+    hfs_ex = _checked(hfs_scf(Z, ex_config, zeta_method=zeta_method, EXF=exf), Z, ex_config)
     pnl_ex = {orb.nl_label.lower(): orb.P for orb in hfs_ex.orbitals
               if orb.P is not None}
     slater_ex = compute_slater_from_wavefunctions(
@@ -1132,6 +1159,20 @@ def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
     return gs_slater_ry, gs_zeta_ry, ex_slater_ry, ex_zeta_ry
 
 
+def _validate_from_scratch(element: str, valence: str, n_d: int, sym: str) -> None:
+    """Reject what the from-scratch L-edge generator cannot do, before the HFS run."""
+    if sym not in ("oh", "d4h"):
+        raise ValueError(f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h'")
+    if not 1 <= n_d <= 9:
+        raise ValueError(f"{element} {valence} has {n_d} 3d electrons; the from-scratch L-edge generator needs "
+                         f"an open 3d shell (1 to 9 electrons); d0 and d10 are not supported")
+    if n_d % 2:
+        raise NotImplementedError(
+            f"{element} {valence} (d{n_d}) has half-integer J; the from-scratch generator supports even "
+            f"electron counts only (plan WP-B2a). Its half-integer Oh output broke the dipole sum rule "
+            f"(non-integer ratios 4.5-10.2), so it is disabled; use preload_fixture for Cr3+, Mn2+, Fe3+ and Co2+.")
+
+
 def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: str):
     """(rac, template store, decomposition with HFS reference values) for one ion.
 
@@ -1146,6 +1187,7 @@ def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: s
 
     Z = get_atomic_number(element)
     n_d = get_d_electrons(element, valence)
+    _validate_from_scratch(element, valence, n_d, sym)
     gs_cfg_str, ex_cfg_str = get_l_edge_configs(element, valence)
     hfs = _hfs_to_slater_params(
         Z, parse_config_string(gs_cfg_str), parse_config_string(ex_cfg_str),

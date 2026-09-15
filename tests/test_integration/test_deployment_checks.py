@@ -160,14 +160,13 @@ class TestEdgeCaseElectronCounts:
     """Boundary d-electron counts must produce valid (possibly trivial) spectra."""
 
     def test_d1_ti_iii(self):
-        """d1 (Ti3+) — simplest non-trivial half-integer J case."""
+        """d1 (Ti3+) has half-integer J: refused until WP-B2a instead of a silently wrong spectrum."""
         from multitorch.api.calc import calcXAS_from_scratch
-        x, y = calcXAS_from_scratch(
-            element='Ti', valence='iii',
-            cf={'tendq': 1.0}, slater=0.8, soc=1.0, nbins=200,
-        )
-        assert y.max() > 0, "d1 Ti3+ should produce nonzero spectrum"
-        assert torch.isfinite(y).all()
+        with pytest.raises(NotImplementedError, match="half-integer"):
+            calcXAS_from_scratch(
+                element='Ti', valence='iii',
+                cf={'tendq': 1.0}, slater=0.8, soc=1.0, nbins=200,
+            )
 
     def test_d0_ti_iv(self):
         """d0 (Ti4+) — empty d-shell. Must either produce a finite

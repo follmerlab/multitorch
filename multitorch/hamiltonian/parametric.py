@@ -35,6 +35,8 @@ Parameter names: operators are keyed by shell index (``F2_11``, ``F2_12``,
 """
 from __future__ import annotations
 
+import numbers
+
 from dataclasses import dataclass, field
 from typing import Dict, List, Mapping, Optional, Tuple, Union
 
@@ -216,10 +218,18 @@ def zero_anchor_config(
     )
 
 
-def as_scale(x: Scalar, device=None) -> torch.Tensor:
+def as_scale(x: Scalar, device=None, name: str = "reduction") -> torch.Tensor:
+    """A Slater / spin-orbit reduction as a float64 tensor: a real number or tensor, finite and >= 0."""
     if isinstance(x, torch.Tensor):
-        return x.to(dtype=DTYPE, device=device)
-    return torch.as_tensor(float(x), dtype=DTYPE, device=device)
+        t = x.to(dtype=DTYPE, device=device)
+    elif isinstance(x, (bool, str, bytes)) or not isinstance(x, numbers.Real):
+        raise TypeError(f"{name} must be a real number or a torch.Tensor, got {type(x).__name__} {x!r}")
+    else:
+        t = torch.as_tensor(float(x), dtype=DTYPE, device=device)
+    with torch.no_grad():
+        if not bool(torch.isfinite(t).all()) or bool((t < 0).any()):
+            raise ValueError(f"{name} must be finite and >= 0 (a fraction of the atomic value), got {x!r}")
+    return t
 
 
 def rebuild_hamiltonian_store(
@@ -237,7 +247,7 @@ def rebuild_hamiltonian_store(
     eV, operator or alias names), e.g. ``{'ex': {'G1pd': 5.2}}``. All other
     blocks are the template tensors.
     """
-    slater, soc = as_scale(slater, device), as_scale(soc, device)
+    slater, soc = as_scale(slater, device, "slater"), as_scale(soc, device, "soc")
     atomic = dict(atomic or {})
     known = {c.label for c in decomposition.configs}
     unknown = set(atomic) - known

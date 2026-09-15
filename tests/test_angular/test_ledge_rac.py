@@ -282,15 +282,8 @@ def test_ledge_rac_sticks_nonzero():
     )
 
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban)
-    E, M, Eg_min = get_sticks_from_banresult(result, T=0.0, max_gs=10)
+    E, M, Eg_min = get_sticks_from_banresult(result, T=0.0, max_gs=1)
 
     assert E.numel() > 0, "No sticks"
-    total_intensity = (M ** 2).sum()  # M is amplitude, intensity = M²
-    # Wait, get_sticks_from_banresult returns amplitudes T, and
-    # the intensity is T² already squared by the function.
-    # Actually M here IS the amplitude; the stick spectrum squares it.
-    # But M = result.T (amplitudes), so M can be negative.
-    # The intensity is M (already Boltzmann-weighted amplitude).
-    # For T=0, all weights are 1, so M = amplitude.
-    total_m = M.abs().sum()
+    total_m = M.abs().sum()   # squared amplitudes, Boltzmann weight 1 at T = 0
     assert total_m > 0, "Zero total transition intensity"
