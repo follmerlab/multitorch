@@ -69,13 +69,12 @@ def test_cf_override_d4h(nid8ct_ban):
 
 
 def test_cf_override_d4h_partial(nid8ct_ban):
-    """D4h: only tendq overridden; dt/ds remain from template."""
+    """D4h: a partial cf sets the whole field; omitted dt/ds are 0, not nid8ct's template Ds = 0.1."""
+    assert nid8ct_ban.xham[0].values[3] == pytest.approx(0.1)
     out = modify_ban_params(nid8ct_ban, cf={'tendq': 1.5})
-    assert out.xham[0].values[0] == 1.0
-    assert out.xham[0].values[1] == 1.5
-    # dt and ds remain from template (0.0 and 0.1 for nid8ct)
-    assert out.xham[0].values[2] == nid8ct_ban.xham[0].values[2]
-    assert out.xham[0].values[3] == nid8ct_ban.xham[0].values[3]
+    assert out.xham[0].values == [1.0, 1.5, 0.0, 0.0]
+    kept = modify_ban_params(nid8ct_ban, cf={})
+    assert kept.xham[0].values == nid8ct_ban.xham[0].values
 
 
 def test_cf_override_oh(ni2_oh_ban):

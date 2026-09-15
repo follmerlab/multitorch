@@ -26,7 +26,6 @@ class TestDifferentiability:
             element='Ni', valence='ii', sym='oh', edge='l',
             cf={'tendq': 1.0},
             slater=0.8, soc=1.0, T=80,
-            use_phase5=True,
         )
 
         x, y = result
@@ -41,12 +40,10 @@ class TestDifferentiability:
         _, y1 = calcXAS(
             element='Ni', valence='ii', sym='oh', edge='l',
             cf={'tendq': 1.0}, slater=0.6, soc=1.0, T=80,
-            use_phase5=True,
         )
         _, y2 = calcXAS(
             element='Ni', valence='ii', sym='oh', edge='l',
             cf={'tendq': 1.0}, slater=1.0, soc=1.0, T=80,
-            use_phase5=True,
         )
         diff = (y1 - y2).abs().max().item()
         assert diff > 0.01, f"Spectra should differ with different slater: max diff = {diff:.6f}"

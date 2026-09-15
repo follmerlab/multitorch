@@ -98,3 +98,60 @@ def test_unconverged_hfs_raises_but_a_stalled_limit_cycle_is_accepted():
 
 def test_preload_from_scratch_is_exported():
     assert multitorch.preload_from_scratch is preload_from_scratch
+
+
+# ── FABLE_HANDOFF A1, A2, N7 ──
+
+def test_calcxas_rejects_misspelled_keywords():
+    from multitorch.api.calc import calcXAS
+    with pytest.raises(TypeError):
+        calcXAS("Ni", "ii", "oh", "l", {"tendq": 1.0}, tempreature=300)
+
+
+def test_calcdoc_and_calcrixs_reject_misspelled_keywords():
+    from multitorch.api.calc import calcDOC, calcRIXS
+    with pytest.raises(TypeError, match="unexpected"):
+        calcDOC("Ni", "ii", "oh", "l", {"tendq": 1.0}, slatter=0.7)
+    with pytest.raises(TypeError, match="unexpected"):
+        calcRIXS("Ni", "ii", "oh", "l", {"tendq": 1.0}, slatter=0.7)
+
+
+@pytest.mark.parametrize("edge", ["k", "m23", "", None])
+def test_only_the_l_edge_is_accepted(edge):
+    from multitorch.api.calc import calcXAS
+    with pytest.raises(NotImplementedError, match="L2,3"):
+        calcXAS("Ni", "ii", "oh", edge, {"tendq": 1.0}, nbins=200)
+    with pytest.raises(NotImplementedError, match="L2,3"):
+        preload_fixture("Ni", "ii", "oh", edge=edge)
+
+
+def test_ban_output_mode_ignores_edge():
+    from pathlib import Path
+    from multitorch.api.calc import calcXAS
+    ban_out = Path(__file__).parent.parent / "reference_data" / "ni2_d8_oh" / "ni2_d8_oh.ban_out"
+    x, y = calcXAS("", "", "", "", {}, ban_output_path=str(ban_out), nbins=200)
+    assert float(y.max()) > 0
+
+
+def test_partial_d4h_crystal_field_zeroes_the_omitted_tetragonal_terms():
+    """nid8ct ships Ds = 0.1: cf={'tendq': 1} must mean Dt = Ds = 0, not the template's Ds."""
+    from multitorch.api.calc import _cache_ban, fixture_defaults
+    cache = _ni("d4h")
+    partial = _cache_ban(cache, {"tendq": 1.0}, None, None, None, None).xham[0].values
+    explicit = _cache_ban(cache, {"tendq": 1.0, "dt": 0.0, "ds": 0.0}, None, None, None, None).xham[0].values
+    assert [float(v) for v in partial] == [float(v) for v in explicit]
+    template = _cache_ban(cache, {}, None, None, None, None).xham[0].values
+    defaults = fixture_defaults("Ni", "ii", "d4h")
+    assert defaults["fixture"] == "nid8ct" and defaults["cf"]["ds"] == pytest.approx(0.1)
+    shipped = _cache_ban(cache, defaults["cf"], None, None, None, None).xham[0].values
+    assert [float(v) for v in shipped] == pytest.approx([float(v) for v in template])
+
+
+def test_fixture_defaults_reproduce_the_shipped_calculation():
+    from multitorch.api.calc import fixture_defaults
+    d = fixture_defaults("Ni", "ii", "oh")
+    assert d["fixture"] == "ni2_d8_oh" and set(d["lmct"]) == {"eg", "t2g"}
+    cache = _ni("oh")
+    _, _, a = calcXAS_cached(cache, return_sticks=True, nbins=200)
+    _, _, b = calcXAS_cached(cache, cf=d["cf"], delta=d["delta"], u=d["u"], lmct=d["lmct"], return_sticks=True, nbins=200)
+    assert torch.allclose(a, b)

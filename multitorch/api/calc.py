@@ -226,6 +226,7 @@ def preload_fixture(
     from multitorch.io.read_ban import read_ban
     from multitorch.io.read_rme import read_cowan_store, read_rme_rac_full
 
+    _check_edge(edge)
     fixture_dir = _find_fixture_dir(element, valence, sym)
     ban_path = _find_primary_fixture(fixture_dir, "*.ban")
     rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
@@ -727,7 +728,6 @@ def calcXAS(
     return_sticks: bool = False,
     device: Optional[str] = None,
     ban_output_path: Optional[str] = None,
-    **kwargs,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """
     Calculate an X-ray absorption spectrum.
@@ -741,7 +741,8 @@ def calcXAS(
     sym : str
         Crystal symmetry ('oh' or 'd4h'; 'd4h' fixtures exist for Ni(II) only).
     edge : str
-        X-ray edge ('l' for L-edge 2p→3d, 'k' for K-edge 1s→3p).
+        X-ray edge. Only ``'l'`` (L2,3, 2p→3d) is implemented; anything else raises
+        ``NotImplementedError``. Ignored with ``ban_output_path`` (the file is the result).
     cf : dict
         Crystal field parameters in eV: {'tendq', 'dt', 'ds'} (Ballhausen).
         Missing keys keep the fixture value (see the table below).
@@ -981,6 +982,43 @@ def _find_primary_fixture(fixture_dir: Path, pattern: str) -> Path:
     )
 
 
+def _check_edge(edge) -> None:
+    """Only the L2,3 edge is implemented; ``edge`` used to be ignored (FABLE_HANDOFF A2)."""
+    if not isinstance(edge, str) or edge.lower() != 'l':
+        raise NotImplementedError(f"edge {edge!r}: only the L2,3 edge ('l', 2p -> 3d) is implemented")
+
+
+def fixture_defaults(element: str, valence: str, sym: str) -> dict:
+    """The physical parameters a bundled fixture uses when they are not overridden.
+
+    Read from the fixture's ``.ban`` template: ``cf`` (Ballhausen ``tendq``,
+    and ``dt``/``ds`` for D4h), ``delta`` (EG2), ``u`` (EG2 − EF2), ``lmct``
+    (V per hybridisation channel), and the fixture directory name. Passing
+    them back reproduces the shipped calculation. Note that ``sym`` selects a
+    different fixture, not a symmetry lowering of the same model: ``('Ni',
+    'ii', 'd4h')`` is ``nid8ct`` (Ds = 0.1, Δ = 5, u = 1, sticks near 855 eV),
+    ``('Ni', 'ii', 'oh')`` is ``ni2_d8_oh`` (Δ = 4.5, u = 6, sticks near 15 eV).
+    """
+    from multitorch.hamiltonian.build_ban import _HYBR_CHANNELS
+    from multitorch.io.read_ban import read_ban
+
+    fixture_dir = _find_fixture_dir(element, valence, sym)
+    ban = read_ban(_find_primary_fixture(fixture_dir, "*.ban"))
+    vals = [float(v) for v in ban.xham[0].values] if ban.xham else []
+    if len(vals) >= 4:
+        cf = {"tendq": vals[1] + 35.0 * vals[2] / 6.0, "dt": vals[2], "ds": vals[3]}
+    else:
+        cf = {"tendq": vals[1]} if len(vals) >= 2 else {}
+    out = {"fixture": fixture_dir.name, "cf": cf, "delta": None, "u": None, "lmct": None}
+    if 2 in ban.eg:
+        out["delta"] = float(ban.eg[2])
+        out["u"] = float(ban.eg[2]) - float(ban.ef.get(2, 0.0))
+    if ban.xmix:
+        names = _HYBR_CHANNELS.get(len(ban.xmix[0].values))
+        out["lmct"] = dict(zip(names, (float(v) for v in ban.xmix[0].values)))
+    return out
+
+
 def _calcXAS_phase5(
     element: str, valence: str, sym: str, edge: str,
     cf: dict,
@@ -1006,6 +1044,7 @@ def _calcXAS_phase5(
     flows through ``slater`` and ``soc`` into the COWAN store Hamiltonian
     blocks via :mod:`~multitorch.hamiltonian.build_cowan`.
     """
+    _check_edge(edge)
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.hamiltonian.build_cowan import build_cowan_store_in_memory
@@ -1482,6 +1521,10 @@ def calcRIXS(
         from multitorch.io.read_oba_pair import read_abs_ems_pair
         store = read_abs_ems_pair(ban_abs_path, ban_ems_path)
     elif element and valence and sym and edge:
+        _check_edge(edge)
+        unknown = set(kwargs) - {'slater', 'soc', 'delta', 'u', 'lmct', 'mlct'}
+        if unknown:
+            raise TypeError(f"calcRIXS got unexpected keyword arguments {sorted(unknown)}")
         store = _build_rixs_store_phase5(
             element, valence, sym, edge,
             cf or {}, kwargs.get('slater', 0.8), kwargs.get('soc', 1.0),
@@ -1819,6 +1862,7 @@ def _calcDOC_phase5(
     from multitorch.hamiltonian.build_rac import build_rac_in_memory
     from multitorch.io.read_ban import read_ban
 
+    _check_edge(edge)
     fixture_dir = _find_fixture_dir(element, valence, sym)
     ban_path = _find_primary_fixture(fixture_dir, "*.ban")
     rcg_path = _find_primary_fixture(fixture_dir, "*.rme_rcg")
@@ -1831,6 +1875,8 @@ def _calcDOC_phase5(
     u = kwargs.pop('u', None)
     lmct = kwargs.pop('lmct', None)
     mlct = kwargs.pop('mlct', None)
+    if kwargs:
+        raise TypeError(f"calcDOC got unexpected keyword arguments {sorted(kwargs)}")
 
     ban = modify_ban_params(ban, cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
 

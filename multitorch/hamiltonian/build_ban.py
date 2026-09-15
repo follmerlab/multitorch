@@ -55,6 +55,11 @@ def modify_ban_params(
 
         - ``'tendq'`` (float): 10Dq in eV.  Required for Oh and D4h.
         - ``'dt'`` (float): Dt in eV.  D4h only (default 0.0).
+
+        A non-empty ``cf`` sets the whole crystal field: an omitted ``dt`` or
+        ``ds`` is 0 (not the fixture template's value), an omitted ``tendq``
+        keeps the template's 10Dq. ``None`` or ``{}`` keeps the template;
+        :func:`multitorch.api.calc.fixture_defaults` lists it.
         - ``'ds'`` (float): Ds in eV.  D4h only (default 0.0).
 
         When provided, ``xham[0].values`` is rebuilt as
@@ -130,14 +135,20 @@ def modify_ban_params(
             # Ballhausen Dt operator (pyctm ``write_BAN.order_cf``; the
             # slot is named ``tendq_eff`` by ``read_ban``). The template
             # stores 10Dq_eff, so recover the raw 10Dq before overriding.
+            #
+            # A non-empty ``cf`` describes the whole crystal field: Dt and Ds it
+            # omits are 0, as on the from-scratch path, not the template's
+            # (nid8ct ships Ds = 0.1, so ``cf={'tendq': 1}`` used to keep a
+            # tetragonal field; FABLE_HANDOFF N7). An omitted 10Dq keeps the
+            # template's raw 10Dq. ``cf={}``/None keeps the fixture as shipped.
             dt_old = vals[2]
             tendq_old = vals[1] + 35.0 * dt_old / 6.0
             tendq_new = cf.get('tendq', tendq_old)
-            dt_new = cf.get('dt', dt_old)
+            dt_new = cf.get('dt', 0.0)
             vals[1] = tendq_new - 35.0 * dt_new / 6.0
             vals[2] = dt_new
-            if 'ds' in cf and n_ops >= 4:
-                vals[3] = cf['ds']
+            if n_ops >= 4:
+                vals[3] = cf.get('ds', 0.0)
         elif 'tendq' in cf:
             vals[1] = cf['tendq']
 
