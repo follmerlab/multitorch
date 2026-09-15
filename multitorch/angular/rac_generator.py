@@ -1184,6 +1184,7 @@ def _make_oh_dipole_adds(
     oh_ex: str,
     ex_j_order: List[Tuple[float, int, int]],
     multipole_idx: Dict[Tuple[float, float], int],
+    ranked_triples: Optional[List[Tuple[int, int, int]]] = None,
 ) -> List[ADDEntry]:
     """TRANSI ADD entries for one (Oh ground irrep, Oh excited irrep) pair.
 
@@ -1197,6 +1198,50 @@ def _make_oh_dipole_adds(
     Reproduces the per-block Σ coeff² n_bra n_ket of the Fortran RAC
     (60.0 total for Ni d8; the former ``oh_transition_coupling`` route
     gave 125.0 with triad-dependent errors, audit S5).
+
+    ``ranked_triples`` fixes the partner triple that carries the sign (see
+    :func:`_oh_dipole_pair_elements`); pass one ranking for every configuration
+    of a charge-transfer calculation so that their dipole blocks share it.
+    """
+    pair_me, triple_weight = _oh_dipole_pair_elements(oh_gs, gs_j_order, oh_ex, ex_j_order, multipole_idx)
+    if ranked_triples is None:
+        ranked_triples = sorted(triple_weight, key=lambda t: -triple_weight[t])
+
+    adds: List[ADDEntry] = []
+    bra_pos = 1
+    for ib, (Jb, cb, nb) in enumerate(gs_j_order):
+        rme_prefactor = math.sqrt(3.0 / (2.0 * Jb + 1.0))
+        ket_pos = 1
+        for ik, (Jk, ck, nk) in enumerate(ex_j_order):
+            mes = pair_me.get((ib, ik))
+            if mes is None:
+                ket_pos += nk
+                continue
+            sum_sq = sum(me * me for me in mes.values())
+            if sum_sq < 1e-26:
+                ket_pos += nk
+                continue
+            sign = 0.0
+            for t in ranked_triples:
+                if abs(mes.get(t, 0.0)) > 1e-12:
+                    sign = 1.0 if mes[t] > 0 else -1.0
+                    break
+            sign *= _dipole_gauge_sign(Jb, Jk)
+            adds.append(ADDEntry(
+                matrix_idx=multipole_idx[(Jb, Jk)],
+                bra=bra_pos, ket=ket_pos, nbra=nb, nket=nk,
+                coeff=rme_prefactor * sign * math.sqrt(sum_sq / 3.0),
+            ))
+            ket_pos += nk
+        bra_pos += nb
+    return adds
+
+
+def _oh_dipole_pair_elements(oh_gs, gs_j_order, oh_ex, ex_j_order, multipole_idx):
+    """Partner-triple dipole matrix elements per (J_b, J_k) pair, and each triple's summed |me|.
+
+    Returns ``(pair_me, triple_weight)``: ``pair_me[(ib, ik)][(p_b, p_op, p_k)]``
+    and ``triple_weight[(p_b, p_op, p_k)]``.
     """
     dim_gs = OH_IRREP_DIM[oh_gs]
     dim_ex = OH_IRREP_DIM[oh_ex]
@@ -1242,36 +1287,7 @@ def _make_oh_dipole_adds(
                         mes[(p_b, p_op, p_k)] = me
                         triple_weight[(p_b, p_op, p_k)] = triple_weight.get((p_b, p_op, p_k), 0.0) + abs(me)
             pair_me[(ib, ik)] = mes
-    ranked_triples = sorted(triple_weight, key=lambda t: -triple_weight[t])
-
-    adds: List[ADDEntry] = []
-    bra_pos = 1
-    for ib, (Jb, cb, nb) in enumerate(gs_j_order):
-        rme_prefactor = math.sqrt(3.0 / (2.0 * Jb + 1.0))
-        ket_pos = 1
-        for ik, (Jk, ck, nk) in enumerate(ex_j_order):
-            mes = pair_me.get((ib, ik))
-            if mes is None:
-                ket_pos += nk
-                continue
-            sum_sq = sum(me * me for me in mes.values())
-            if sum_sq < 1e-26:
-                ket_pos += nk
-                continue
-            sign = 0.0
-            for t in ranked_triples:
-                if abs(mes.get(t, 0.0)) > 1e-12:
-                    sign = 1.0 if mes[t] > 0 else -1.0
-                    break
-            sign *= _dipole_gauge_sign(Jb, Jk)
-            adds.append(ADDEntry(
-                matrix_idx=multipole_idx[(Jb, Jk)],
-                bra=bra_pos, ket=ket_pos, nbra=nb, nket=nk,
-                coeff=rme_prefactor * sign * math.sqrt(sum_sq / 3.0),
-            ))
-            ket_pos += nk
-        bra_pos += nb
-    return adds
+    return pair_me, triple_weight
 
 
 def generate_ledge_rac(
