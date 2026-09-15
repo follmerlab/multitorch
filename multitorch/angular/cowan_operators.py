@@ -46,6 +46,8 @@ from multitorch.angular.rme import (
     compute_double_tensor_ls,
     compute_soc_blocks,
     compute_two_shell_operators,
+    compute_uk_ls,
+    uncpla,
 )
 from multitorch.angular.wigner import wigner6j
 
@@ -268,4 +270,106 @@ def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, flo
         row = np.array([g_bra[s.ls_term.index] for s in bra_basis[Jb]])
         col = np.array([g_met[s.term2_idx] * _phase(s.S_total + s.L_total) for s in ket_basis[Jk]])
         out[(Jb, Jk)] = glob * row[:, None] * M * col[None, :]
+    return out
+
+
+def _store_basis(shells: Tuple[Shell, ...]) -> Dict[float, List[Tuple[tuple, Tuple[float, float], float, float]]]:
+    """Fortran store basis of 1-3 open shells: ``[(terms, (S12, L12), S, L), ...]`` per J.
+
+    ``terms`` holds one LSTerm per shell; ``(S12, L12)`` is the (1 2) intermediate
+    coupling for three shells and ``None`` otherwise. Same order as the blocks of
+    :func:`configuration_operators`.
+    """
+    T = [_lsterms_and_cfp(l, n)[0] for l, n in shells]
+    if len(shells) == 1:
+        return {J: [((s.ls_term,), None, s.ls_term.S, s.ls_term.L) for s in st]
+                for J, st in _j_basis_for_terms(T[0]).items()}
+    if len(shells) == 2:
+        from multitorch.angular.rme import build_two_shell_j_basis
+        return {J: [((T[0][s.term1_idx], T[1][s.term2_idx]), None, s.S_total, s.L_total) for s in st]
+                for J, st in build_two_shell_j_basis(T[0], T[1]).items()}
+    if len(shells) == 3:
+        out: Dict[float, list] = {}
+        for a in T[0]:
+            for b in T[1]:
+                for S12 in _triangle(a.S, b.S):
+                    for L12 in _triangle(a.L, b.L):
+                        for c in T[2]:
+                            for S in _triangle(S12, c.S):
+                                for L in _triangle(L12, c.L):
+                                    for J in _triangle(L, S):
+                                        out.setdefault(J, []).append(((a, b, c), (S12, L12), S, L))
+        for st in out.values():
+            st.sort(key=lambda x: (-x[2], -x[3]))
+        return out
+    raise NotImplementedError(f"{len(shells)} open shells")
+
+
+def _orbital_lift(first: bool, L1: float, L1p: float, L2: float, L2p: float, L: float, Lp: float, k: int) -> float:
+    """<(L1 L2) L || T^k || (L1' L2') L'> / <L_i || T^k || L_i'> for T acting on shell 1 or 2 (Edmonds 7.1.7/7.1.8)."""
+    w = math.sqrt((2 * L + 1) * (2 * Lp + 1))
+    if first:
+        return _phase(L1 + L2 + Lp + k) * w * wigner6j(L1, L, L2, Lp, L1p, k)
+    return _phase(L1 + L2p + L + k) * w * wigner6j(L2, L, L1, Lp, L2p, k)
+
+
+@lru_cache(maxsize=64)
+def shell_tensor_blocks(open_shells: Tuple[Shell, ...], shell: int, rank: int) -> Dict[Tuple[float, float], np.ndarray]:
+    """Orbital unit tensor U^(rank) of one shell in the Fortran store basis (SHELL blocks).
+
+    ``open_shells`` in Cowan order, ``shell`` the 0-based index of the shell the
+    operator acts on (the metal d shell for crystal-field operators). Blocks are
+    keyed ``(J_bra, J_ket)`` and carry the COWAN √((2J+1)(2J'+1)) (UNCPLA). The
+    doubly reduced U^k of the shell (CFP) is lifted through the spectator
+    couplings, J-projected, and brought to the store gauge by σ(term) of every
+    shell on rows and columns; no block phase remains.
+
+    Oracle: every SHELL block of the ground and final configurations of the Oh
+    LMCT fixtures and nid8ct, sections 2 and 3 (1, 2 and 3 open shells, metal
+    first or second) — tests/test_angular/test_shell_tensor_operators.py.
+    """
+    shells = tuple((int(l), int(n)) for l, n in open_shells)
+    if len(shells) == 3 and shell == 2:
+        raise NotImplementedError("tensor on the third (spectator) shell")
+    l, n = shells[shell]
+    terms, parents, cfp = _lsterms_and_cfp(l, n)
+    U = compute_uk_ls(l, n, rank, terms, parents, cfp)
+    basis = _store_basis(shells)
+    gauges = [_term_gauge(*s) for s in shells]
+
+    def ls_element(sb, sk) -> float:
+        tb, tk = sb[0], sk[0]
+        if len(shells) == 1:
+            return U[tb[0].index, tk[0].index]
+        if len(shells) == 2:
+            spectator = 1 - shell
+            if tb[spectator].index != tk[spectator].index:
+                return 0.0
+            return U[tb[shell].index, tk[shell].index] * _orbital_lift(
+                shell == 0, tb[0].L, tk[0].L, tb[1].L, tk[1].L, sb[3], sk[3], rank)
+        (S12, L12), (S12p, L12p) = sb[1], sk[1]
+        spectator = 1 - shell
+        if tb[spectator].index != tk[spectator].index or tb[2].index != tk[2].index or abs(S12 - S12p) > 1e-9:
+            return 0.0
+        inner = U[tb[shell].index, tk[shell].index] * _orbital_lift(
+            shell == 0, tb[0].L, tk[0].L, tb[1].L, tk[1].L, L12, L12p, rank)
+        return inner * _orbital_lift(True, L12, L12p, tb[2].L, tk[2].L, sb[3], sk[3], rank)
+
+    out: Dict[Tuple[float, float], np.ndarray] = {}
+    for Jb, B in basis.items():
+        rows = np.array([math.prod(g[t.index] for g, t in zip(gauges, s[0])) for s in B])
+        for Jk, K in basis.items():
+            if abs(Jb - Jk) > rank or Jb + Jk < rank:
+                continue
+            M = np.zeros((len(B), len(K)))
+            for i, sb in enumerate(B):
+                for j, sk in enumerate(K):
+                    if abs(sb[2] - sk[2]) > 1e-9:
+                        continue
+                    ls = ls_element(sb, sk)
+                    if abs(ls) < 1e-14:
+                        continue
+                    M[i, j] = uncpla(sb[3], sb[2], Jb, rank, sk[3], Jk) * ls
+            cols = np.array([math.prod(g[t.index] for g, t in zip(gauges, s[0])) for s in K])
+            out[(Jb, Jk)] = rows[:, None] * M * cols[None, :]
     return out
