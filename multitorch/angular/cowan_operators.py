@@ -40,6 +40,7 @@ from typing import Dict, List, Tuple
 import numpy as np
 
 from multitorch.angular.rme import (
+    LSTerm,
     _j_basis_for_terms,
     _lsterms_and_cfp,
     compute_coulomb_blocks,
@@ -47,9 +48,11 @@ from multitorch.angular.rme import (
     compute_soc_blocks,
     compute_two_shell_operators,
     compute_uk_ls,
+    recpjp,
     uncpla,
+    uncplb,
 )
-from multitorch.angular.wigner import wigner6j
+from multitorch.angular.wigner import wigner6j, wigner9j
 
 Shell = Tuple[int, int]  # (l, n)
 
@@ -372,4 +375,113 @@ def shell_tensor_blocks(open_shells: Tuple[Shell, ...], shell: int, rank: int) -
                     M[i, j] = uncpla(sb[3], sb[2], Jb, rank, sk[3], Jk) * ls
             cols = np.array([math.prod(g[t.index] for g, t in zip(gauges, s[0])) for s in K])
             out[(Jb, Jk)] = rows[:, None] * M * cols[None, :]
+    return out
+
+
+def _transfer_ls(m: int, R: int, t: object, lig: object, met: object, S_ml: float, L_ml: float, l: int = 2) -> float:
+    """MUPOLE LS element <l^m t; L^(4l+2) || T^(0R) || (L^(4l+1) lig, l^(m+1) met) S_ml L_ml>.
+
+    The LS core of :func:`~multitorch.angular.rme.compute_multipole_blocks` with the
+    ligand as the full "core" shell (ligand-first coupling, no J projection, no
+    MULTIPOLE block phase). Kept separate so that the final-state hopping can
+    recouple it under a spectator core hole.
+    """
+    from multitorch.angular.cfp import get_cfp_block
+
+    if abs(t.S - S_ml) > 1e-9 or abs(t.L - L_ml) > R + 1e-9 or t.L + L_ml < R - 1e-9:
+        return 0.0
+    n_lig, n_met = 4 * l + 2, m + 1
+    tc = math.sqrt(n_lig * n_met) * (-1.0 if n_met % 2 == 0 else 1.0) * _phase(t.L + L_ml + 1)
+    lig_cfp = get_cfp_block(l, n_lig).cfp
+    if lig_cfp is not None and lig_cfp.size:
+        tc *= lig_cfp[0, lig.index]
+    met_cfp = get_cfp_block(l, n_met).cfp
+    if met_cfp is not None and met_cfp.size:
+        tc *= met_cfp[met.index, t.index]
+    if abs(t.S) > 1e-10:
+        tc *= recpjp(lig.S, 0.5, 0.0, t.S, t.S, met.S)
+    if abs(t.L) > 1e-10:
+        tc *= _phase(l + t.L - met.L) * math.sqrt((2 * met.L + 1) * (2 * t.L + 1) * (2 * L_ml + 1))
+        tc *= wigner9j(0.0, lig.L, l, t.L, met.L, l, t.L, L_ml, R)
+    elif lig.L > 1e-10:
+        tc *= uncplb(lig.L, l, t.L, R, l, L_ml)
+    return tc
+
+
+@lru_cache(maxsize=32)
+def final_state_hopping_blocks(n_metal: int, rank: int, l: int = 2, l_core: int = 1) -> Dict[Tuple[float, float], np.ndarray]:
+    """Ligand-to-metal hopping under a core hole, in the Fortran store basis (final manifold).
+
+    Bra: 2p^5 d^(n+1) (``P05 D n+1``); ket: the ligand-hole configuration
+    2p^5 d^(n+2) L^9 (``P05 D n+2 D09``), or 2p^5 L^9 when the metal shell
+    closes (d^8). ``n_metal`` is the ground-state metal occupation n, as for
+    :func:`hopping_blocks`; ``rank`` 0, 2, 4.
+
+    The ket ((core metal') S12 L12, ligand) S L is recoupled to (core, (metal'
+    ligand) S_ml L_ml) S L (spin and orbit 6j); the transfer then acts on the
+    second member of (core, metal) with the core a spectator (Edmonds 7.1.8),
+    on the MUPOLE LS element :func:`_transfer_ls`, and is J-projected (UNCPLA).
+    Store gauge: σ(core)σ(metal) on rows, σ(core)σ(metal')σ(ligand) on columns,
+    and an overall −1.
+
+    Oracle: every section-3 TRANSITION MULTIPOLE block of the eight bundled Oh
+    LMCT fixtures and nid8ct (tests/test_angular/test_hopping_operators.py).
+    """
+    n_lig = 4 * l + 2
+    mb = n_metal + 1
+    if not 0 < mb < n_lig:
+        raise ValueError(f"final-state hopping needs an open metal shell in the bra, got d^{mb}")
+    n_core = 4 * l_core + 1
+    core_terms = _lsterms_and_cfp(l_core, n_core)[0]
+    met_b = _lsterms_and_cfp(l, mb)[0]
+    closed = mb + 1 == n_lig
+    if closed:
+        met_k = [LSTerm(index=0, S=0.0, L=0.0, seniority=0, label="1S")]
+        g_mk = {0: 1.0}
+    else:
+        met_k = _lsterms_and_cfp(l, mb + 1)[0]
+        g_mk = _term_gauge(l, mb + 1)
+    lig_terms = _lsterms_and_cfp(l, n_lig - 1)[0]
+    g_core, g_mb, g_lig = _term_gauge(l_core, n_core), _term_gauge(l, mb), _term_gauge(l, n_lig - 1)
+
+    bra_shells = ((l_core, n_core), (l, mb))
+    ket_shells = ((l_core, n_core), (l, n_lig - 1)) if closed else ((l_core, n_core), (l, mb + 1), (l, n_lig - 1))
+    bra = _store_basis(bra_shells)
+    ket: Dict[float, list] = {}
+    for J, st in _store_basis(ket_shells).items():
+        if closed:   # (core, ligand) S L is ((core, 1S) S_c L_c, ligand) S L
+            ket[J] = [(c, met_k[0], c.S, c.L, lam, S, L) for (c, lam), _, S, L in st]
+        else:
+            ket[J] = [(c, m, S12, L12, lam, S, L) for (c, m, lam), (S12, L12), S, L in st]
+
+    R = int(rank)
+    out: Dict[Tuple[float, float], np.ndarray] = {}
+    for Jb, B in bra.items():
+        rows = np.array([g_core[c.index] * g_mb[t.index] for (c, t), _, _, _ in B])
+        for Jk, K in ket.items():
+            if abs(Jb - Jk) > R or Jb + Jk < R:
+                continue
+            M = np.zeros((len(B), len(K)))
+            for i, ((c, t), _, S, L) in enumerate(B):
+                for j, (a, b, S12, L12, lam, Sk, Lk) in enumerate(K):
+                    if a.index != c.index or abs(S - Sk) > 1e-9 or t.S not in _triangle(b.S, lam.S):
+                        continue
+                    S_ml = t.S
+                    ws = (_phase(c.S + b.S + lam.S + S) * math.sqrt((2 * S12 + 1) * (2 * S_ml + 1))
+                          * wigner6j(c.S, b.S, S12, lam.S, S, S_ml))
+                    if abs(ws) < 1e-14:
+                        continue
+                    tot = 0.0
+                    for L_ml in _triangle(b.L, lam.L):
+                        h = _transfer_ls(mb, R, t, lam, b, S_ml, L_ml, l)
+                        if abs(h) < 1e-14:
+                            continue
+                        wl = (_phase(c.L + b.L + lam.L + Lk) * math.sqrt((2 * L12 + 1) * (2 * L_ml + 1))
+                              * wigner6j(c.L, b.L, L12, lam.L, Lk, L_ml))
+                        spec = (_phase(c.L + L_ml + L + R) * math.sqrt((2 * L + 1) * (2 * Lk + 1))
+                                * wigner6j(t.L, L, c.L, Lk, L_ml, R))
+                        tot += wl * spec * h
+                    M[i, j] = uncpla(L, S, Jb, R, Lk, Jk) * ws * tot
+            cols = np.array([g_core[a.index] * g_mk[b.index] * g_lig[lam.index] for a, b, _, _, lam, _, _ in K])
+            out[(Jb, Jk)] = -rows[:, None] * M * cols[None, :]
     return out
