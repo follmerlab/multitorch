@@ -245,8 +245,11 @@ def assemble_and_diagonalize_in_memory(
     """
     c = _assembly_context(rac, ban)
 
-    # 2. Process each triad
+    # 2. Process each triad. Triads share ground and final irreps (Ni d8 D4h CT:
+    # 13 triads, 5 + 5 irreps); each irrep's Hamiltonian is built and
+    # diagonalised once per call and reused, which also shares the autograd graph.
     results = []
+    memo: dict = {}
     for gs_sym, act_sym, fs_sym in ban.triads:
         triad = _assemble_one_triad(
             rac, cowan, ban,
@@ -259,6 +262,7 @@ def assemble_and_diagonalize_in_memory(
             c["gs_cowan_sec"], c["fs_cowan_sec"],
             c["nconf"],
             device,
+            memo=memo,
         )
         if triad is not None:
             results.append(triad)
@@ -465,6 +469,59 @@ def _ground_hamiltonian(
     return H_gs, conf_labels_gs, gs_conf_sizes
 
 
+
+def _final_hamiltonian(
+    rac, cowan, fs_sym,
+    operators, hybr_channels,
+    xham, xmix,
+    ef_offsets, fs_conf_sizes, irrep_dim,
+    fs_cowan_sec, nconf, device,
+):
+    """Assemble one final irrep's Hamiltonian: ``(H_fs, conf_labels)``."""
+    idim_scale_fs = 1.0 / math.sqrt(irrep_dim.get(fs_sym, 1))
+    n_fs = sum(fs_conf_sizes)
+    H_fs = torch.zeros(n_fs, n_fs, dtype=DTYPE, device=device)
+
+    sec_fs = cowan[fs_cowan_sec] if fs_cowan_sec < len(cowan) else []
+
+    offset = 0
+    conf_labels_fs = torch.zeros(n_fs, dtype=torch.int64, device=device)
+    for ic, d in enumerate(fs_conf_sizes):
+        kind = 'GROUND' if ic == 0 else 'EXCITE'
+        op_blocks = _find_operator_blocks(rac, kind, fs_sym, operators, d)
+
+        H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
+        for blk, xv in zip(op_blocks, xham):
+            if blk is not None and blk.add_entries and not _is_constant_zero(xv):
+                H_block += assemble_matrix_from_adds(blk.add_entries, sec_fs, d, d, scale=xv, device=device)
+
+        H_block = 0.5 * (H_block + H_block.T) * idim_scale_fs
+        ef = ef_offsets[ic] if ic < len(ef_offsets) else 0.0
+        H_block += ef * torch.eye(d, dtype=DTYPE, device=device)
+
+        H_fs[offset:offset + d, offset:offset + d] = H_block
+        conf_labels_fs[offset:offset + d] = ic + 1
+        offset += d
+
+    # Excited state mixing
+    if nconf >= 2 and len(fs_conf_sizes) >= 2 and xmix:
+        d1 = fs_conf_sizes[0]
+        d2 = fs_conf_sizes[1]
+        # Excited state HYBR blocks have - parity
+        hybr_blocks = _find_hybr_blocks(rac, fs_sym, hybr_channels, d1, d2)
+
+        V_fs = torch.zeros(d1, d2, dtype=DTYPE, device=device)
+        for blk, xv in zip(hybr_blocks, xmix):
+            if blk is not None and blk.add_entries and not _is_constant_zero(xv):
+                V_fs += assemble_matrix_from_adds(blk.add_entries, sec_fs, d1, d2, scale=xv, device=device)
+
+        V_fs *= idim_scale_fs
+        H_fs[:d1, d1:d1 + d2] = V_fs
+        H_fs[d1:d1 + d2, :d1] = V_fs.T
+
+    return H_fs, conf_labels_fs
+
+
 def _assemble_one_triad(
     rac, cowan, ban,
     gs_sym, act_sym, fs_sym,
@@ -475,25 +532,27 @@ def _assemble_one_triad(
     irrep_dim,
     gs_cowan_sec, fs_cowan_sec,
     nconf, device,
+    memo: Optional[dict] = None,
 ) -> Optional[TriadResult]:
-    """Assemble and diagonalize one symmetry triad."""
+    """Assemble and diagonalize one symmetry triad.
 
-    built = _ground_hamiltonian(
-        rac, cowan, gs_sym, operators, hybr_channels, xham, xmix,
-        eg_offsets, gs_dims, irrep_dim, gs_cowan_sec, nconf, device,
-    )
-    if built is None:
+    ``memo`` (one dict per assembly) caches each ground and final irrep's
+    diagonalised Hamiltonian across the triads that share it.
+    """
+    memo = {} if memo is None else memo
+    if ('gs', gs_sym) not in memo:
+        built = _ground_hamiltonian(
+            rac, cowan, gs_sym, operators, hybr_channels, xham, xmix,
+            eg_offsets, gs_dims, irrep_dim, gs_cowan_sec, nconf, device,
+        )
+        memo[('gs', gs_sym)] = None if built is None else (built, safe_eigh(built[0]))
+    if memo[('gs', gs_sym)] is None:
         return None
-    H_gs, conf_labels_gs, gs_conf_sizes = built
+    (H_gs, conf_labels_gs, gs_conf_sizes), (Eg, Ug) = memo[('gs', gs_sym)]
     n_gs = H_gs.shape[0]
     fs_conf_sizes = fs_dims.get(fs_sym, [])
-    idim_fs = irrep_dim.get(fs_sym, 1)
-    idim_scale_fs = 1.0 / math.sqrt(idim_fs)
 
-    # Diagonalize ground state
-    Eg, Ug = safe_eigh(H_gs)
-
-    # ── Build final state Hamiltonian ──
+    # ── Final state Hamiltonian ──
     if not fs_conf_sizes:
         # No final state for this triad
         n_fs = 0
@@ -502,47 +561,14 @@ def _assemble_one_triad(
         conf_labels_fs = torch.zeros(0, dtype=torch.int64, device=device)
         T_eig = torch.zeros(n_gs, 0, dtype=DTYPE, device=device)
     else:
+        if ('fs', fs_sym) not in memo:
+            H_fs, conf_labels_fs = _final_hamiltonian(
+                rac, cowan, fs_sym, operators, hybr_channels, xham, xmix, ef_offsets,
+                fs_conf_sizes, irrep_dim, fs_cowan_sec, nconf, device,
+            )
+            memo[('fs', fs_sym)] = (conf_labels_fs, safe_eigh(H_fs))
+        conf_labels_fs, (Ef, Uf) = memo[('fs', fs_sym)]
         n_fs = sum(fs_conf_sizes)
-        H_fs = torch.zeros(n_fs, n_fs, dtype=DTYPE, device=device)
-
-        sec_fs = cowan[fs_cowan_sec] if fs_cowan_sec < len(cowan) else []
-
-        offset = 0
-        conf_labels_fs = torch.zeros(n_fs, dtype=torch.int64, device=device)
-        for ic, d in enumerate(fs_conf_sizes):
-            kind = 'GROUND' if ic == 0 else 'EXCITE'
-            op_blocks = _find_operator_blocks(rac, kind, fs_sym, operators, d)
-
-            H_block = torch.zeros(d, d, dtype=DTYPE, device=device)
-            for blk, xv in zip(op_blocks, xham):
-                if blk is not None and blk.add_entries and not _is_constant_zero(xv):
-                    H_block += assemble_matrix_from_adds(blk.add_entries, sec_fs, d, d, scale=xv, device=device)
-
-            H_block = 0.5 * (H_block + H_block.T) * idim_scale_fs
-            ef = ef_offsets[ic] if ic < len(ef_offsets) else 0.0
-            H_block += ef * torch.eye(d, dtype=DTYPE, device=device)
-
-            H_fs[offset:offset + d, offset:offset + d] = H_block
-            conf_labels_fs[offset:offset + d] = ic + 1
-            offset += d
-
-        # Excited state mixing
-        if nconf >= 2 and len(fs_conf_sizes) >= 2 and xmix:
-            d1 = fs_conf_sizes[0]
-            d2 = fs_conf_sizes[1]
-            # Excited state HYBR blocks have - parity
-            hybr_blocks = _find_hybr_blocks(rac, fs_sym, hybr_channels, d1, d2)
-
-            V_fs = torch.zeros(d1, d2, dtype=DTYPE, device=device)
-            for blk, xv in zip(hybr_blocks, xmix):
-                if blk is not None and blk.add_entries and not _is_constant_zero(xv):
-                    V_fs += assemble_matrix_from_adds(blk.add_entries, sec_fs, d1, d2, scale=xv, device=device)
-
-            V_fs *= idim_scale_fs
-            H_fs[:d1, d1:d1 + d2] = V_fs
-            H_fs[d1:d1 + d2, :d1] = V_fs.T
-
-        Ef, Uf = safe_eigh(H_fs)
 
         # ── Build transition matrix ──
         # T_raw[gs_state, fs_state] assembled from TRANSI blocks
