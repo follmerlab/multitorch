@@ -981,9 +981,10 @@ def compute_multipole_blocks(
     gs_terms: List[LSTerm],
     gs_parents: List[LSTerm],
     gs_cfp: np.ndarray,
+    rank: int = 1,
 ) -> Dict[Tuple[float, float], np.ndarray]:
     """
-    Compute MULTIPOLE (electric dipole) transition RME blocks.
+    Compute MULTIPOLE transition RME blocks (rank 1: electric dipole).
 
     Computes transition matrix elements between:
       Ground: l_core^n_core_gs × l_gs^n_gs  (with l_core shell full)
@@ -1011,6 +1012,12 @@ def compute_multipole_blocks(
     gs_cfp : np.ndarray
         CFP matrix for l_gs^n_gs → l_gs^(n_gs-1).
 
+    rank : int
+        Orbital rank R of the one-electron transfer operator. 1 for the
+        dipole; ttrcg writes the charge-transfer hopping between d^n L^10 and
+        d^(n+1) L^9 (l_core = 2, n_core_gs = 10) with the same routine at
+        ranks 0, 2, 4.
+
     Returns
     -------
     dict mapping (J_bra, J_ket) → np.ndarray
@@ -1018,7 +1025,7 @@ def compute_multipole_blocks(
     """
     from multitorch.angular.cfp import get_cfp_block
 
-    R = 1  # electric dipole rank
+    R = int(rank)
 
     # ── Excited state shell terms ──
     # Core shell after excitation: l_core^(n_core_gs - 1)

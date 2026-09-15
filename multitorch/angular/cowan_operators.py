@@ -231,3 +231,41 @@ def configuration_operators(open_shells: Tuple[Shell, ...]) -> ConfigurationOper
     if len(shells) == 3:
         return _three_shell_spectator(*shells)
     raise NotImplementedError(f"{len(shells)} open shells")
+
+
+@lru_cache(maxsize=32)
+def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, float], np.ndarray]:
+    """Ligand-to-metal hopping operator blocks in the Fortran store basis (ground manifold).
+
+    Bra: the metal configuration l^n (ligand shell closed); ket: the ligand-hole
+    configuration l^(n+1) L^(4l+1) with the metal shell first, as ttrcg writes
+    ``D n+1 ... D09``. The operator is the spin-scalar one-electron transfer of
+    orbital rank ``rank`` (0, 2, 4 for d), which ttrcg stores as TRANSITION
+    MULTIPOLE blocks and ttrac combines into eg/t2g (Oh) or b1/a1/b2/e (D4h)
+    hybridisation channels.
+
+    Built from the MUPOLE port (:func:`~multitorch.angular.rme.compute_multipole_blocks`
+    with the ligand as a full "core" shell and a general rank) and brought to the
+    store basis by (−1)^n σ(bra term) on rows and σ(metal term)·(−1)^(S+L) on
+    columns. Oracle: every hopping block of the eight bundled Oh LMCT fixtures
+    and nid8ct (tests/test_angular/test_hopping_operators.py), ≤ 2e-6.
+    """
+    from multitorch.angular.cfp import get_cfp_block
+    from multitorch.angular.rme import build_two_shell_j_basis, compute_multipole_blocks
+
+    terms_n, _, _ = _lsterms_and_cfp(l, n_metal)
+    terms_n1, _, _ = _lsterms_and_cfp(l, n_metal + 1)
+    terms_lig, _, _ = _lsterms_and_cfp(l, 4 * l + 1)
+    parents = _lsterms_and_cfp(l, n_metal - 1)[0] if n_metal > 0 else []
+    raw = compute_multipole_blocks(l, n_metal, l, 4 * l + 2, terms_n, parents,
+                                   get_cfp_block(l, n_metal).cfp if n_metal > 0 else np.array([]), rank=rank)
+    bra_basis = _j_basis_for_terms(terms_n)
+    ket_basis = build_two_shell_j_basis(terms_lig, terms_n1)   # MUPOLE order: ligand first
+    g_bra, g_met = _term_gauge(l, n_metal), _term_gauge(l, n_metal + 1)
+    glob = _phase(n_metal)
+    out: Dict[Tuple[float, float], np.ndarray] = {}
+    for (Jb, Jk), M in raw.items():
+        row = np.array([g_bra[s.ls_term.index] for s in bra_basis[Jb]])
+        col = np.array([g_met[s.term2_idx] * _phase(s.S_total + s.L_total) for s in ket_basis[Jk]])
+        out[(Jb, Jk)] = glob * row[:, None] * M * col[None, :]
+    return out
