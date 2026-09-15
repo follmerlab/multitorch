@@ -132,3 +132,75 @@ print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1200)
     assert out.returncode == 0 and "OK" in out.stdout, out.stdout[-2000:] + out.stderr[-2000:]
+
+
+# ─────────────────────────────────────────────────────────────
+# Public API: preload_from_scratch(charge_transfer=True) + calcXAS_cached (C5)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("case", [CASES[1], CASES[3]], ids=[IDS[1], IDS[3]])
+def test_cached_charge_transfer_from_scratch_with_fortran_atomic_overrides(case):
+    """Same oracle through the public cached API; slater = soc = 0, every integral an ``atomic`` override."""
+    from multitorch.api.calc import calcXAS_cached, preload_from_scratch
+
+    element, valence, sym, n, cf, hyb, tol = case
+    fortran, _ = _run(element, valence, sym, n, cf, hyb)
+    Ef, Mf = get_sticks_from_banresult(fortran, **POOL)[:2]
+
+    cache = preload_from_scratch(element, valence, sym, charge_transfer=True)
+    fx = preload_fixture(element, valence, sym)
+    atomic = {}
+    for label, (section, kind) in LABELS:
+        ours, theirs = cache.decomposition.by_label(label), fx.decomposition.config(section, kind)
+        values = theirs.parameter_values(0.8, 1.0)
+        if ours.shells == theirs.shells:
+            atomic[label] = {name: values[name] for name in ours.operators if name in values}
+        else:
+            atomic[label] = {alias: values[name] for alias, name in theirs.aliases().items()}
+    _, _, sticks = calcXAS_cached(cache, cf=cf, slater=0.0, soc=0.0, delta=DELTA, u=U, lmct=hyb, atomic=atomic,
+                                  return_sticks=True, **POOL)
+    Es, Ms = sticks[:, 0], sticks[:, 1]
+    keep = Mf > 1e-10 * Mf.max()
+    assert float(Ms.sum()) == pytest.approx(float(Mf.sum()), rel=1e-4)
+    hi = float(max(Ef.max() - Ef.min(), Es.max() - Es.min())) + 3.0
+    p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef[keep] - Ef.min(), Mf[keep], hi))
+    assert p.cosine > 0.99999, p
+
+
+@pytest.mark.parametrize("element,valence,sym", [("V", "iii", "oh"), ("Fe", "ii", "oh"), ("Ni", "ii", "d4h")])
+def test_ligand_hole_hfs_parameters_follow_pyctm(element, valence, sym):
+    """Ligand-hole configurations carry the HFS parameters of d^(n+1) (one more 3d electron, same Z).
+
+    Oracle: the ratio ligand-hole / plain configuration in the Fortran decks, for
+    the well-determined integrals F²dd, F²pd, G¹pd and ζ2p (the decks print ζ3d
+    with three decimals; absolute HFS values differ from RCN31's by the known
+    ~2 % HX residual, which cancels in the ratio).
+    """
+    from multitorch.api.calc import preload_from_scratch
+
+    ours = preload_from_scratch(element, valence, sym, charge_transfer=True).decomposition
+    theirs = preload_fixture(element, valence, sym).decomposition
+
+    def value(cfg, values, alias):
+        """By physical alias, or for the two-d-shell ligand-hole ground configuration by metal-first name."""
+        aliases = cfg.aliases()
+        name = aliases.get(alias, {"F2dd": "F2_11"}.get(alias))
+        return float(values[name]) if name in cfg.operators and name in values else None
+
+    pairs = [("gs", "gs_lh", (2, "GROUND"), (2, "EXCITE"), ["F2dd"]),
+             ("ex", "ex_lh", (3, "GROUND"), (3, "EXCITE"), ["F2pd", "G1pd", "zeta_p"])]
+    checked = 0
+    for plain, lh, sec_plain, sec_lh, names in pairs:
+        cp, cl = ours.by_label(plain), ours.by_label(lh)
+        fp, fl = theirs.config(*sec_plain), theirs.config(*sec_lh)
+        for alias in names:
+            if len(cl.shells) == 2 and plain == "ex" and alias != "zeta_p":
+                assert set(cl.reference) == {"zeta_1"}   # 2p^5 3d^10 L: the ligand hole has no integrals
+                continue
+            a, b = value(cp, cp.reference, alias), value(cl, cl.reference, alias)
+            fa, fb = value(fp, fp.params, alias), value(fl, fl.params, alias)
+            if None in (a, b, fa, fb) or min(abs(fa), abs(fb)) < 1e-3:   # absent, or an identically zero operator (d^9)
+                continue
+            assert b / a == pytest.approx(fb / fa, abs=0.012), (plain, alias, b / a, fb / fa)
+            checked += 1
+    assert checked >= 1   # Ni d8: only zeta_2p (d^9 L has no F^2; 2p^5 3d^10 L no p-d integrals)

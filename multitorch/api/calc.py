@@ -91,8 +91,9 @@ class CachedFixture:
         Block metadata for each COWAN store matrix (``None`` from scratch).
     source : {'fixture', 'scratch'}
         ``'scratch'`` for :func:`preload_from_scratch`: no plan/metadata, the
-        decomposition's references are HFS values, the BAN has no charge
-        transfer and its crystal field is Ballhausen 10Dq/Dt/Ds directly.
+        decomposition's references are HFS values and the BAN's crystal field
+        is Ballhausen 10Dq/Dt/Ds directly; charge transfer only when preloaded
+        with ``charge_transfer=True`` (``ban.nconf_gs == 2``).
     """
     ban: object          # BanData
     decomposition: object  # HamiltonianDecomposition
@@ -114,19 +115,35 @@ def preload_from_scratch(
     valence: str,
     sym: str = "oh",
     zeta_method: str = "blume_watson",
+    charge_transfer: bool = False,
 ) -> CachedFixture:
     """From-scratch counterpart of :func:`preload_fixture` (no Fortran files).
 
     Runs HFS (cached per ion) and the angular generator once; the result
     drives :func:`calcXAS_cached` and :func:`calcXAS_batch` exactly like a
     fixture cache, with ``slater``/``soc`` relative to the HFS values and
-    ``atomic`` overrides keyed ``'gs'`` / ``'ex'``. Charge-transfer arguments
-    raise (single configuration). ``calcXAS_from_scratch`` is this cache
-    plus :func:`calcXAS_cached`.
+    ``atomic`` overrides keyed ``'gs'`` / ``'ex'``. ``calcXAS_from_scratch`` is
+    this cache plus :func:`calcXAS_cached`.
+
+    ``charge_transfer=True`` adds the ligand-hole configurations d^(n+1)L and
+    2p^5 d^(n+2)L (:func:`~multitorch.angular.ct_generator.generate_ct_ledge_template`;
+    integer J, i.e. even n, only). Their HFS parameters are those of the
+    configuration with one more 3d electron, as in pyctm; the ligand hole
+    carries none. ``atomic`` labels are then ``'gs'``, ``'gs_lh'``, ``'ex'``,
+    ``'ex_lh'``, and :func:`calcXAS_cached` requires ``delta`` and accepts ``u``
+    and ``lmct`` (channels ``eg``/``t2g`` or ``b1``/``a1``/``b2``/``e``).
+    Without it, charge-transfer arguments raise.
     """
-    rac, template, dec = _from_scratch_structure(element, valence, sym, zeta_method)
+    if charge_transfer:
+        from multitorch.angular.ct_generator import build_ct_ban
+
+        rac, template, dec = _from_scratch_ct_structure(element, valence, sym, zeta_method)
+        ban = build_ct_ban(rac, sym)
+    else:
+        rac, template, dec = _from_scratch_structure(element, valence, sym, zeta_method)
+        ban = _build_ban_from_rac(rac, sym=sym)
     return CachedFixture(
-        ban=_build_ban_from_rac(rac, sym=sym),
+        ban=ban,
         decomposition=dec,
         rac=rac,
         plan=None,
@@ -148,12 +165,18 @@ def _cache_ban(cache: CachedFixture, cf, delta, u, lmct, mlct):
     cf = cf or {}
     if cache.source != "scratch":
         return modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
-    if any(x is not None for x in (delta, u, lmct, mlct)):
-        raise ValueError("from-scratch caches are single-configuration: delta/u/lmct/mlct are not supported")
     unknown = set(cf) - {"tendq", "dt", "ds"}
     if unknown:
         raise ValueError(f"unknown crystal-field keys {sorted(unknown)}")
-    ban = copy.copy(cache.ban)
+    if cache.ban.nconf_gs >= 2:
+        if delta is None:
+            raise ValueError("charge-transfer from-scratch caches need delta (eV)")
+        ban = modify_ban_params(copy.deepcopy(cache.ban), delta=delta, u=u, lmct=lmct, mlct=mlct)
+    elif any(x is not None for x in (delta, u, lmct, mlct)):
+        raise ValueError("this from-scratch cache is single-configuration (preload with charge_transfer=True): "
+                         "delta/u/lmct/mlct are not supported")
+    else:
+        ban = copy.copy(cache.ban)
     values = [1.0, cf.get("tendq", 1.0)]
     if cache.sym == "d4h":
         values += [cf.get("dt", 0.0), cf.get("ds", 0.0)]
@@ -267,7 +290,8 @@ def calcXAS_cached(
         Absolute Slater / spin-orbit reductions (fractions of the
         Hartree-Fock values; supports ``requires_grad=True``).
     delta, u, lmct, mlct : float, optional
-        Charge-transfer parameters (fixture caches only).
+        Charge-transfer parameters (fixture caches, and from-scratch caches
+        preloaded with ``charge_transfer=True``, which require ``delta``).
     T, beam_fwhm, gamma1, gamma2, med_energy, max_gs, broaden_mode,
     xmin, xmax, nbins, return_sticks, device
         Same as ``calcXAS``.
@@ -1131,6 +1155,39 @@ def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: s
     gs_ref, ex_ref = ledge_reference_ev(2, *hfs)
     dec.by_label('gs').reference = gs_ref
     dec.by_label('ex').reference = ex_ref
+    return rac, template, dec
+
+
+def _from_scratch_ct_structure(element: str, valence: str, sym: str, zeta_method: str):
+    """(rac, template store, decomposition with HFS references) for d^n + d^(n+1)L.
+
+    The ligand-hole configurations take the HFS parameters of the ion with one
+    more 3d electron (pyctm/ttmult: F², ζ of d^(n+1) are ~11 % below d^n); the
+    ligand shell has no parameters, so for d^8 the 2p^5 3d^10 L configuration
+    keeps only ζ_2p.
+    """
+    from multitorch.angular.ct_generator import generate_ct_ledge_template
+    from multitorch.angular.rac_generator import ledge_reference_ev
+    from multitorch.atomic.tables import (
+        get_atomic_number, get_d_electrons, get_l_edge_configs, parse_config_string,
+    )
+
+    Z = get_atomic_number(element)
+    n_d = get_d_electrons(element, valence)
+    gs_cfg, ex_cfg = (parse_config_string(c) for c in get_l_edge_configs(element, valence))
+    rac, template, dec = generate_ct_ledge_template(n_d, sym)
+
+    d_key = next(k for k in gs_cfg if k.lower() == "3d")
+    gs_lh_cfg, ex_lh_cfg = dict(gs_cfg), dict(ex_cfg)
+    gs_lh_cfg[d_key] += 1
+    ex_lh_cfg[d_key] += 1
+    gs_ref, ex_ref = ledge_reference_ev(2, *_hfs_to_slater_params(Z, gs_cfg, ex_cfg, zeta_method=zeta_method))
+    gs_lh_ref, ex_lh_ref = ledge_reference_ev(2, *_hfs_to_slater_params(Z, gs_lh_cfg, ex_lh_cfg, zeta_method=zeta_method))
+    dec.by_label('gs').reference = gs_ref
+    dec.by_label('ex').reference = ex_ref
+    dec.by_label('gs_lh').reference = {k: v for k, v in gs_lh_ref.items() if k in ('F2_11', 'F4_11', 'zeta_1')}
+    ex_lh = dec.by_label('ex_lh')
+    ex_lh.reference = dict(ex_lh_ref) if len(ex_lh.shells) == 3 else {'zeta_1': ex_lh_ref['zeta_1']}
     return rac, template, dec
 
 
