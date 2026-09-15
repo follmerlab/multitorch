@@ -109,3 +109,14 @@ def test_batched_leaves_give_batched_blocks(fe2_template):
             for j in cfg.block_index.values():
                 assert batch[0][j].shape[0] == 3
                 assert torch.allclose(batch[0][j][i], single[0][j], atol=1e-12)
+
+
+def test_fixture_decomposition_cache_is_bounded():
+    import multitorch.hamiltonian.build_cowan as bc
+
+    bc.clear_decomposition_cache()
+    names = ["v3_d2_oh", "fe2_d6_oh", "ni2_d8_oh", "nid8ct", "co2_d7_oh", "mn2_d5_oh"]
+    decs = [load_hamiltonian_decomposition(REFDATA / n / f"{n}.rme_rcg") for n in names]
+    assert len(bc._DECOMPOSITION_CACHE) == bc.DECOMPOSITION_CACHE_SIZE
+    assert load_hamiltonian_decomposition(REFDATA / names[-1] / f"{names[-1]}.rme_rcg") is decs[-1]   # still cached
+    assert load_hamiltonian_decomposition(REFDATA / names[0] / f"{names[0]}.rme_rcg") is not decs[0]  # evicted, rebuilt

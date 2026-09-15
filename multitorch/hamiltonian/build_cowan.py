@@ -46,6 +46,8 @@ only to the propagated rounding (≈1e-3 eV per parameter), not to 1e-6.
 """
 from __future__ import annotations
 
+from collections import OrderedDict
+
 import math
 import re
 from dataclasses import dataclass
@@ -324,7 +326,15 @@ def decompose_cowan_hamiltonians(
     return HamiltonianDecomposition(configs, float(slater_reduction), float(soc_reduction))
 
 
-_DECOMPOSITION_CACHE: Dict[Tuple[str, int, float, float], HamiltonianDecomposition] = {}
+# LRU of fixture decompositions: each holds dense per-parameter operators
+# (0.2-1.2 GB for the half-integer fixtures), so the cache is bounded.
+DECOMPOSITION_CACHE_SIZE = 4
+_DECOMPOSITION_CACHE: "OrderedDict[Tuple[str, int, float, float], HamiltonianDecomposition]" = OrderedDict()
+
+
+def clear_decomposition_cache() -> None:
+    """Drop every cached fixture decomposition (frees their operator tensors)."""
+    _DECOMPOSITION_CACHE.clear()
 
 
 def load_hamiltonian_decomposition(
@@ -340,14 +350,19 @@ def load_hamiltonian_decomposition(
     if slater_reduction is None:
         slater_reduction = fixture_slater_reduction(rcg_path)
     key = (str(rcg_path), rcg_path.stat().st_mtime_ns, float(slater_reduction), float(soc_reduction))
-    if key not in _DECOMPOSITION_CACHE:
-        template = cowan_template if cowan_template is not None else read_cowan_store(rcg_path)
-        meta = cowan_metadata if cowan_metadata is not None else read_cowan_metadata(rcg_path)
-        _DECOMPOSITION_CACHE[key] = decompose_cowan_hamiltonians(
-            template, meta, read_cowan_configurations(rcg_path),
-            slater_reduction=slater_reduction, soc_reduction=soc_reduction,
-        )
-    return _DECOMPOSITION_CACHE[key]
+    if key in _DECOMPOSITION_CACHE:
+        _DECOMPOSITION_CACHE.move_to_end(key)
+        return _DECOMPOSITION_CACHE[key]
+    template = cowan_template if cowan_template is not None else read_cowan_store(rcg_path)
+    meta = cowan_metadata if cowan_metadata is not None else read_cowan_metadata(rcg_path)
+    dec = decompose_cowan_hamiltonians(
+        template, meta, read_cowan_configurations(rcg_path),
+        slater_reduction=slater_reduction, soc_reduction=soc_reduction,
+    )
+    _DECOMPOSITION_CACHE[key] = dec
+    while len(_DECOMPOSITION_CACHE) > DECOMPOSITION_CACHE_SIZE:
+        _DECOMPOSITION_CACHE.popitem(last=False)
+    return dec
 
 
 # ─────────────────────────────────────────────────────────────
