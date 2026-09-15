@@ -1,10 +1,12 @@
-"""Ligand-to-metal hopping operators vs the Fortran ttrcg stores (WP-C, increments C1a, C1b).
+"""Charge-transfer transition operators vs the Fortran ttrcg stores (WP-C, increments C1a, C1b, C3).
 
 Oracle: the TRANSITION MULTIPOLE blocks that ttrcg writes for the spin-scalar
 one-electron transfer at orbital ranks 0, 2, 4 in every bundled
 two-configuration fixture — section 2 (ground manifold: d^n and d^(n+1)L) and
 section 3 (final manifold under the 2p hole: 2p^5 d^(n+1) and 2p^5 d^(n+2)L).
-Elementwise agreement to the store's 6-decimal print precision.
+The 2p → 3d dipole blocks of sections 0 (d^n → 2p^5 d^(n+1)) and 1 (the same
+under a ligand hole) are checked the same way. Elementwise agreement to the
+store's 6-decimal print precision.
 """
 from __future__ import annotations
 
@@ -13,7 +15,7 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from multitorch.angular.cowan_operators import _store_basis, final_state_hopping_blocks, hopping_blocks
+from multitorch.angular.cowan_operators import _store_basis, dipole_blocks, final_state_hopping_blocks, hopping_blocks
 from multitorch.hamiltonian.build_cowan import read_cowan_configurations, read_cowan_metadata, j_value
 from multitorch.io.read_rme import read_cowan_store
 
@@ -85,3 +87,30 @@ def test_final_manifold_hopping_matches_ttrcg(name):
         np.testing.assert_allclose(ours, fortran, atol=2e-6, err_msg=f"{name} rank {rank} {m.bra_sym}->{m.ket_sym}")
         checked += 1
     assert checked >= 20
+
+
+@pytest.mark.parametrize("name", STORES)
+@pytest.mark.parametrize("section", [0, 1])
+def test_dipole_matches_ttrcg(name, section):
+    rcg = REFDATA / name / f"{name}.rme_rcg"
+    store, meta, confs = read_cowan_store(rcg), read_cowan_metadata(rcg), read_cowan_configurations(rcg)
+    (l, n), = confs[2]["GROUND"]
+    reorder = None
+    ket_shells = confs[section]["EXCITE"]
+    if ket_shells[0] != (1, 5):   # nid8ct couples the valence shell first in section 0
+        assert len(ket_shells) == 2
+        reorder = _to_core_first(ket_shells)
+    checked = 0
+    for j, m in enumerate(meta[section]):
+        if m.operator != "MULTIPOLE":
+            continue
+        Jb, Jk = j_value(m.bra_sym), j_value(m.ket_sym)
+        ours = dipole_blocks(n, bool(section), l)[(Jb, Jk)]
+        if reorder is not None:
+            perm, sign = reorder[Jk]
+            ours = ours[:, perm] * sign[None, :]
+        fortran = store[section][j].numpy()
+        assert ours.shape == fortran.shape
+        np.testing.assert_allclose(ours, fortran, atol=2e-6, err_msg=f"{name} section {section} {m.bra_sym}->{m.ket_sym}")
+        checked += 1
+    assert checked >= 5

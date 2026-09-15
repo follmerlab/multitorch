@@ -378,21 +378,24 @@ def shell_tensor_blocks(open_shells: Tuple[Shell, ...], shell: int, rank: int) -
     return out
 
 
-def _transfer_ls(m: int, R: int, t: object, lig: object, met: object, S_ml: float, L_ml: float, l: int = 2) -> float:
-    """MUPOLE LS element <l^m t; L^(4l+2) || T^(0R) || (L^(4l+1) lig, l^(m+1) met) S_ml L_ml>.
+def _transfer_ls(m: int, R: int, t: object, lig: object, met: object, S_ml: float, L_ml: float,
+                 l: int = 2, l_from: int = None) -> float:
+    """MUPOLE LS element <l^m t; l'^(4l'+2) || T^(0R) || (l'^(4l'+1) lig, l^(m+1) met) S_ml L_ml>.
 
-    The LS core of :func:`~multitorch.angular.rme.compute_multipole_blocks` with the
-    ligand as the full "core" shell (ligand-first coupling, no J projection, no
-    MULTIPOLE block phase). Kept separate so that the final-state hopping can
-    recouple it under a spectator core hole.
+    The LS core of :func:`~multitorch.angular.rme.compute_multipole_blocks`: one
+    electron moves from the full shell l' (``l_from``, default l: the ligand;
+    1 for the 2p core) into l^m. Source-shell-first coupling, no J projection,
+    no MULTIPOLE block phase. Kept separate so that it can be recoupled under
+    spectator shells (core hole, ligand hole).
     """
     from multitorch.angular.cfp import get_cfp_block
 
     if abs(t.S - S_ml) > 1e-9 or abs(t.L - L_ml) > R + 1e-9 or t.L + L_ml < R - 1e-9:
         return 0.0
-    n_lig, n_met = 4 * l + 2, m + 1
+    l_from = l if l_from is None else l_from
+    n_lig, n_met = 4 * l_from + 2, m + 1
     tc = math.sqrt(n_lig * n_met) * (-1.0 if n_met % 2 == 0 else 1.0) * _phase(t.L + L_ml + 1)
-    lig_cfp = get_cfp_block(l, n_lig).cfp
+    lig_cfp = get_cfp_block(l_from, n_lig).cfp
     if lig_cfp is not None and lig_cfp.size:
         tc *= lig_cfp[0, lig.index]
     met_cfp = get_cfp_block(l, n_met).cfp
@@ -402,9 +405,9 @@ def _transfer_ls(m: int, R: int, t: object, lig: object, met: object, S_ml: floa
         tc *= recpjp(lig.S, 0.5, 0.0, t.S, t.S, met.S)
     if abs(t.L) > 1e-10:
         tc *= _phase(l + t.L - met.L) * math.sqrt((2 * met.L + 1) * (2 * t.L + 1) * (2 * L_ml + 1))
-        tc *= wigner9j(0.0, lig.L, l, t.L, met.L, l, t.L, L_ml, R)
+        tc *= wigner9j(0.0, lig.L, l_from, t.L, met.L, l, t.L, L_ml, R)
     elif lig.L > 1e-10:
-        tc *= uncplb(lig.L, l, t.L, R, l, L_ml)
+        tc *= uncplb(lig.L, l_from, t.L, R, l, L_ml)
     return tc
 
 
@@ -484,4 +487,82 @@ def final_state_hopping_blocks(n_metal: int, rank: int, l: int = 2, l_core: int 
                     M[i, j] = uncpla(L, S, Jb, R, Lk, Jk) * ws * tot
             cols = np.array([g_core[a.index] * g_mk[b.index] * g_lig[lam.index] for a, b, _, _, lam, _, _ in K])
             out[(Jb, Jk)] = -rows[:, None] * M * cols[None, :]
+    return out
+
+
+@lru_cache(maxsize=32)
+def dipole_blocks(n_metal: int, ligand_hole: bool = False, l: int = 2, l_core: int = 1) -> Dict[Tuple[float, float], np.ndarray]:
+    """2p → 3d dipole (rank 1) blocks in the Fortran store basis.
+
+    ``ligand_hole=False``: bra d^n (``D n``), ket 2p^5 d^(n+1) (``P05 D n+1``),
+    the store's section 0. ``ligand_hole=True``: bra d^(n+1) L^9, ket
+    2p^5 d^(n+2) L^9 (2p^5 L^9 when the metal closes), section 1, with the
+    ligand hole a spectator (Edmonds 7.1.7 on the (core, metal) pair).
+
+    The MUPOLE LS element :func:`_transfer_ls` is J-projected (UNCPLA) and
+    brought to the store gauge by σ on rows, σ times the (core, metal) coupling
+    swap (−1)^(S_c+S_m−S_cm + L_c+L_m−L_cm) on columns, and (−1)^m for m metal
+    electrons in the bra.
+
+    Oracle: every MULTIPOLE block of sections 0 and 1 of the eight bundled
+    two-configuration fixtures (tests/test_angular/test_ct_operators.py).
+    """
+    m = n_metal + int(ligand_hole)
+    n_core, n_lig = 4 * l_core + 1, 4 * l + 1
+    if not 0 < m < 4 * l + 2:
+        raise ValueError(f"dipole blocks need an open metal shell in the bra, got d^{m}")
+    closed = m + 1 == 4 * l + 2
+    one_s = LSTerm(index=0, S=0.0, L=0.0, seniority=0, label="1S")
+    if ligand_hole:
+        bra_shells = ((l, m), (l, n_lig))
+        ket_shells = ((l_core, n_core), (l, n_lig)) if closed else ((l_core, n_core), (l, m + 1), (l, n_lig))
+    else:
+        bra_shells = ((l, m),)
+        ket_shells = ((l_core, n_core),) if closed else ((l_core, n_core), (l, m + 1))
+    gauges = {sh: (_term_gauge(*sh) if sh[1] < 4 * sh[0] + 2 else {0: 1.0}) for sh in set(bra_shells + ket_shells)}
+
+    def unpack_ket(terms, i12, S, L):
+        """(core, metal', ligand or None, S_cm, L_cm) of a ket state."""
+        if not ligand_hole:
+            c, mp = (terms[0], one_s) if closed else terms
+            return c, mp, None, S, L
+        if closed:
+            c, lam = terms
+            return c, one_s, lam, c.S, c.L
+        c, mp, lam = terms
+        return c, mp, lam, i12[0], i12[1]
+
+    bra, ket = _store_basis(bra_shells), _store_basis(ket_shells)
+    glob = _phase(m)
+    out: Dict[Tuple[float, float], np.ndarray] = {}
+    for Jb, B in bra.items():
+        rows = np.array([math.prod(gauges[sh][t.index] for sh, t in zip(bra_shells, terms)) for terms, _, _, _ in B])
+        for Jk, K in ket.items():
+            if abs(Jb - Jk) > 1 or Jb + Jk < 1:
+                continue
+            kets = [unpack_ket(*s) for s in K]
+            M = np.zeros((len(B), len(K)))
+            for i, (terms, _, S, L) in enumerate(B):
+                t = terms[0]
+                lam = terms[1] if ligand_hole else None
+                for j, ((_, _, Sk, Lk), (c, mp, lamk, S_cm, L_cm)) in enumerate(zip(K, kets)):
+                    if abs(S - Sk) > 1e-9:
+                        continue
+                    if ligand_hole:
+                        if lamk.index != lam.index:
+                            continue
+                        ls = _transfer_ls(m, 1, t, c, mp, S_cm, L_cm, l, l_core)
+                        if abs(ls) < 1e-14:
+                            continue
+                        ls *= _orbital_lift(True, t.L, L_cm, lam.L, lam.L, L, Lk, 1)
+                    else:
+                        ls = _transfer_ls(m, 1, t, c, mp, Sk, Lk, l, l_core)
+                    if abs(ls) < 1e-14:
+                        continue
+                    M[i, j] = uncpla(L, S, Jb, 1, Lk, Jk) * ls
+            cols = np.array([
+                math.prod(gauges[sh][tt.index] for sh, tt in zip(ket_shells, terms))
+                * _phase(c.S + mp.S - S_cm + c.L + mp.L - L_cm)
+                for (terms, _, _, _), (c, mp, _, S_cm, L_cm) in zip(K, kets)])
+            out[(Jb, Jk)] = glob * rows[:, None] * M * cols[None, :]
     return out
