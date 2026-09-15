@@ -111,27 +111,33 @@ def _find_transi_block(
     geometry: str,
     n_bra: int,
     n_ket: int,
+    copy: int = 0,
 ) -> Optional[RACBlockFull]:
-    """Find a TRANSI block for a specific triad and geometry.
+    """Find a TRANSI block for a specific triad, geometry and multiplicity copy.
 
     Tries exact geometry match first, then falls back to any geometry
     matching the symmetry labels and dimensions (handles format differences
     between ttrac versions that use PERP/PARA vs MULTIPOLE).
+
+    ``copy`` selects among repeated couplings of the same triad (PRMULT: a
+    triad whose actor occurs twice in Γ_gs ⊗ Γ_fs, listed in the .ban as
+    ``S1+ 1- S1- 0`` and ``S1+ 1- S1- 1``), which ttrac writes as consecutive
+    blocks of equal dimensions.
     """
-    # Exact match
-    for b in rac.blocks:
-        if (b.kind == 'TRANSI' and b.bra_sym == gs_sym
+    def matches(check_geometry):
+        return [b for b in rac.blocks
+                if b.kind == 'TRANSI' and b.bra_sym == gs_sym
                 and b.op_sym == act_sym and b.ket_sym == fs_sym
-                and b.geometry == geometry
-                and b.n_bra == n_bra and b.n_ket == n_ket):
-            return b
-    # Fallback: ignore geometry label
-    for b in rac.blocks:
-        if (b.kind == 'TRANSI' and b.bra_sym == gs_sym
-                and b.op_sym == act_sym and b.ket_sym == fs_sym
-                and b.n_bra == n_bra and b.n_ket == n_ket):
-            return b
-    return None
+                and (not check_geometry or b.geometry == geometry)
+                and b.n_bra == n_bra and b.n_ket == n_ket]
+
+    found = matches(True) or matches(False)
+    if copy >= len(found):
+        if copy and found:
+            raise ValueError(f"triad ({gs_sym}, {act_sym}, {fs_sym}) copy {copy}: the RAC has only "
+                             f"{len(found)} TRANSI block(s) of dimensions {n_bra}x{n_ket}")
+        return None
+    return found[copy]
 
 
 # ─────────────────────────────────────────────────────────────
@@ -250,7 +256,12 @@ def assemble_and_diagonalize_in_memory(
     # diagonalised once per call and reused, which also shares the autograd graph.
     results = []
     memo: dict = {}
+    copies: Dict[Tuple[str, str, str], int] = {}
     for gs_sym, act_sym, fs_sym in ban.triads:
+        # A triad listed k times in the .ban (PRMULT copies 0..k-1) uses the k-th
+        # TRANSI block of that triad; the Hamiltonians are shared.
+        copy = copies.get((gs_sym, act_sym, fs_sym), 0)
+        copies[(gs_sym, act_sym, fs_sym)] = copy + 1
         triad = _assemble_one_triad(
             rac, cowan, ban,
             gs_sym, act_sym, fs_sym,
@@ -263,6 +274,7 @@ def assemble_and_diagonalize_in_memory(
             c["nconf"],
             device,
             memo=memo,
+            copy=copy,
         )
         if triad is not None:
             results.append(triad)
@@ -533,6 +545,7 @@ def _assemble_one_triad(
     gs_cowan_sec, fs_cowan_sec,
     nconf, device,
     memo: Optional[dict] = None,
+    copy: int = 0,
 ) -> Optional[TriadResult]:
     """Assemble and diagonalize one symmetry triad.
 
@@ -596,7 +609,7 @@ def _assemble_one_triad(
                         geom = 'PERP'
 
                     tran_block = _find_transi_block(
-                        rac, gs_sym, act_sym, fs_sym, geom, dg, df,
+                        rac, gs_sym, act_sym, fs_sym, geom, dg, df, copy=copy,
                     )
                     if tran_block is not None:
                         T_sub = assemble_matrix_from_adds(

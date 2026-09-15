@@ -13,9 +13,10 @@ with ⟨n_h⟩ the configuration-weighted metal hole count
 (:func:`multitorch.analysis.analyze_ground_state`). The Fortran Cr³⁺
 ``.ban_out`` obeys it too (ΣI 5.3995 vs 5.3994 predicted).
 
-Two known defects show up here:
+It caught residual 14 (Cr³⁺ fixture, ratio 4.008 at the template and 4.155 at
+10Dq 0.1: the second PRMULT copy of S1+→S1− was never assembled; fixed). Still
+open:
 
-* residual 14 (Cr³⁺ fixture): the ratio is not an integer;
 * residual 15 (exact-float level counting at ``max_gs=1``): an integer, but
   below the ground degeneracy (Mn²⁺, Fe³⁺ count 2 of 6 near-degenerate
   components split by µeV).
@@ -31,7 +32,6 @@ from multitorch.analysis.ground_state import configuration_label
 from multitorch.api.calc import calcXAS_cached, preload_fixture, preload_from_scratch
 
 T = 80.0
-RES14 = pytest.mark.xfail(strict=True, reason="plan residual 14: Cr3+ fixture violates the sum rule")
 RES15 = pytest.mark.xfail(strict=True, reason="plan residual 15: max_gs counts exactly equal levels only")
 
 FIXTURES = [("Ti", "iv"), ("V", "iii"), ("Cr", "iii"), ("Mn", "ii"), ("Fe", "ii"), ("Fe", "iii"), ("Co", "ii"), ("Ni", "ii")]
@@ -71,8 +71,7 @@ def _ratio(cache, **kw):
 def _fixture_cases():
     for element, valence in FIXTURES:
         for regime in REGIMES:
-            marks = [RES14] if element == "Cr" else []
-            yield pytest.param(element, valence, regime, marks=marks, id=f"{element}{valence}-{regime}")
+            yield pytest.param(element, valence, regime, id=f"{element}{valence}-{regime}")
 
 
 @pytest.mark.parametrize("element,valence,regime", list(_fixture_cases()))

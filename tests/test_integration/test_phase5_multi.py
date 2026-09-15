@@ -29,12 +29,12 @@ REFDATA = Path(__file__).parent.parent / "reference_data"
 
 # Union-window cosine per case (WP-S S7). Phase 5 at the fixture's own
 # reductions rebuilds the Fortran store, so the spectra agree to the .ban_out
-# print precision; Cr(III) is the exception (open residual, see
-# docs/DEVELOPMENT_PLAN_2026-09.md "Known residuals" 14).
+# print precision. Cr(III) was at 0.9889 until the second PRMULT copy of its
+# S1+ -> S1- triad was assembled (docs/DEVELOPMENT_PLAN_2026-09.md residual 14).
 CASES = [
     ("ti4_d0_oh",  "Ti", "iv",  "oh",  0.9999999),
     ("v3_d2_oh",   "V",  "iii", "oh",  0.9999999),
-    ("cr3_d3_oh",  "Cr", "iii", "oh",  0.988),
+    ("cr3_d3_oh",  "Cr", "iii", "oh",  0.9999999),
     ("mn2_d5_oh",  "Mn", "ii",  "oh",  0.9999999),
     ("fe2_d6_oh",  "Fe", "ii",  "oh",  0.9999999),
     ("fe3_d5_oh",  "Fe", "iii", "oh",  0.9999999),
