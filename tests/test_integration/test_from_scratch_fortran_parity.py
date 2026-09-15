@@ -134,7 +134,7 @@ def test_from_scratch_cache_with_fortran_atomic_overrides(name, element, valence
 # D4h away from the Oh limit (2026-09-14)
 # ─────────────────────────────────────────────────────────────
 
-D4H_CF = [(1.0, 0.05, 0.1), (1.5, -0.1, 0.25)]
+D4H_CF = [(1.0, 0.05, 0.1), (1.5, -0.1, 0.25), (1.0, 0.0, 0.2), (1.0, 0.15, 0.0)]  # mixed, mixed, Ds only, Dt only
 
 
 def _nid8ct_from_scratch():
@@ -178,20 +178,27 @@ def test_d4h_from_scratch_matches_fortran_away_from_oh_limit(tendq, dt, ds):
     scratch = assemble_and_diagonalize_in_memory(cowan, rac, _build_ban_from_rac(rac, tendq=tendq, dt=dt, ds=ds, sym="d4h"))
     ef, es = _lowest_ground_levels(fortran), _lowest_ground_levels(scratch)
     assert float((ef - es).abs().max()) < 2e-5, (ef[:8], es[:8])
-    assert float(ef[2]) > 0.1  # the tetragonal splitting is really in play
+    oh_limit = _lowest_ground_levels(assemble_and_diagonalize_in_memory(
+        rebuild_hamiltonian_store(fx.cowan_template, fx.decomposition, slater=0.8, soc=1.0),
+        fx.rac, _cache_ban(fx, {"tendq": tendq, "dt": 0.0, "ds": 0.0}, 100.0, None, 0.0, None)))
+    assert float((ef - oh_limit).abs().max()) > 0.02  # the tetragonal field really moves the levels
 
 
-def test_d4h_from_scratch_is_independent_of_the_lapack_basis_choice():
-    """Same oracle with eigenvectors scrambled inside degenerate subspaces (fresh process).
+@pytest.mark.parametrize("seed", [2, 5])
+def test_d4h_from_scratch_is_independent_of_the_lapack_basis_choice(seed):
+    """Same oracle with every eigenvector sign flipped at random and eigenvectors rotated inside
+    degenerate subspaces, deterministically per input matrix (fresh process).
 
-    Scramble seed 2 reproduced the exxa failure (0.636 eV) before the fix.
+    Before the pinned Oh E basis, rotations alone reproduced the exxa failure;
+    before the per-route sign pin in ``_d4h_operator_vector_complex``, sign flips
+    alone broke Dt by up to 1.6 eV (seed 2: 0.66 eV). Residual 21.
     """
     import subprocess
     import sys
     tools = Path(__file__).parent.parent / "tools"
     code = f"""
 import sys; sys.path.insert(0, {str(tools)!r}); sys.path.insert(0, {str(Path(__file__).parent)!r})
-import lapack_scramble; lapack_scramble.install(2)
+import lapack_scramble; lapack_scramble.install({seed})
 import test_from_scratch_fortran_parity as t
 for cf in t.D4H_CF:
     t.test_d4h_from_scratch_matches_fortran_away_from_oh_limit(*cf)

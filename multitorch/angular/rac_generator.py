@@ -738,6 +738,21 @@ def _d4h_operator_vector_complex(
         B_oh = _real_subduction_matrix(rank, oh_label)
         sub = oh_to_d4h_subduction_matrix(oh_irrep_full)[target_d4h_irrep]
         route_vec = (B_oh @ sub).flatten()
+        # Gauge-fix each route before the Butler coefficients combine them.
+        # B_oh and sub come from eigen-decompositions, so each route's overall
+        # sign is whatever LAPACK returned. The Ballhausen pin below fixes only
+        # the sign of the *sum*; for a two-route operator (DT = A1 + E routes at
+        # rank 4) the *relative* route sign was left to LAPACK, and a flipped
+        # eigenvector sign mixed the cubic field into Dt (up to 1.6 eV error vs
+        # the Fortran D4h store; plan residual 21). The Butler coefficients are
+        # calibrated to routes whose m = 0 real-harmonic component is positive
+        # (A1: +0.764, rank-4 E: +0.645, rank-2 E: +1.000), which every D4h-A1g
+        # route has.
+        m0 = route_vec[rank]
+        if abs(m0) < 1e-8:
+            raise RuntimeError(f"{operator}: rank-{rank} {oh_label} route has no m=0 component to fix its sign")
+        if m0 < 0:
+            route_vec = -route_vec
         op_vec_real += coeff * route_vec
     U_k = _c2r_unitary(rank)
     op_vec = U_k.conj().T @ op_vec_real.astype(np.complex128)

@@ -1167,9 +1167,11 @@ def _oh_irrep_matrices_real_std() -> Dict[str, List[np.ndarray]]:
     # it to LAPACK's choice inside a degenerate eigenspace. Every choice is a
     # valid Oh irrep basis, but the D4h emitters are not invariant under it:
     # the partner-resolved Oh→D4h subduction needs partner 0 ∝ x²−y² (B1g),
-    # partner 1 ∝ z² (A1g), with equal signs (a relative sign flip also breaks
-    # them, so the emitters carry a hidden E-partner sign convention; plan
-    # residual 21). With another LAPACK's rotation, from-scratch D4h at
+    # partner 1 ∝ z² (A1g). (A relative sign flip of the partners also broke
+    # them until 2026-09-15: it flipped the relative sign of the two routes of
+    # the Dt operator, now gauge-fixed per route in
+    # rac_generator._d4h_operator_vector_complex; plan residual 21.) With another
+    # LAPACK's rotation, from-scratch D4h at
     # Dt, Ds ≠ 0 was wrong by up to 0.64 eV (Ni d8 vs the Fortran store,
     # 2026-09-14). Oracle: tests/test_integration/test_from_scratch_fortran_parity.py
     # (D4h at nonzero Dt, Ds, with eigenvectors scrambled inside degenerate
