@@ -80,10 +80,17 @@ def test_from_scratch_requests_are_rejected_before_hfs(monkeypatch, element, val
         preload_from_scratch(element, valence, sym)
 
 
-def test_generator_refuses_half_integer_oh():
+def test_half_integer_oh_builds_a_template_but_the_api_still_refuses_it():
+    """WP-B2a-2: the Hamiltonian and crystal-field blocks are right (their levels match
+    Fortran, tests/test_integration/test_half_integer_levels.py), but the TRANSI blocks
+    are still the legacy ones that break the dipole sum rule, so spectra stay refused."""
     from multitorch.angular.rac_generator import generate_ledge_template
+
+    rac, store, dec = generate_ledge_template(2, 5, sym="oh")
+    assert {c.label for c in dec.configs} == {"gs", "ex"}
+    assert any(b.geometry == "10DQ" and b.add_entries for b in rac.blocks)
     with pytest.raises(NotImplementedError, match="half-integer"):
-        generate_ledge_template(2, 5, sym="oh")
+        preload_from_scratch("Fe", "iii", "oh")
 
 
 def test_unconverged_hfs_raises_but_a_stalled_limit_cycle_is_accepted():

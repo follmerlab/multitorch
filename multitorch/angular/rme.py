@@ -1326,10 +1326,19 @@ def compute_two_shell_shell_blocks(
     # Build two-shell J basis
     two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
 
+    # Cowan's term gauge on the coupled state: (-1)^(L_total + S_total - S_min)
+    # with S_min = (electrons mod 2)/2. Only the S_min shift distinguishes it
+    # from (-1)^(L_total + S_total), and only for an odd electron count.
+    s_min = ((n_core_excited + n_val_excited) % 2) / 2.0
+    gauge = {J: [(-1.0) ** int(round(st.L_total + st.S_total - s_min)) for st in states]
+             for J, states in two_shell_basis.items()}
+
     blocks: Dict[Tuple[float, float], np.ndarray] = {}
 
     for J_bra, states_bra in two_shell_basis.items():
+        sigma_bra = gauge[J_bra]
         for J_ket, states_ket in two_shell_basis.items():
+            sigma_ket = gauge[J_ket]
             # Triangle rule for rank k
             if k > J_bra + J_ket + 1e-10 or k < abs(J_bra - J_ket) - 1e-10:
                 continue
@@ -1370,11 +1379,13 @@ def compute_two_shell_shell_blocks(
                     rc = uncpla(Lt_a, sa.S_total, J_bra,
                                 k, Lt_b, J_ket)
 
-                    # Fortran two-shell state phase convention:
-                    # each state carries (-1)^{S_total + L_total}
-                    phase_conv = (-1) ** int(round(
-                        sa.S_total + sa.L_total
-                        + sb.S_total + sb.L_total))
+                    # Fortran two-shell state phase convention, sigma(bra) x
+                    # sigma(ket). Dropping the S_min shift (i.e. using plain
+                    # (-1)^(S_total+L_total)) is the same for an even electron
+                    # count and a global -1 for an odd one, which had the
+                    # excited crystal field of Cr3+/Mn2+/Fe3+/Co2+ upside down
+                    # against ttrcg (WP-B2a-2).
+                    phase_conv = sigma_bra[ib] * sigma_ket[ik]
 
                     mat[ib, ik] = (uk_val * phase_orb
                                    * factor_orb * sixj_orb * rc

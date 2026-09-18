@@ -1178,6 +1178,69 @@ def _make_oh_op_adds(
     return adds
 
 
+def _make_oh_op_adds_half(
+    irrep: str,
+    manifold: str,
+    j_order: List[Tuple[float, int, int]],
+    operator: str,
+    basis,
+    ham_idx_map: Dict[float, int],
+    cf_idx_map: Dict[Tuple[float, float], int],
+) -> List[ADDEntry]:
+    """GROUND/EXCITE ADD entries of one double-group irrep (half-integer J).
+
+    Half-integer counterpart of :func:`_make_oh_op_adds`: the partner vectors
+    are the gauge-fixed complex ones of
+    :mod:`~multitorch.angular.double_group`, which make ⟨v_b|O|v_k⟩ real, and
+    ``basis`` is the :class:`~multitorch.angular.double_group.GaugedBasis` of
+    the whole calculation. ``j_order`` lists ``(J, copy, n_states)`` in block
+    order, with ``copy`` indexing the basis' canonical copies.
+
+    As in the integer case the coefficient is evaluated for J_b <= J_k and
+    mirrored with (-1)^(J_b-J_k), the symmetry of the rank-k COWAN blocks;
+    the i^(J_k-J_b) part of the gauge is inside ``basis.coefficient``.
+    """
+    dim = OH_DOUBLE_IRREP_DIM[irrep]
+    adds: List[ADDEntry] = []
+
+    if operator == 'HAMILTONIAN':
+        pos = 1
+        for (J, _copy, n) in j_order:
+            if J in ham_idx_map:
+                adds.append(ADDEntry(matrix_idx=ham_idx_map[J], bra=pos, ket=pos, nbra=n, nket=n,
+                                     coeff=math.sqrt(dim / (2.0 * J + 1.0))))
+            pos += n
+        return adds
+    if operator != '10DQ':
+        raise ValueError(f"_make_oh_op_adds_half: unknown operator {operator!r}")
+
+    k = 4
+    op_vec = _d4h_operator_vector_complex('TENDQ', k)
+
+    def coefficient(a, b) -> float:
+        (Jb, cb, _), (Jk, ck, _) = a, b
+        if Jb > Jk:
+            return (-1.0) ** int(round(Jb - Jk)) * coefficient(b, a)
+        me = basis.coefficient((manifold, Jb, irrep, cb), (manifold, Jk, irrep, ck), k, op_vec)
+        return math.sqrt(dim / (2.0 * Jb + 1.0)) * me
+
+    bra_pos = 1
+    for a in j_order:
+        ket_pos = 1
+        for b in j_order:
+            Jb, Jk = a[0], b[0]
+            if abs(Jb - Jk) > k or Jb + Jk < k or (Jb, Jk) not in cf_idx_map:
+                ket_pos += b[2]
+                continue
+            c = coefficient(a, b)
+            if abs(c) > 1e-13:
+                adds.append(ADDEntry(matrix_idx=cf_idx_map[(Jb, Jk)], bra=bra_pos, ket=ket_pos,
+                                     nbra=a[2], nket=b[2], coeff=c))
+            ket_pos += b[2]
+        bra_pos += a[2]
+    return adds
+
+
 def _make_oh_dipole_adds(
     oh_gs: str,
     gs_j_order: List[Tuple[float, int, int]],
@@ -1442,11 +1505,16 @@ def generate_ledge_template(
     # Half-integer J would require D4h double-group tables (not yet
     # tabulated). cf_rank is fixed at 4 because the d4h dispatcher uses
     # rank-4 (TENDQ/DT) and rank-2 (DS) operators by construction.
-    if sym == 'oh' and (is_half_gs or is_half_ex):
-        raise NotImplementedError(
-            "half-integer J (odd electron count: Cr3+, Mn2+, Fe3+, Co2+, Cu2+, ...) is not supported from "
-            "scratch: the legacy Oh double-group emission breaks the dipole sum rule "
-            "(non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5). Planned in WP-B2a; use the Fortran fixtures meanwhile.")
+    # Half-integer J (odd electron count): the Hamiltonian and crystal-field
+    # blocks come from the gauge-fixed double-group basis (WP-B2a-1); the
+    # TRANSI blocks are still the legacy ones, which break the dipole sum rule
+    # (non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5), so
+    # ``api.calc`` keeps refusing these ions until the dipole invariants land.
+    half_basis = None
+    if is_half_gs or is_half_ex:
+        from multitorch.angular.double_group import gauged_basis
+
+        half_basis = gauged_basis([('gs', gs_j_sizes), ('ex', ex_j_sizes)])
     if sym == 'd4h':
         if is_half_gs or is_half_ex:
             raise NotImplementedError(
@@ -1821,8 +1889,8 @@ def generate_ledge_template(
 
         # HAMILTONIAN block (k=0)
         if is_half_gs:
-            ham_adds = _make_operator_adds(
-                gs_j_order, add_k0_gs, gs_ham_idx, irrep, diagonal_only=False)
+            ham_adds = _make_oh_op_adds_half(irrep, 'gs', gs_j_order, 'HAMILTONIAN', half_basis,
+                                             gs_ham_idx, gs_cf_idx)
         else:
             ham_adds = _make_oh_op_adds(irrep, gs_j_order, 'HAMILTONIAN', gs_ham_idx, gs_cf_idx)
         blocks.append(RACBlockFull(
@@ -1837,7 +1905,8 @@ def generate_ledge_template(
         ))
 
         # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
-        cf_adds = (_make_cf_adds(gs_j_order, add_cf_gs, gs_cf_idx, irrep) if is_half_gs
+        cf_adds = (_make_oh_op_adds_half(irrep, 'gs', gs_j_order, '10DQ', half_basis, gs_ham_idx, gs_cf_idx)
+                   if is_half_gs
                    else _make_oh_op_adds(irrep, gs_j_order, '10DQ', gs_ham_idx, gs_cf_idx))
         blocks.append(RACBlockFull(
             kind='GROUND',
@@ -1868,8 +1937,8 @@ def generate_ledge_template(
 
         # HAMILTONIAN block
         if is_half_ex:
-            ham_adds = _make_operator_adds(
-                ex_j_order, add_k0_ex, ex_ham_idx, irrep, diagonal_only=False)
+            ham_adds = _make_oh_op_adds_half(irrep, 'ex', ex_j_order, 'HAMILTONIAN', half_basis,
+                                             ex_ham_idx, ex_cf_idx)
         else:
             ham_adds = _make_oh_op_adds(irrep, ex_j_order, 'HAMILTONIAN', ex_ham_idx, ex_cf_idx)
         blocks.append(RACBlockFull(
@@ -1884,7 +1953,8 @@ def generate_ledge_template(
         ))
 
         # 10DQ block
-        cf_adds = (_make_cf_adds(ex_j_order, add_cf_ex, ex_cf_idx, irrep) if is_half_ex
+        cf_adds = (_make_oh_op_adds_half(irrep, 'ex', ex_j_order, '10DQ', half_basis, ex_ham_idx, ex_cf_idx)
+                   if is_half_ex
                    else _make_oh_op_adds(irrep, ex_j_order, '10DQ', ex_ham_idx, ex_cf_idx))
         blocks.append(RACBlockFull(
             kind='GROUND',  # assembler uses 'GROUND' for config-1
