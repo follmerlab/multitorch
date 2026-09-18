@@ -1,0 +1,241 @@
+"""
+Gauge-fixed double-group partner bases for half-integer J (WP-B2a).
+
+The projected emitters of :mod:`~multitorch.angular.rac_generator` build each
+RAC coefficient as ⟨v_b|O|v_k⟩ between partner-0 basis vectors of an Oh irrep.
+For integer J those vectors are real (:func:`~multitorch.angular.point_group._real_subduction_matrix`).
+The double-group irreps E1/2, E5/2 and G3/2 are pseudo-real: they have no real
+form, the projection returns complex vectors, and a RAC coefficient must
+nevertheless be a real number.
+
+It can be, and this module constructs the basis that makes it so:
+
+1. **Partner-0 vector per copy** from the complex projection
+   (:func:`~multitorch.angular.point_group._complex_subduction_matrix_half_int`).
+2. **Canonical copies.** Where an irrep occurs more than once in D^J the
+   projection returns an arbitrary basis of the multiplicity space (whatever
+   the host's eigensolver produced). The copies are re-expressed in the
+   eigenbasis of the rank-4 cubic operator inside that space and ordered by
+   its eigenvalue, which is a property of the physics rather than of LAPACK.
+3. **One phase per copy**, fixed by walking a spanning tree of the non-zero
+   *scalar* couplings (ranks 0, 2, 4 — the Hamiltonian and crystal field) from
+   a single seed, within each manifold.
+
+Step 3 is what makes those coefficients real, and it is not obvious that it
+can: the phases must come out consistent around every closed loop. They do —
+every cycle phase is ±1 — so after the walk every scalar coupling is real,
+verified to ~1e-13 for the ions of the bundled fixtures. :func:`gauged_basis`
+re-checks it for each system it builds and raises if a residue survives, so a
+system where the argument fails cannot pass silently.
+
+**Scope.** This covers the operators that are scalars in the point group: the
+configuration Hamiltonian and the crystal field, whose coefficient is a single
+number per (bra copy, ket copy). It does *not* cover the dipole. For
+half-integer J the triad (Γ_bra, T1u, Γ_ket) can carry two independent
+invariants — Γ8 ⊗ T1u ⊗ Γ8 does — so a transition needs one reduced element
+per invariant rather than one number, which is why ttrac lists such a triad
+twice in the .ban (the repeated coupling the assembler learned to read in the
+residual-14 fix). The dipole emitter therefore needs the invariant tensors of
+the double group, not just this gauge.
+
+The overall sign of each vector is still free (a spanning tree fixes phases up
+to the seed's own phase and to ±1 per vector); that freedom cancels in the
+spectrum, as the seed's does.
+"""
+from __future__ import annotations
+
+import collections
+from dataclasses import dataclass, field
+from typing import Dict, Iterable, List, Sequence, Tuple
+
+import numpy as np
+
+from multitorch.angular.point_group import (
+    OH_DOUBLE_IRREP_DIM,
+    _build_coupling_operator,
+    _complex_subduction_matrix_half_int,
+    oh_branching,
+)
+
+DOUBLE_IRREPS = ("E1/2", "E5/2", "G3/2")
+REALITY_TOL = 1e-9
+
+# Node of the gauge graph: (manifold, J, irrep, copy). ``manifold`` is any
+# hashable label; vectors of different manifolds live in different J spaces
+# and are coupled only by the odd-rank (dipole) operator.
+Node = Tuple[str, float, str, int]
+
+
+def is_half_integer(J: float) -> bool:
+    return abs(float(J) - round(float(J))) > 0.1
+
+
+def _marker_operator(J: float) -> np.ndarray:
+    """Rank-4 cubic operator on D^J, used to order the copies of an irrep."""
+    from multitorch.angular.rac_generator import _d4h_operator_vector_complex
+
+    return _build_coupling_operator(J, J, 4, _d4h_operator_vector_complex("TENDQ", 4))
+
+
+def canonical_partner_vectors(J: float, irrep: str) -> np.ndarray:
+    """Partner-0 vector of every copy of ``irrep`` in D^J, in a canonical copy order.
+
+    Returns a ``(2J+1, multiplicity)`` complex array. Copies are the eigenbasis
+    of the rank-4 cubic operator within the multiplicity space, ordered by
+    eigenvalue, so the result does not depend on the host eigensolver's choice
+    inside a degenerate projection subspace.
+    """
+    B = _complex_subduction_matrix_half_int(float(J), irrep)[:, :: OH_DOUBLE_IRREP_DIM[irrep]]
+    if B.shape[1] <= 1:
+        return np.ascontiguousarray(B)
+    M = B.conj().T @ _marker_operator(float(J)) @ B
+    _, U = np.linalg.eigh(0.5 * (M + M.conj().T))
+    return np.ascontiguousarray(B @ U)
+
+
+def gauge_factor(Jb: float, Jk: float, k: int) -> complex:
+    """i^(J_k − J_b) for even rank, one factor of i more for odd rank.
+
+    The integer-J emitters apply the same rotation as the real sign
+    (−1)^⌊(J_k−J_b)/2⌋ for even rank and ``_dipole_gauge_sign`` for the dipole;
+    here it is kept complex because the vectors are complex.
+    """
+    return 1j ** int(round(Jk - Jb + (1 if k % 2 else 0)))
+
+
+@dataclass
+class GaugedBasis:
+    """Gauge-fixed partner vectors of one calculation, keyed by :data:`Node`."""
+
+    vectors: Dict[Node, np.ndarray]
+    nodes: List[Node] = field(default_factory=list)
+    residual: float = 0.0          # largest relative |Im| found by the verification
+
+    def copies(self, manifold: str, J: float, irrep: str) -> int:
+        return sum(1 for n in self.nodes if n[0] == manifold and n[1] == J and n[2] == irrep)
+
+    def coefficient(self, a: Node, b: Node, k: int, op_vec: np.ndarray) -> float:
+        """Real ⟨v_a|O^(k)|v_b⟩ including the i^(ΔJ) gauge; the imaginary part must vanish."""
+        O = _build_coupling_operator(a[1], b[1], k, op_vec)
+        z = gauge_factor(a[1], b[1], k) * (self.vectors[a].conj() @ O @ self.vectors[b])
+        if abs(z.imag) > REALITY_TOL * max(abs(z), 1.0):
+            raise RuntimeError(f"coupling {a} -> {b} rank {k} is not real in the fixed gauge: {z!r}")
+        return float(z.real)
+
+
+def _seed_operators(ranks: Iterable[int]) -> Dict[int, List[np.ndarray]]:
+    """Operator components per rank, spanning what the emitters will ask for.
+
+    Every component matters: the gauge has to make all of them real at once, so
+    the dipole contributes all three T1 partners, not just one.
+    """
+    from multitorch.angular.point_group import _c2r_unitary, _real_subduction_matrix
+    from multitorch.angular.rac_generator import _d4h_operator_vector_complex
+
+    out: Dict[int, List[np.ndarray]] = {}
+    for k in ranks:
+        if k == 0:
+            out[0] = [np.array([1.0 + 0j])]
+        elif k == 1:
+            U1, B = _c2r_unitary(1), _real_subduction_matrix(1, "T1")
+            out[1] = [U1.conj().T @ np.ascontiguousarray(B[:, p]).astype(np.complex128) for p in range(3)]
+        elif k == 2:
+            out[2] = [_d4h_operator_vector_complex("DS", 2)]
+        elif k == 4:
+            out[4] = [_d4h_operator_vector_complex("TENDQ", 4)]
+        else:
+            raise ValueError(f"no seed operator for rank {k}")
+    return out
+
+
+def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasis:
+    """Build the gauge-fixed partner basis of a calculation.
+
+    ``manifolds`` pairs a label with the J values of that manifold, e.g.
+    ``[("g", gs_dims), ("u", ex_dims)]``. The spanning tree runs over the whole
+    coupling graph — scalar couplings inside an irrep and dipole couplings
+    across the manifolds — because the dipole edges are what tie the irreps to
+    one another; without them the scalar couplings of different irreps are
+    fixed independently and do not all come out real. Only the scalar
+    couplings are then verified to be real, which is what the Hamiltonian and
+    crystal-field emitters need (see the module docstring for the dipole).
+
+    Raises if a scalar coupling cannot be made real, or if a node stays
+    unreachable, in which case its phase would be arbitrary.
+    """
+    seeds = _seed_operators((0, 1, 2, 4))
+    scalar = (0, 2, 4)
+
+    vectors: Dict[Node, np.ndarray] = {}
+    nodes: List[Node] = []
+    for label, js in manifolds:
+        for J in sorted(float(j) for j in js):
+            if not is_half_integer(J):
+                raise ValueError(f"{label} manifold has integer J={J}; use the real emitters")
+            for irrep in DOUBLE_IRREPS:
+                V = canonical_partner_vectors(J, irrep)
+                for c in range(V.shape[1]):
+                    node = (label, J, irrep, c)
+                    nodes.append(node)
+                    vectors[node] = V[:, c]
+    if not nodes:
+        return GaugedBasis(vectors={}, nodes=[])
+
+    def allowed(a: Node, b: Node) -> Tuple[int, ...]:
+        if a[0] == b[0]:
+            return scalar if a[2] == b[2] else ()
+        return (1,)
+
+    def raw(a: Node, b: Node, k: int) -> complex:
+        """Coupling through one fixed operator component per rank.
+
+        The component is part of the gauge: different partners of the dipole
+        pick different phases for the same pair (the quaternionic structure of
+        the module docstring), so the walk uses one of them throughout.
+        """
+        g = gauge_factor(a[1], b[1], k)
+        return g * (vectors[a].conj() @ _build_coupling_operator(a[1], b[1], k, seeds[k][0]) @ vectors[b])
+
+    phase: Dict[Node, complex] = {nodes[0]: 1.0 + 0j}
+    queue = collections.deque([nodes[0]])
+    while queue:
+        a = queue.popleft()
+        for b in nodes:
+            if b in phase:
+                continue
+            for k in allowed(a, b):
+                if abs(a[1] - b[1]) > k or a[1] + b[1] < k:
+                    continue
+                z = np.conj(phase[a]) * raw(a, b, k)   # the bra phase enters conjugated
+                if abs(z) > 1e-6:
+                    phase[b] = np.exp(-1j * np.angle(z))
+                    queue.append(b)
+                    break
+    unreachable = [n for n in nodes if n not in phase]
+    if unreachable:
+        raise RuntimeError(f"no coupling path to {unreachable[:3]} (+{max(0, len(unreachable) - 3)} more): "
+                           f"their phases would be arbitrary")
+
+    basis = GaugedBasis(vectors={n: phase[n] * vectors[n] for n in nodes}, nodes=nodes)
+    worst, where = 0.0, None
+    for a in nodes:
+        for b in nodes:
+            if a[0] != b[0] or a[2] != b[2]:
+                continue
+            for k in scalar:
+                if abs(a[1] - b[1]) > k or a[1] + b[1] < k:
+                    continue
+                for op in seeds[k]:
+                    z = gauge_factor(a[1], b[1], k) * (basis.vectors[a].conj()
+                                                       @ _build_coupling_operator(a[1], b[1], k, op)
+                                                       @ basis.vectors[b])
+                    if abs(z) < 1e-8:
+                        continue
+                    r = abs(z.imag) / abs(z)
+                    if r > worst:
+                        worst, where = r, (a, b, k)
+    if worst > REALITY_TOL:
+        raise RuntimeError(f"gauge fixing left a complex scalar coupling ({worst:.2e} relative) at {where}; "
+                           f"the pseudo-real gauge argument fails for this system")
+    basis.residual = worst
+    return basis
