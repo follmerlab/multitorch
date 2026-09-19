@@ -111,6 +111,33 @@ def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, 
 
 
 @pytest.mark.parametrize("name,element,valence,n,tendq", HALF_IONS, ids=[i[0] for i in HALF_IONS])
+def test_half_integer_d4h_reproduces_the_oh_limit(name, element, valence, n, tendq):
+    """WP-B2a-4: D4h at dt = ds = 0 is Oh, so the same Fortran fixtures serve.
+
+    There is no Fortran D4h half-integer output to compare away from that limit
+    (ttrac cannot be re-run, plan B6), so this is the parity oracle for the D4h
+    double-group blocks; the tetragonal terms themselves are covered by the
+    dipole sum rule, the scramble harness, and
+    :func:`test_half_integer_d4h_away_from_the_oh_limit_splits_the_levels`.
+    """
+    _assert_matches_fixture(name, element, valence, n, tendq, "d4h")
+
+
+@pytest.mark.parametrize("name,element,valence,n,tendq", HALF_IONS, ids=[i[0] for i in HALF_IONS])
+def test_half_integer_d4h_away_from_the_oh_limit_splits_the_levels(name, element, valence, n, tendq):
+    """The tetragonal terms must actually act — an emitter that dropped DT/DS
+    would still pass the Oh-limit test above."""
+    rac, cowan = generate_ledge_rac(2, n, sym="d4h", **_fixture_parameters(name))
+    levels = {}
+    for dt, ds in ((0.0, 0.0), (0.05, 0.1)):
+        res = assemble_and_diagonalize_in_memory(
+            cowan, rac, _build_ban_from_rac(rac, tendq=tendq, dt=dt, ds=ds, sym="d4h"))
+        E = torch.sort(torch.cat([t.Eg for t in res.triads]))[0]
+        levels[(dt, ds)] = (E - E[0])[:20]
+    assert float((levels[(0.0, 0.0)] - levels[(0.05, 0.1)]).abs().max()) > 0.02
+
+
+@pytest.mark.parametrize("name,element,valence,n,tendq", HALF_IONS, ids=[i[0] for i in HALF_IONS])
 def test_half_integer_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq):
     """WP-B2a-3: the odd-electron ions, whose dipole comes from the double-group
     invariants of each triad (:func:`_make_oh_dipole_adds_half`).
@@ -240,11 +267,13 @@ print("OK")
 def test_half_integer_from_scratch_is_independent_of_the_lapack_basis_choice(seed):
     """WP-B2a-3 under the scramble harness.
 
-    The half-integer path leans on two eigensolver calls that a different LAPACK
-    could answer differently: the copy order inside a (J, Γ) multiplicity space
-    (``double_group.canonical_partner_sets``) and the channel basis of a triad's
-    invariants (``double_group.real_invariant_coefficients``). Neither may move
-    the spectrum.
+    The half-integer path leans on three eigensolver calls that a different
+    LAPACK could answer differently: the copy order inside a (J, Γ) multiplicity
+    space (``double_group.canonical_partner_sets``), the channel basis of a
+    triad's invariants (``double_group.real_invariant_coefficients``), and the
+    partner-0 vector of each D4h subduction route
+    (``double_group.oh_to_d4h_double_subduction``, whose free phase
+    ``_pin_d4h_routes`` fixes). None may move the spectrum.
     """
     import subprocess
     import sys
@@ -255,6 +284,7 @@ import lapack_scramble; lapack_scramble.install({seed})
 import test_from_scratch_fortran_parity as t
 for ion in t.HALF_IONS:
     t.test_half_integer_from_scratch_matches_fortran_fixture(*ion)
+    t.test_half_integer_d4h_reproduces_the_oh_limit(*ion)
 print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=900)

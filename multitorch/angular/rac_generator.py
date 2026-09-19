@@ -61,6 +61,7 @@ from multitorch.angular.point_group import (
     _c2r_unitary,
     _real_subduction_matrix,
 )
+from multitorch.angular import double_group
 from multitorch.angular.symmetry import (
     D4H_BRANCHES_BY_OPERATOR,
     D4H_IRREP_DIM,
@@ -68,6 +69,13 @@ from multitorch.angular.symmetry import (
     d4h_basis_layout,
     oh_to_d4h_subduction_matrix,
 )
+
+# Butler labels for the D4h double-group irreps. ttrac has no bundled D4h
+# half-integer output to copy, so these follow the Oh double-group spelling of
+# ``point_group.BUTLER_LABEL_DOUBLE`` ('1/2', '3/2'); a calculation is Oh or
+# D4h, never both, so the labels cannot collide.
+D4H_DOUBLE_TO_BUTLER = {'E1/2g': '1/2+', 'E1/2u': '1/2-',
+                        'E3/2g': '3/2+', 'E3/2u': '3/2-'}
 from multitorch.io.read_rme import (
     ADDEntry,
     IrrepInfo,
@@ -1086,6 +1094,146 @@ def _make_d4h_dipole_adds(
     return adds
 
 
+def _make_d4h_op_adds_half(
+    d4h_irrep: str,
+    manifold: str,
+    entries: List[Tuple[float, str, int, int, int]],
+    operator: str,
+    basis,
+    ham_idx_map: Dict[float, int],
+    cf_idx_map: Dict[Tuple[float, float], int],
+    cf_idx_map_rank2: Dict[Tuple[float, float], int],
+) -> List[ADDEntry]:
+    """GROUND/EXCITE ADD entries of one D4h double irrep (half-integer J).
+
+    Half-integer counterpart of :func:`_make_d4h_op_adds`, and the D4h
+    counterpart of :func:`_make_oh_op_adds_half`: the partner vectors are the
+    gauge-fixed double-group ones subduced to D4h
+    (:meth:`~multitorch.angular.double_group.GaugedBasis.d4h_partners`), whose
+    route phases make ⟨w_b|O|w_k⟩ real.
+
+    Unlike the Oh case the crystal field couples *different Oh irreps* here —
+    DT and DS are D4h-A1g but not Oh scalars — which is exactly what the route
+    phases pin. Partner 0 carries the whole reduced element (Schur, the
+    operators being D4h scalars), as in the integer emitter, so ``entries`` is
+    filtered to it.
+    """
+    entries = [e for e in entries if e[3] == 0]
+    dim_d4h = double_group.D4H_DOUBLE_IRREP_DIM[d4h_irrep[:-1]]
+    adds: List[ADDEntry] = []
+
+    if operator == 'HAMILTONIAN':
+        pos = 1
+        for (J, _oh, _c, _p, n) in entries:
+            if J in ham_idx_map:
+                adds.append(ADDEntry(matrix_idx=ham_idx_map[J], bra=pos, ket=pos, nbra=n, nket=n,
+                                     coeff=math.sqrt(dim_d4h / (2.0 * J + 1.0))))
+            pos += n
+        return adds
+
+    rank_map = {'TENDQ': 4, 'DT': 4, 'DS': 2}
+    if operator not in rank_map:
+        raise ValueError(f"_make_d4h_op_adds_half: unknown operator {operator!r}; "
+                         f"expected HAMILTONIAN/TENDQ/DT/DS")
+    k = rank_map[operator]
+    matrix_idx_map = cf_idx_map_rank2 if k == 2 else cf_idx_map
+    op_vec = _d4h_operator_vector_complex(operator, k)
+    stem = d4h_irrep[:-1]
+
+    def w(entry):
+        J, oh, copy, partner, _ = entry
+        return basis.d4h_partners((manifold, J, oh, copy), stem)[:, partner]
+
+    def coefficient(a, b) -> float:
+        Jb, Jk = a[0], b[0]
+        if Jb > Jk:
+            return (-1.0) ** int(round(Jb - Jk)) * coefficient(b, a)
+        O = _build_coupling_operator(Jb, Jk, k, op_vec)
+        z = double_group.gauge_factor(Jb, Jk, k) * (w(a).conj() @ O @ w(b))
+        if abs(z.imag) > double_group.REALITY_TOL * max(abs(z), 1.0):
+            raise RuntimeError(f"D4h {operator} coupling {a} -> {b} is not real: {z!r}")
+        return math.sqrt(dim_d4h / (2.0 * Jb + 1.0)) * float(z.real)
+
+    bra_pos = 1
+    for a in entries:
+        ket_pos = 1
+        for b in entries:
+            Jb, Jk = a[0], b[0]
+            if abs(Jb - Jk) > k or Jb + Jk < k or (Jb, Jk) not in matrix_idx_map:
+                ket_pos += b[4]
+                continue
+            c = coefficient(a, b)
+            if abs(c) > 1e-13:
+                adds.append(ADDEntry(matrix_idx=matrix_idx_map[(Jb, Jk)], bra=bra_pos, ket=ket_pos,
+                                     nbra=a[4], nket=b[4], coeff=c))
+            ket_pos += b[4]
+        bra_pos += a[4]
+    return adds
+
+
+def _make_d4h_dipole_adds_half(
+    d4h_gs: str,
+    gs_entries: List[Tuple[float, str, int, int, int]],
+    d4h_ex: str,
+    ex_entries: List[Tuple[float, str, int, int, int]],
+    op_d4h_target: str,
+    multipole_idx: Dict[Tuple[float, float], int],
+    basis,
+) -> List[List[ADDEntry]]:
+    """TRANSI ADD entries of one (D4h gs, D4h ex, dipole sub-irrep), one list per channel.
+
+    The D4h counterpart of :func:`_make_oh_dipole_adds_half`, and the
+    half-integer counterpart of :func:`_make_d4h_dipole_adds`: the partner
+    tensor of each (J_b, J_k) pair is projected onto an orthonormal basis of the
+    invariants of (Γ_gs, Γ_op, Γ_ex), giving one block per invariant.
+
+    The coefficient is again the projection over sqrt(2J_b+1). In the integer
+    emitter the same number is spelled ``factor × sqrt(3/(2J_b+1)) ×
+    ‖M‖/sqrt(dim Γ_op)`` with ``factor = sqrt(dim Γ_op / 3)``, which is the
+    same thing; the PERP/PARA factors are therefore not applied here.
+    """
+    sub = oh_to_d4h_subduction_matrix('T1u')[op_d4h_target]
+    U_1 = _c2r_unitary(1)
+    op_vecs = [U_1.conj().T @ np.ascontiguousarray(sub[:, p]).astype(np.complex128)
+               for p in range(sub.shape[1])]
+    gs_stem, ex_stem = d4h_gs[:-1], d4h_ex[:-1]
+
+    pairs: List[Tuple[int, int]] = []
+    tensors: List[np.ndarray] = []
+    for ib, (Jb, oh_b, cb, _pb, _nb) in enumerate(gs_entries):
+        Wb = basis.d4h_partners(('gs', Jb, oh_b, cb), gs_stem)
+        for ik, (Jk, oh_k, ck, _pk, _nk) in enumerate(ex_entries):
+            if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
+                continue
+            Wk = basis.d4h_partners(('ex', Jk, oh_k, ck), ex_stem)
+            g = double_group.gauge_factor(Jb, Jk, 1)
+            T = np.empty((Wb.shape[1], len(op_vecs), Wk.shape[1]), dtype=np.complex128)
+            for q, op_vec in enumerate(op_vecs):
+                T[:, q, :] = g * (Wb.conj().T @ _build_coupling_operator(Jb, Jk, 1, op_vec) @ Wk)
+            if np.abs(T).max() < 1e-12:
+                continue
+            pairs.append((ib, ik))
+            tensors.append(T)
+    R = double_group.real_invariant_coefficients(tensors)
+
+    channels: List[List[ADDEntry]] = []
+    for alpha in range(R.shape[1] if R.size else 0):
+        adds: List[ADDEntry] = []
+        for p, (ib, ik) in enumerate(pairs):
+            Jb, Jk = gs_entries[ib][0], ex_entries[ik][0]
+            coeff = R[p, alpha] / math.sqrt(2.0 * Jb + 1.0)
+            if abs(coeff) > 1e-13:
+                adds.append(ADDEntry(
+                    matrix_idx=multipole_idx[(Jb, Jk)],
+                    bra=1 + sum(e[4] for e in gs_entries[:ib]),
+                    ket=1 + sum(e[4] for e in ex_entries[:ik]),
+                    nbra=gs_entries[ib][4], nket=ex_entries[ik][4], coeff=coeff,
+                ))
+        if adds:
+            channels.append(adds)
+    return channels
+
+
 def _dipole_gauge_sign(Jb: float, Jk: float) -> float:
     """Sign that puts the rank-1 projected block on the same real gauge as the
     even-rank crystal-field blocks (diag(i^J) on both manifolds plus a global
@@ -1579,18 +1727,13 @@ def generate_ledge_template(
     # TRANSI blocks from the triads' invariants (WP-B2a-3). Oh only so far.
     half_basis = None
     if is_half_gs or is_half_ex:
-        from multitorch.angular.double_group import gauged_basis
-
-        half_basis = gauged_basis([('gs', gs_j_sizes), ('ex', ex_j_sizes)])
+        # d4h=True additionally pins the subduction routes into the D4h double
+        # irreps, without which DT and DS (D4h scalars, not Oh ones) would not
+        # be real; it costs a pass over the node pairs, so it is opt-in.
+        half_basis = double_group.gauged_basis(
+            [('gs', gs_j_sizes), ('ex', ex_j_sizes)], d4h=(sym == 'd4h'),
+        )
     if sym == 'd4h':
-        if is_half_gs or is_half_ex:
-            raise NotImplementedError(
-                "sym='d4h' currently supports only even-electron-count "
-                "configurations (integer J in both ground and excited "
-                "manifolds). Got half-integer J — likely an odd "
-                "electron count (Fe d5, Cu d9, etc.). Use sym='oh' or "
-                "wait for D4h double-group support."
-            )
         if cf_rank != 4:
             raise ValueError(
                 f"sym='d4h' uses fixed rank-4 (TENDQ/DT) and rank-2 (DS) "
@@ -1731,42 +1874,55 @@ def generate_ledge_template(
     # Operates on the D4h-Butler labels emitted by the per-D4h-irrep
     # GROUND/EXCITE block above.
     if sym == 'd4h':
-        layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
-        layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
+        layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
+                     else d4h_basis_layout(gs_j_sizes, parity='g'))
+        layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
+                     else d4h_basis_layout(ex_j_sizes, parity='u'))
+        butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
         for d4h_gs, gs_raw in sorted(layout_gs.items()):
             gs_filtered = [e for e in gs_raw if e[3] == 0]
             if not gs_filtered:
                 continue
             n_bra = sum(e[4] for e in gs_filtered)
-            gs_butler = D4H_TO_BUTLER[d4h_gs]
+            gs_butler = butler[d4h_gs]
             for d4h_ex, ex_raw in sorted(layout_ex.items()):
                 ex_filtered = [e for e in ex_raw if e[3] == 0]
                 if not ex_filtered:
                     continue
                 n_ket = sum(e[4] for e in ex_filtered)
-                ex_butler = D4H_TO_BUTLER[d4h_ex]
+                ex_butler = butler[d4h_ex]
                 for op_d4h_target, op_butler, geometry, factor in (
                     ('Eu',  '1-',  'PERP', PERP_FACTOR),
                     ('A2u', '^0-', 'PARA', PARA_FACTOR),
                 ):
-                    transi_adds = _make_d4h_dipole_adds(
-                        d4h_gs=d4h_gs, gs_entries=gs_filtered,
-                        d4h_ex=d4h_ex, ex_entries=ex_filtered,
-                        op_d4h_target=op_d4h_target,
-                        multipole_idx=multipole_idx,
-                        factor=factor,
-                    )
-                    if not transi_adds:
-                        continue
-                    blocks.append(RACBlockFull(
-                        kind='TRANSI',
-                        bra_sym=gs_butler,
-                        op_sym=op_butler,
-                        ket_sym=ex_butler,
-                        geometry=geometry,
-                        n_bra=n_bra, n_ket=n_ket,
-                        add_entries=transi_adds,
-                    ))
+                    if is_half_gs:
+                        # one block per invariant of (Γ_gs, Γ_op, Γ_ex); the
+                        # PERP/PARA factor is already inside the projection
+                        channels = _make_d4h_dipole_adds_half(
+                            d4h_gs=d4h_gs, gs_entries=gs_filtered,
+                            d4h_ex=d4h_ex, ex_entries=ex_filtered,
+                            op_d4h_target=op_d4h_target,
+                            multipole_idx=multipole_idx, basis=half_basis,
+                        )
+                    else:
+                        adds = _make_d4h_dipole_adds(
+                            d4h_gs=d4h_gs, gs_entries=gs_filtered,
+                            d4h_ex=d4h_ex, ex_entries=ex_filtered,
+                            op_d4h_target=op_d4h_target,
+                            multipole_idx=multipole_idx,
+                            factor=factor,
+                        )
+                        channels = [adds] if adds else []
+                    for transi_adds in channels:
+                        blocks.append(RACBlockFull(
+                            kind='TRANSI',
+                            bra_sym=gs_butler,
+                            op_sym=op_butler,
+                            ket_sym=ex_butler,
+                            geometry=geometry,
+                            n_bra=n_bra, n_ket=n_ket,
+                            add_entries=transi_adds,
+                        ))
 
     # Per-Oh-irrep TRANSI loop (sym='oh' only; the d4h dispatcher above
     # emits TRANSI blocks for sym='d4h').
@@ -1824,18 +1980,20 @@ def generate_ledge_template(
     # GROUND/EXCITE loops below are gated to `sym == 'oh'`.
     if sym == 'd4h':
         # GROUND blocks (gerade, parity='g')
-        layout_gs = d4h_basis_layout(gs_j_sizes, parity='g')
+        d4h_butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
+        d4h_dim = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_gs else D4H_IRREP_DIM)
+        layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
+                     else d4h_basis_layout(gs_j_sizes, parity='g'))
         for d4h_irrep, entries in sorted(layout_gs.items()):
             if not entries:
                 continue
-            butler = D4H_TO_BUTLER[d4h_irrep]
-            block_dim = (
-                sum(e[4] for e in entries) // D4H_IRREP_DIM[d4h_irrep]
-            )
+            butler = d4h_butler[d4h_irrep]
+            dim_here = d4h_dim[d4h_irrep[:-1] if is_half_gs else d4h_irrep]
+            block_dim = sum(e[4] for e in entries) // dim_here
             irrep_infos.append(IrrepInfo(
                 name=butler, kind='GROUND',
                 multiplicity=block_dim,
-                dim=D4H_IRREP_DIM[d4h_irrep],
+                dim=dim_here,
             ))
             for op_name, geometry in (
                 ('HAMILTONIAN', 'HAMILTONIAN'),
@@ -1843,12 +2001,16 @@ def generate_ledge_template(
                 ('DT',          'DT'),
                 ('DS',          'DS'),
             ):
-                op_adds = _make_d4h_op_adds(
+                op_adds = (_make_d4h_op_adds_half(
+                    d4h_irrep, 'gs', entries, op_name, half_basis,
+                    ham_idx_map=gs_ham_idx, cf_idx_map=gs_cf_idx,
+                    cf_idx_map_rank2=gs_cf_idx_rank2,
+                ) if is_half_gs else _make_d4h_op_adds(
                     d4h_irrep, entries, op_name,
                     ham_idx_map=gs_ham_idx,
                     cf_idx_map=gs_cf_idx,
                     cf_idx_map_rank2=gs_cf_idx_rank2,
-                )
+                ))
                 if not op_adds:
                     continue
                 blocks.append(RACBlockFull(
@@ -1862,18 +2024,20 @@ def generate_ledge_template(
                 ))
 
         # EXCITE blocks (ungerade, parity='u')
-        layout_ex = d4h_basis_layout(ex_j_sizes, parity='u')
+        d4h_butler_ex = D4H_DOUBLE_TO_BUTLER if is_half_ex else D4H_TO_BUTLER
+        d4h_dim_ex = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_ex else D4H_IRREP_DIM)
+        layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
+                     else d4h_basis_layout(ex_j_sizes, parity='u'))
         for d4h_irrep, entries in sorted(layout_ex.items()):
             if not entries:
                 continue
-            butler = D4H_TO_BUTLER[d4h_irrep]
-            block_dim = (
-                sum(e[4] for e in entries) // D4H_IRREP_DIM[d4h_irrep]
-            )
+            butler = d4h_butler_ex[d4h_irrep]
+            dim_here = d4h_dim_ex[d4h_irrep[:-1] if is_half_ex else d4h_irrep]
+            block_dim = sum(e[4] for e in entries) // dim_here
             irrep_infos.append(IrrepInfo(
                 name=butler, kind='EXCITE',
                 multiplicity=block_dim,
-                dim=D4H_IRREP_DIM[d4h_irrep],
+                dim=dim_here,
             ))
             for op_name, geometry in (
                 ('HAMILTONIAN', 'HAMILTONIAN'),
@@ -1881,12 +2045,16 @@ def generate_ledge_template(
                 ('DT',          'DT'),
                 ('DS',          'DS'),
             ):
-                op_adds = _make_d4h_op_adds(
+                op_adds = (_make_d4h_op_adds_half(
+                    d4h_irrep, 'ex', entries, op_name, half_basis,
+                    ham_idx_map=ex_ham_idx, cf_idx_map=ex_cf_idx,
+                    cf_idx_map_rank2=ex_cf_idx_rank2,
+                ) if is_half_ex else _make_d4h_op_adds(
                     d4h_irrep, entries, op_name,
                     ham_idx_map=ex_ham_idx,
                     cf_idx_map=ex_cf_idx,
                     cf_idx_map_rank2=ex_cf_idx_rank2,
-                )
+                ))
                 if not op_adds:
                     continue
                 blocks.append(RACBlockFull(

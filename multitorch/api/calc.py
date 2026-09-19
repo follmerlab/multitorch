@@ -1205,10 +1205,6 @@ def _validate_from_scratch(element: str, valence: str, n_d: int, sym: str) -> No
     if not 1 <= n_d <= 9:
         raise ValueError(f"{element} {valence} has {n_d} 3d electrons; the from-scratch L-edge generator needs "
                          f"an open 3d shell (1 to 9 electrons); d0 and d10 are not supported")
-    if n_d % 2 and sym != "oh":
-        raise NotImplementedError(
-            f"{element} {valence} (d{n_d}) has half-integer J, which the from-scratch generator supports "
-            f"in Oh only (plan WP-B2a-4 adds D4h); use sym='oh', or preload_fixture for a D4h fixture.")
 
 
 def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: str):

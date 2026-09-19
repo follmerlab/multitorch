@@ -47,7 +47,8 @@ from __future__ import annotations
 
 import collections
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence, Tuple
+from functools import lru_cache
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -59,6 +60,9 @@ from multitorch.angular.point_group import (
 )
 
 DOUBLE_IRREPS = ("E1/2", "E5/2", "G3/2")
+# D4h double group: Γ6 ↓ E1/2, Γ7 ↓ E3/2, Γ8 ↓ E1/2 ⊕ E3/2
+D4H_DOUBLE_IRREPS = ("E1/2", "E3/2")
+D4H_DOUBLE_IRREP_DIM = {"E1/2": 2, "E3/2": 2}
 REALITY_TOL = 1e-9
 
 # Node of the gauge graph: (manifold, J, irrep, copy). ``manifold`` is any
@@ -126,10 +130,29 @@ class GaugedBasis:
     partners: Dict[Node, np.ndarray]
     nodes: List[Node] = field(default_factory=list)
     residual: float = 0.0          # largest relative |Im| found by the verification
+    # phase per (Oh irrep, D4h irrep) subduction route; empty unless d4h=True
+    route_phase: Dict[Tuple[str, str], complex] = field(default_factory=dict)
     vectors: Dict[Node, np.ndarray] = field(init=False)
 
     def __post_init__(self) -> None:
         self.vectors = {n: v[:, 0] for n, v in self.partners.items()}
+
+    def d4h_partners(self, node: Node, d4h_irrep: str, copy: int = 0) -> np.ndarray:
+        """``(2J+1, 2)`` D4h partner vectors of one Oh node, in the pinned route phase.
+
+        Column p is D4h partner p of copy ``copy`` of ``d4h_irrep`` inside this
+        node's Oh irrep. Raises if the route phases were not pinned
+        (``gauged_basis(..., d4h=True)``), since without them the crystal field
+        is not real.
+        """
+        if not self.route_phase:
+            raise RuntimeError("this basis was built without d4h=True, so the subduction "
+                               "routes carry no pinned phase and the D4h crystal field "
+                               "would not be real")
+        sub = oh_to_d4h_double_subduction(node[2])[d4h_irrep]
+        dim = D4H_DOUBLE_IRREP_DIM[d4h_irrep]
+        cols = sub[:, copy * dim:(copy + 1) * dim] * self.route_phase[(node[2], d4h_irrep)]
+        return np.ascontiguousarray(self.partners[node] @ cols)
 
     def copies(self, manifold: str, J: float, irrep: str) -> int:
         return sum(1 for n in self.nodes if n[0] == manifold and n[1] == J and n[2] == irrep)
@@ -156,6 +179,118 @@ class GaugedBasis:
         for q, op_vec in enumerate(op_vecs):
             out[:, q, :] = g * (Wa.conj().T @ _build_coupling_operator(a[1], b[1], k, op_vec) @ Wb)
         return out
+
+
+@lru_cache(maxsize=None)
+def _d4_double_irrep_matrices() -> Dict[str, Tuple[np.ndarray, ...]]:
+    """The two D4 double-group irreps over the 8 D4_z rotations inside Oh.
+
+    Both are 2-dimensional and both are already available as restrictions of
+    the Oh double-group irreps, which is the cheapest correct realization and
+    keeps one convention across the two groups: E1/2 is Γ6 restricted and E3/2
+    is Γ7 (Oh's E5/2) restricted. Checked here to be irreducible and
+    inequivalent over the double group, where each unbarred element pairs with
+    a barred one of opposite character, so ⟨χ|χ⟩ = 2 Σ_8 |χ|² / 16.
+    """
+    from multitorch.angular.point_group import _oh_double_irrep_matrices, octahedral_rotations
+    from multitorch.angular.symmetry import _is_d4z_rotation
+
+    idx = [i for i, R in enumerate(octahedral_rotations()) if _is_d4z_rotation(R)]
+    if len(idx) != 8:
+        raise RuntimeError(f"expected 8 D4_z rotations inside Oh, got {len(idx)}")
+    oh = _oh_double_irrep_matrices()
+    out = {"E1/2": tuple(oh["E1/2"][i] for i in idx), "E3/2": tuple(oh["E5/2"][i] for i in idx)}
+    chars = {k: np.array([np.trace(m) for m in v]) for k, v in out.items()}
+    for k, chi in chars.items():
+        if abs(2 * np.vdot(chi, chi).real / 16.0 - 1.0) > 1e-9:
+            raise RuntimeError(f"D4 double irrep {k} is not irreducible")
+    if abs(2 * np.vdot(chars["E1/2"], chars["E3/2"]) / 16.0) > 1e-9:
+        raise RuntimeError("the two D4 double irreps are equivalent")
+    return out
+
+
+@lru_cache(maxsize=None)
+def oh_to_d4h_double_subduction(oh_irrep: str) -> Dict[str, np.ndarray]:
+    """Partner columns of each D4h double irrep inside one Oh double irrep.
+
+    Returns ``{d4h_irrep: (dim_oh, mult × 2) complex array}``, partner-major
+    per copy, the double-group counterpart of
+    :func:`~multitorch.angular.symmetry.oh_to_d4h_subduction_matrix`: partner 0
+    from the projector P_00 = (2/8) Σ_R Γ*_00(R) D(R) and partner 1 from the
+    transfer operator P_10, so every route lands on one fixed realization of
+    the D4h irrep. The branching is Γ6 → E1/2, Γ7 → E3/2, Γ8 → E1/2 ⊕ E3/2.
+
+    **The overall phase of each route's partner 0 is not fixed here** — it is
+    whatever the eigensolver returned. Nothing in the group theory fixes it
+    (it is a Condon–Shortley-style convention), but it multiplies every reduced
+    element whose bra and ket reach a D4h irrep by different routes, so the
+    crystal field is real only once it is pinned; :func:`gauged_basis` does that
+    with ``d4h=True``.
+    """
+    from multitorch.angular.point_group import _oh_double_irrep_matrices
+
+    dim_oh = OH_DOUBLE_IRREP_DIM[oh_irrep]
+    from multitorch.angular.point_group import octahedral_rotations
+    from multitorch.angular.symmetry import _is_d4z_rotation
+    idx = [i for i, R in enumerate(octahedral_rotations()) if _is_d4z_rotation(R)]
+    mats = [_oh_double_irrep_matrices()[oh_irrep][i] for i in idx]
+
+    out: Dict[str, np.ndarray] = {}
+    for name, gamma in _d4_double_irrep_matrices().items():
+        dim = D4H_DOUBLE_IRREP_DIM[name]
+
+        def transfer(mu: int, nu: int) -> np.ndarray:
+            P = np.zeros((dim_oh, dim_oh), dtype=np.complex128)
+            for i in range(8):
+                P += np.conj(gamma[i][mu, nu]) * mats[i]
+            return P * (dim / 8.0)
+
+        P00 = transfer(0, 0)
+        eigvals, eigvecs = np.linalg.eigh(0.5 * (P00 + P00.conj().T))
+        first = eigvecs[:, eigvals > 0.5]
+        if first.shape[1] == 0:
+            continue
+        cols = []
+        for c in range(first.shape[1]):
+            for mu in range(dim):
+                v = first[:, c] if mu == 0 else transfer(mu, 0) @ first[:, c]
+                norm = np.linalg.norm(v)
+                if norm < 1e-10:
+                    raise RuntimeError(f"transfer operator gave a null partner {mu} for "
+                                       f"{oh_irrep} -> {name}")
+                cols.append(v / norm)
+        out[name] = np.ascontiguousarray(np.stack(cols, axis=1))
+    return out
+
+
+def d4h_double_layout(j_sizes: Dict[float, int], parity: str = "g") -> Dict[str, List[Tuple]]:
+    """Per-D4h-double-irrep basis layout, the half-integer
+    :func:`~multitorch.angular.symmetry.d4h_basis_layout`.
+
+    Returns ``{d4h_irrep + parity: [(J, oh_irrep, oh_copy, d4h_partner, n_states), ...]}``
+    in the same shape the integer dispatcher consumes, with ``oh_irrep`` the
+    double-group route (E1/2, E5/2, G3/2) the entry arrives by. Each Oh irrep
+    contains each of its D4h irreps once, so there is no D4h copy index.
+    """
+    if parity not in ("g", "u"):
+        raise ValueError(f"parity must be 'g' or 'u', got {parity!r}")
+    layout: Dict[str, List[Tuple]] = {}
+    for J in sorted(j_sizes):
+        if not is_half_integer(J):
+            raise ValueError(f"d4h_double_layout got integer J={J}; use d4h_basis_layout")
+        for oh in DOUBLE_IRREPS:
+            mult = oh_branching(J).get(oh, 0)
+            if mult == 0:
+                continue
+            for d4h, sub in sorted(oh_to_d4h_double_subduction(oh).items()):
+                if sub.shape[1] != D4H_DOUBLE_IRREP_DIM[d4h]:
+                    raise RuntimeError(f"{oh} -> {d4h} has multiplicity "
+                                       f"{sub.shape[1] // D4H_DOUBLE_IRREP_DIM[d4h]}, expected 1")
+                for copy in range(mult):
+                    for partner in range(D4H_DOUBLE_IRREP_DIM[d4h]):
+                        layout.setdefault(d4h + parity, []).append(
+                            (J, oh, copy, partner, j_sizes[J]))
+    return layout
 
 
 def real_invariant_coefficients(tensors: Sequence[np.ndarray]) -> np.ndarray:
@@ -221,8 +356,14 @@ def _seed_operators(ranks: Iterable[int]) -> Dict[int, List[np.ndarray]]:
     return out
 
 
-def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasis:
+def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]],
+                 d4h: bool = False) -> GaugedBasis:
     """Build the gauge-fixed partner basis of a calculation.
+
+    With ``d4h=True`` the subduction routes into the D4h double irreps are
+    phased too (:func:`_pin_d4h_routes`) and the D4h crystal-field couplings are
+    verified real, which the Oh emitters do not need and which costs a pass over
+    every node pair.
 
     ``manifolds`` pairs a label with the J values of that manifold, e.g.
     ``[("g", gs_dims), ("u", ex_dims)]``. The spanning tree runs over the whole
@@ -322,4 +463,100 @@ def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasi
         raise RuntimeError(f"gauge fixing left a complex scalar coupling ({worst:.2e} relative) at {where}; "
                            f"the pseudo-real gauge argument fails for this system")
     basis.residual = worst
+    if d4h:
+        basis.route_phase = _pin_d4h_routes(basis)
+        basis.residual = max(basis.residual, _check_d4h_reality(basis))
     return basis
+
+
+def _d4h_cf_operators() -> Dict[str, Tuple[int, np.ndarray]]:
+    """The D4h-A1g crystal-field operators the generator emits, as (rank, vector)."""
+    from multitorch.angular.rac_generator import _d4h_operator_vector_complex
+
+    return {"TENDQ": (4, _d4h_operator_vector_complex("TENDQ", 4)),
+            "DT": (4, _d4h_operator_vector_complex("DT", 4)),
+            "DS": (2, _d4h_operator_vector_complex("DS", 2))}
+
+
+def _d4h_reduced_elements(basis: "GaugedBasis", a: Node, b: Node, d4h_irrep: str,
+                          route_phase: Optional[Dict[Tuple[str, str], complex]] = None):
+    """Crystal-field reduced elements ⟨w_a|O|w_b⟩ of one node pair in one D4h irrep.
+
+    Yields ``(operator name, value)``. A D4h-scalar operator is partner-diagonal
+    by Schur's lemma, so partner 0 carries the whole reduced element.
+    """
+    phase = route_phase if route_phase is not None else basis.route_phase
+    for name, (k, op_vec) in _d4h_cf_operators().items():
+        if abs(a[1] - b[1]) > k or a[1] + b[1] < k:
+            continue
+        sub_a = oh_to_d4h_double_subduction(a[2]).get(d4h_irrep)
+        sub_b = oh_to_d4h_double_subduction(b[2]).get(d4h_irrep)
+        if sub_a is None or sub_b is None:
+            continue
+        M = basis.operator_tensor(a, b, k, [op_vec])[:, 0, :]
+        z = (sub_a[:, 0].conj() @ M @ sub_b[:, 0]) * (np.conj(phase[(a[2], d4h_irrep)])
+                                                      * phase[(b[2], d4h_irrep)])
+        yield name, z
+
+
+def _pin_d4h_routes(basis: "GaugedBasis") -> Dict[Tuple[str, str], complex]:
+    """One phase per (Oh irrep → D4h irrep) subduction route, fixed by reality.
+
+    Within a D4h irrep the routes form their own little gauge graph: the phase
+    of each route's partner 0 is free (see
+    :func:`oh_to_d4h_double_subduction`), and it enters every reduced element
+    whose bra and ket arrive by different routes. The walk here is the same one
+    :func:`gauged_basis` runs over the nodes, one level up: pick a route, then
+    give each other route the phase that makes one cross-route element real.
+    Whether *all* of them then come out real is not assumed —
+    :func:`_check_d4h_reality` tests it.
+    """
+    out: Dict[Tuple[str, str], complex] = {}
+    for d4h_irrep in D4H_DOUBLE_IRREPS:
+        routes = [oh for oh in DOUBLE_IRREPS
+                  if d4h_irrep in oh_to_d4h_double_subduction(oh)
+                  and any(n[2] == oh for n in basis.nodes)]
+        if not routes:
+            continue
+        fixed = {routes[0]: 1.0 + 0j}
+        trivial = {(oh, d4h_irrep): 1.0 + 0j for oh in routes}
+        for oh in routes[1:]:
+            for a in basis.nodes:
+                if a[2] not in fixed:
+                    continue
+                for b in basis.nodes:
+                    if b[0] != a[0] or b[2] != oh:
+                        continue
+                    for _, z in _d4h_reduced_elements(basis, a, b, d4h_irrep, trivial):
+                        if abs(z) > 1e-6:
+                            fixed[oh] = np.conj(fixed[a[2]]) ** -1 * np.exp(-1j * np.angle(z))
+                            break
+                    if oh in fixed:
+                        break
+                if oh in fixed:
+                    break
+            if oh not in fixed:
+                raise RuntimeError(f"no cross-route coupling reaches {oh} -> {d4h_irrep}; "
+                                   f"its phase would be arbitrary")
+        out.update({(oh, d4h_irrep): fixed[oh] for oh in routes})
+    return out
+
+
+def _check_d4h_reality(basis: "GaugedBasis") -> float:
+    """Largest relative |Im| over every D4h crystal-field reduced element; raises if real fails."""
+    worst, where = 0.0, None
+    for d4h_irrep in D4H_DOUBLE_IRREPS:
+        for a in basis.nodes:
+            for b in basis.nodes:
+                if a[0] != b[0]:
+                    continue
+                for name, z in _d4h_reduced_elements(basis, a, b, d4h_irrep):
+                    if abs(z) < 1e-8:
+                        continue
+                    r = abs(z.imag) / abs(z)
+                    if r > worst:
+                        worst, where = r, (name, d4h_irrep, a, b)
+    if worst > REALITY_TOL:
+        raise RuntimeError(f"the pinned subduction routes left a complex D4h crystal-field "
+                           f"coupling ({worst:.2e} relative) at {where}")
+    return worst

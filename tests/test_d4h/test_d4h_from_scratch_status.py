@@ -662,19 +662,21 @@ def test_d4h_dispatcher_block_set_matches_nid8():
 # the V2 peak-position-only relaxation.
 
 
-def test_d4h_raises_on_half_integer_J():
-    """Q5a: dispatcher must raise NotImplementedError for half-integer
-    J configurations (odd electron count: Fe d5, Cu d9, etc.). Half-
-    integer J would require D4h double-group tables not yet tabulated.
+def test_d4h_handles_half_integer_J():
+    """Q5a, reversed by WP-B2a-4: the dispatcher used to raise for an odd
+    electron count (Fe d5, Cu d9) for want of D4h double-group tables. It now
+    emits the double-group blocks, whose Oh limit is checked against the Fortran
+    fixtures in tests/test_integration/test_from_scratch_fortran_parity.py.
     """
-    import pytest as _pytest
     from multitorch.angular.rac_generator import generate_ledge_rac
 
-    with _pytest.raises(NotImplementedError, match="half-integer"):
-        # Fe d5 → half-integer J
-        generate_ledge_rac(
-            l_val=2, n_val_gs=5, l_core=1, n_core_gs=6, sym='d4h',
-        )
+    rac, _ = generate_ledge_rac(l_val=2, n_val_gs=5, l_core=1, n_core_gs=6, sym='d4h')
+    assert {i.name for i in rac.irreps} == {'1/2+', '3/2+', '1/2-', '3/2-'}
+    assert all(i.dim == 2 for i in rac.irreps)
+    for geometry in ('HAMILTONIAN', '10DQ', 'DT', 'DS'):
+        assert any(b.geometry == geometry and b.add_entries for b in rac.blocks), geometry
+    assert any(b.kind == 'TRANSI' and b.geometry == 'PERP' and b.add_entries for b in rac.blocks)
+    assert any(b.kind == 'TRANSI' and b.geometry == 'PARA' and b.add_entries for b in rac.blocks)
 
 
 def test_d4h_dispatcher_no_cross_copy_hamiltonian_adds():

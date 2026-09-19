@@ -67,7 +67,6 @@ def test_fixture_overrides_of_unused_sections_raise():
 
 
 @pytest.mark.parametrize("element,valence,sym,error", [
-    ("Fe", "iii", "d4h", NotImplementedError), ("Cu", "ii", "d4h", NotImplementedError),
     ("Ti", "iv", "oh", ValueError), ("Zn", "ii", "oh", ValueError), ("Ni", "ii", "ohh", ValueError),
 ])
 def test_from_scratch_requests_are_rejected_before_hfs(monkeypatch, element, valence, sym, error):
@@ -80,20 +79,18 @@ def test_from_scratch_requests_are_rejected_before_hfs(monkeypatch, element, val
         preload_from_scratch(element, valence, sym)
 
 
-def test_half_integer_is_accepted_in_oh_and_refused_in_d4h():
-    """WP-B2a-3 opened Oh to odd electron counts; D4h waits for B2a-4.
-
-    The Oh spectra are checked against Fortran in
+@pytest.mark.parametrize("sym", ["oh", "d4h"])
+def test_half_integer_is_accepted_in_both_groups(sym):
+    """WP-B2a-3 opened Oh to odd electron counts and B2a-4 D4h; nothing refuses
+    an electron count now. Spectra are checked against Fortran in
     tests/test_integration/test_from_scratch_fortran_parity.py.
     """
     from multitorch.angular.rac_generator import generate_ledge_template
 
-    rac, store, dec = generate_ledge_template(2, 5, sym="oh")
+    rac, store, dec = generate_ledge_template(2, 5, sym=sym)
     assert {c.label for c in dec.configs} == {"gs", "ex"}
     assert any(b.geometry == "10DQ" and b.add_entries for b in rac.blocks)
-    assert preload_from_scratch("Fe", "iii", "oh").sym == "oh"
-    with pytest.raises(NotImplementedError, match="half-integer"):
-        preload_from_scratch("Fe", "iii", "d4h")
+    assert preload_from_scratch("Fe", "iii", sym).sym == sym
 
 
 def test_unconverged_hfs_raises_but_a_stalled_limit_cycle_is_accepted():

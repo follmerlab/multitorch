@@ -103,6 +103,12 @@ SCRATCH = [
     # the one ion whose coupling graph needs a dipole component past the first
     # to gauge-fix every node (double_group.gauged_basis)
     ("Cu", "ii", "oh", False, {"cf": {"tendq": 1.0}}),
+    # half-integer D4h away from the Oh limit (WP-B2a-4): no Fortran output
+    # exists there, so the sum rule and the scramble harness are the oracles
+    ("Cr", "iii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
+    ("Fe", "iii", "d4h", False, {"cf": {"tendq": 1.5, "dt": -0.1, "ds": 0.25}}),
+    ("Co", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
+    ("Cu", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
     ("Fe", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
     ("Ni", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
     ("Ni", "ii", "oh", True, {"cf": {"tendq": 1.1}, "delta": 3.0, "u": 1.0, "lmct": {"eg": 2.0, "t2g": 1.0}}),
@@ -112,8 +118,11 @@ SCRATCH = [
 
 
 SCRATCH_IDS = [f"{s[0]}{s[1]}-{s[2]}{'-ct' if s[3] else ''}" for s in SCRATCH]
-# residual 15 again: Mn2+ and Fe3+ count 2 of 6 ground components split by µeV
-SCRATCH_COUNTS = [pytest.param(*s, marks=RES15) if (s[0], s[1]) in {("Mn", "ii"), ("Fe", "iii")} else s
+# residual 15 again: the Oh d5 ions count 2 of their 6 ground components, which
+# are split by µeV. Their D4h runs are not affected — the tetragonal field lifts
+# the degeneracy to a clean Kramers pair.
+SCRATCH_COUNTS = [pytest.param(*s, marks=RES15)
+                  if (s[0], s[1], s[2]) in {("Mn", "ii", "oh"), ("Fe", "iii", "oh")} else s
                   for s in SCRATCH]
 
 

@@ -117,7 +117,7 @@ def test_from_scratch_soc_changes_spectrum():
     ("Cu", "ii"),     # d9
 ])
 def test_from_scratch_half_integer_j(element, valence):
-    """Odd electron counts run in Oh (WP-B2a-3) and raise in D4h (WP-B2a-4).
+    """Odd electron counts run in both groups: Oh from WP-B2a-3, D4h from B2a-4.
 
     Until B2a-3 these calls returned finite, nonzero spectra that broke the
     dipole sum rule (non-integer ratios 4.5-10.2), which the old "nonzero and
@@ -125,10 +125,11 @@ def test_from_scratch_half_integer_j(element, valence):
     tests/test_spectrum/test_dipole_sum_rule.py and the spectra against the
     Fortran fixtures in test_from_scratch_fortran_parity.py.
     """
-    x, y = calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200)
-    assert torch.isfinite(y).all() and float(y.sum()) > 0
-    with pytest.raises(NotImplementedError, match="half-integer"):
-        calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200, sym="d4h")
+    for kw in ({}, {"sym": "d4h", "cf": {"tendq": 1.0, "dt": 0.05, "ds": 0.1}}):
+        cf = kw.pop("cf", {'tendq': 1.0})
+        x, y = calcXAS_from_scratch(element=element, valence=valence, cf=cf, nbins=200, **kw)
+        assert x.shape == y.shape
+        assert torch.isfinite(y).all() and float(y.sum()) > 0
 
 
 # ─────────────────────────────────────────────────────────────
