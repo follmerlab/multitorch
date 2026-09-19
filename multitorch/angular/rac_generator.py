@@ -1300,6 +1300,75 @@ def _make_oh_dipole_adds(
     return adds
 
 
+def _make_oh_dipole_adds_half(
+    oh_gs: str,
+    gs_j_order: List[Tuple[float, int, int]],
+    oh_ex: str,
+    ex_j_order: List[Tuple[float, int, int]],
+    multipole_idx: Dict[Tuple[float, float], int],
+    basis,
+) -> List[List[ADDEntry]]:
+    """TRANSI ADD entries of one double-group (Γ_gs, Γ_ex) pair, one list per channel.
+
+    Half-integer counterpart of :func:`_make_oh_dipole_adds`. There the triad
+    (Γ_gs, T1u, Γ_ex) carries a single invariant, so a partner-summed magnitude
+    plus the sign of one fixed partner triple is the whole reduced matrix
+    element. Γ8 ⊗ T1u ⊗ Γ8 carries two, and one number per (J_b, J_k) pair
+    cannot hold them — hence ttrac's repeated triad in the .ban. This emitter
+    projects each pair's partner tensor onto an orthonormal basis of the
+    triad's invariants
+    (:func:`~multitorch.angular.double_group.real_invariant_coefficients`) and
+    returns one block's worth of entries per channel, in the order the
+    assembler's PRMULT copy index expects.
+
+    The coefficient is the projection over sqrt(2J_b+1), which is the same rule
+    the single-invariant emitters follow: there the projection onto the one
+    normalized invariant is ‖M‖_F (a scalar operator's ``sqrt(dim)·⟨v_b|O|v_k⟩``,
+    the dipole's ``sqrt(Σ_triples me²)``), so this subsumes both.
+
+    A charge-transfer calculation must project the configurations *together*
+    (one call over all of their pairs) so that the two configurations' blocks
+    are written in one channel basis; that is WP-B2a-5, and this signature takes
+    a single configuration's orders only.
+    """
+    from multitorch.angular.double_group import real_invariant_coefficients
+
+    B_op = _real_subduction_matrix(1, 'T1')
+    U_1 = _c2r_unitary(1)
+    op_vecs = [U_1.conj().T @ np.ascontiguousarray(B_op[:, p]).astype(np.complex128) for p in range(3)]
+
+    pairs: List[Tuple[int, int]] = []
+    tensors: List[np.ndarray] = []
+    for ib, (Jb, cb, _) in enumerate(gs_j_order):
+        for ik, (Jk, ck, _) in enumerate(ex_j_order):
+            if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
+                continue
+            T = basis.operator_tensor(('gs', Jb, oh_gs, cb), ('ex', Jk, oh_ex, ck), 1, op_vecs)
+            if np.abs(T).max() < 1e-12:
+                continue
+            pairs.append((ib, ik))
+            tensors.append(T)
+    R = real_invariant_coefficients(tensors)
+
+    channels: List[List[ADDEntry]] = []
+    for alpha in range(R.shape[1] if R.size else 0):
+        adds: List[ADDEntry] = []
+        for p, (ib, ik) in enumerate(pairs):
+            Jb, _, nb = gs_j_order[ib]
+            Jk, _, nk = ex_j_order[ik]
+            coeff = R[p, alpha] / math.sqrt(2.0 * Jb + 1.0)
+            if abs(coeff) > 1e-13:
+                adds.append(ADDEntry(
+                    matrix_idx=multipole_idx[(Jb, Jk)],
+                    bra=1 + sum(e[2] for e in gs_j_order[:ib]),
+                    ket=1 + sum(e[2] for e in ex_j_order[:ik]),
+                    nbra=nb, nket=nk, coeff=coeff,
+                ))
+        if adds:
+            channels.append(adds)
+    return channels
+
+
 def _oh_dipole_pair_elements(oh_gs, gs_j_order, oh_ex, ex_j_order, multipole_idx):
     """Partner-triple dipole matrix elements per (J_b, J_k) pair, and each triple's summed |me|.
 
@@ -1506,10 +1575,8 @@ def generate_ledge_template(
     # tabulated). cf_rank is fixed at 4 because the d4h dispatcher uses
     # rank-4 (TENDQ/DT) and rank-2 (DS) operators by construction.
     # Half-integer J (odd electron count): the Hamiltonian and crystal-field
-    # blocks come from the gauge-fixed double-group basis (WP-B2a-1); the
-    # TRANSI blocks are still the legacy ones, which break the dipole sum rule
-    # (non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5), so
-    # ``api.calc`` keeps refusing these ions until the dipole invariants land.
+    # blocks come from the gauge-fixed double-group basis (WP-B2a-1/2) and the
+    # TRANSI blocks from the triads' invariants (WP-B2a-3). Oh only so far.
     half_basis = None
     if is_half_gs or is_half_ex:
         from multitorch.angular.double_group import gauged_basis
@@ -1719,59 +1786,23 @@ def generate_ledge_template(
             ex_block_dim = sum(n_st for _, _, n_st in ex_j_order)
 
             if is_half_gs or is_half_ex:
-                # Half-integer J (odd-electron ions): the projected emitter
-                # needs double-group real partner bases (WP-B). Keep the
-                # legacy PERP/PARA emission, whose normalization is known
-                # to be off (audit S5) — see docs/DEVELOPMENT_PLAN_2026-09.md.
-                # Collect Oh-level couplings for this (gs_irrep, ex_irrep) pair
-                oh_couplings: Dict[Tuple[float, int, float, int], float] = {}
-                for (J_gs, c_gs, _) in gs_j_order:
-                    for (J_ex, c_ex, _) in ex_j_order:
-                        val = add_transition.get(
-                            (gs_irrep, J_gs, c_gs,
-                             ex_irrep, J_ex, c_ex), 0.0)
-                        if abs(val) > 1e-15:
-                            oh_couplings[(J_gs, c_gs, J_ex, c_ex)] = val
-
-                if not oh_couplings:
-                    continue
-
-                # Create PERP and PARA TRANSI blocks
-                for d4h_factor, op_sym, geometry in [
-                    (PERP_FACTOR, '1-', 'PERP'),
-                    (PARA_FACTOR, '^0-', 'PARA'),
-                ]:
-                    transi_adds = []
-                    bra_pos = 1
-                    for (J_gs, c_gs, n_gs) in gs_j_order:
-                        ket_pos = 1
-                        for (J_ex, c_ex, n_ex) in ex_j_order:
-                            oh_c = oh_couplings.get(
-                                (J_gs, c_gs, J_ex, c_ex), 0.0)
-                            if ((J_gs, J_ex) in multipole_idx
-                                    and abs(oh_c) > 1e-15):
-                                transi_adds.append(ADDEntry(
-                                    matrix_idx=multipole_idx[(J_gs, J_ex)],
-                                    bra=bra_pos,
-                                    ket=ket_pos,
-                                    nbra=n_gs,
-                                    nket=n_ex,
-                                    coeff=d4h_factor * oh_c,
-                                ))
-                            ket_pos += n_ex
-                        bra_pos += n_gs
-
-                    if transi_adds:
-                        blocks.append(RACBlockFull(
-                            kind='TRANSI',
-                            bra_sym=gs_butler,
-                            op_sym=op_sym,
-                            ket_sym=ex_butler,
-                            geometry=geometry,
-                            n_bra=gs_block_dim,
-                            n_ket=ex_block_dim,
-                            add_entries=transi_adds,
-                        ))
+                # Half-integer J (odd-electron ions): one MULTIPOLE block per
+                # invariant of the triad (WP-B2a-3). Γ8 ⊗ T1u ⊗ Γ8 has two, so
+                # that triad gets two blocks, which the .ban lists twice and the
+                # assembler reads as PRMULT copies 0 and 1.
+                for transi_adds in _make_oh_dipole_adds_half(
+                    gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx, half_basis,
+                ):
+                    blocks.append(RACBlockFull(
+                        kind='TRANSI',
+                        bra_sym=gs_butler,
+                        op_sym='1-',
+                        ket_sym=ex_butler,
+                        geometry='MULTIPOLE',
+                        n_bra=gs_block_dim,
+                        n_ket=ex_block_dim,
+                        add_entries=transi_adds,
+                    ))
                 continue
             transi_adds = _make_oh_dipole_adds(
                 gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx,

@@ -14,12 +14,13 @@ with ⟨n_h⟩ the configuration-weighted metal hole count
 ``.ban_out`` obeys it too (ΣI 5.3995 vs 5.3994 predicted).
 
 It caught residual 14 (Cr³⁺ fixture, ratio 4.008 at the template and 4.155 at
-10Dq 0.1: the second PRMULT copy of S1+→S1− was never assembled; fixed). Still
-open:
+10Dq 0.1: the second PRMULT copy of S1+→S1− was never assembled; fixed) and it
+is what flagged the legacy half-integer dipole (from-scratch ratios 4.5-10.2,
+now integers: WP-B2a-3). Still open:
 
 * residual 15 (exact-float level counting at ``max_gs=1``): an integer, but
   below the ground degeneracy (Mn²⁺, Fe³⁺ count 2 of 6 near-degenerate
-  components split by µeV).
+  components split by µeV), on the fixture and from-scratch paths alike.
 """
 from __future__ import annotations
 
@@ -92,6 +93,16 @@ def test_fixture_counts_every_ground_component(element, valence):
 
 SCRATCH = [
     ("V", "iii", "oh", False, {"cf": {"tendq": 1.8}}),
+    # odd electron counts (WP-B2a-3): the legacy half-integer TRANSI emission
+    # gave 4.5-10.2 here, which is what flagged it
+    ("Cr", "iii", "oh", False, {"cf": {"tendq": 1.8}}),
+    ("Mn", "ii", "oh", False, {"cf": {"tendq": 1.0}}),
+    ("Fe", "iii", "oh", False, {"cf": {"tendq": 1.2}}),
+    ("Co", "ii", "oh", False, {"cf": {"tendq": 1.0}}),
+    # d9 has no bundled fixture, so the sum rule is its only oracle; it is also
+    # the one ion whose coupling graph needs a dipole component past the first
+    # to gauge-fix every node (double_group.gauged_basis)
+    ("Cu", "ii", "oh", False, {"cf": {"tendq": 1.0}}),
     ("Fe", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
     ("Ni", "ii", "d4h", False, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}}),
     ("Ni", "ii", "oh", True, {"cf": {"tendq": 1.1}, "delta": 3.0, "u": 1.0, "lmct": {"eg": 2.0, "t2g": 1.0}}),
@@ -100,10 +111,21 @@ SCRATCH = [
 ]
 
 
-@pytest.mark.parametrize("element,valence,sym,ct,kw", SCRATCH,
-                         ids=[f"{s[0]}{s[1]}-{s[2]}{'-ct' if s[3] else ''}" for s in SCRATCH])
-def test_from_scratch_intensity_counts_holes_and_components(element, valence, sym, ct, kw):
-    ratio, degeneracy = _ratio(_scratch(element, valence, sym, ct), **kw)
+SCRATCH_IDS = [f"{s[0]}{s[1]}-{s[2]}{'-ct' if s[3] else ''}" for s in SCRATCH]
+# residual 15 again: Mn2+ and Fe3+ count 2 of 6 ground components split by µeV
+SCRATCH_COUNTS = [pytest.param(*s, marks=RES15) if (s[0], s[1]) in {("Mn", "ii"), ("Fe", "iii")} else s
+                  for s in SCRATCH]
+
+
+@pytest.mark.parametrize("element,valence,sym,ct,kw", SCRATCH, ids=SCRATCH_IDS)
+def test_from_scratch_intensity_is_an_integer_multiple_of_the_hole_count(element, valence, sym, ct, kw):
+    ratio, _ = _ratio(_scratch(element, valence, sym, ct), **kw)
     # absolute energies near 800 eV: eigh noise ~1e-9 eV reaches the 80 K Boltzmann factors at ~1e-7
     assert ratio == pytest.approx(round(ratio), abs=1e-6)
+    assert round(ratio) >= 1
+
+
+@pytest.mark.parametrize("element,valence,sym,ct,kw", SCRATCH_COUNTS, ids=SCRATCH_IDS)
+def test_from_scratch_counts_every_ground_component(element, valence, sym, ct, kw):
+    ratio, degeneracy = _ratio(_scratch(element, valence, sym, ct), **kw)
     assert round(ratio) == degeneracy

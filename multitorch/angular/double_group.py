@@ -28,15 +28,16 @@ verified to ~1e-13 for the ions of the bundled fixtures. :func:`gauged_basis`
 re-checks it for each system it builds and raises if a residue survives, so a
 system where the argument fails cannot pass silently.
 
-**Scope.** This covers the operators that are scalars in the point group: the
-configuration Hamiltonian and the crystal field, whose coefficient is a single
-number per (bra copy, ket copy). It does *not* cover the dipole. For
+**Scope.** Steps 1–3 cover the operators that are scalars in the point group:
+the configuration Hamiltonian and the crystal field, whose coefficient is a
+single number per (bra copy, ket copy). The dipole needs one step more. For
 half-integer J the triad (Γ_bra, T1u, Γ_ket) can carry two independent
 invariants — Γ8 ⊗ T1u ⊗ Γ8 does — so a transition needs one reduced element
 per invariant rather than one number, which is why ttrac lists such a triad
 twice in the .ban (the repeated coupling the assembler learned to read in the
-residual-14 fix). The dipole emitter therefore needs the invariant tensors of
-the double group, not just this gauge.
+residual-14 fix). :func:`real_invariant_coefficients` splits a triad's partner
+matrix elements over those channels (group Wigner–Eckart), and
+:meth:`GaugedBasis.operator_tensor` supplies them.
 
 The overall sign of each vector is still free (a spanning tree fixes phases up
 to the seed's own phase and to ±1 per vector); that freedom cancels in the
@@ -77,20 +78,30 @@ def _marker_operator(J: float) -> np.ndarray:
     return _build_coupling_operator(J, J, 4, _d4h_operator_vector_complex("TENDQ", 4))
 
 
-def canonical_partner_vectors(J: float, irrep: str) -> np.ndarray:
-    """Partner-0 vector of every copy of ``irrep`` in D^J, in a canonical copy order.
+def canonical_partner_sets(J: float, irrep: str) -> np.ndarray:
+    """All partners of every copy of ``irrep`` in D^J, in a canonical copy order.
 
-    Returns a ``(2J+1, multiplicity)`` complex array. Copies are the eigenbasis
-    of the rank-4 cubic operator within the multiplicity space, ordered by
-    eigenvalue, so the result does not depend on the host eigensolver's choice
-    inside a degenerate projection subspace.
+    Returns a ``(2J+1, multiplicity, dim_irrep)`` complex array indexed
+    ``[m, copy, partner]``. Copies are the eigenbasis of the rank-4 cubic
+    operator within the multiplicity space, ordered by eigenvalue, so the
+    result does not depend on the host eigensolver's choice inside a degenerate
+    projection subspace. The rank-4 operator is a point-group scalar, so it acts
+    identically on every partner and the same copy mixing applies to all of
+    them, which is what keeps the partners a basis of one irrep.
     """
-    B = _complex_subduction_matrix_half_int(float(J), irrep)[:, :: OH_DOUBLE_IRREP_DIM[irrep]]
-    if B.shape[1] <= 1:
-        return np.ascontiguousarray(B)
-    M = B.conj().T @ _marker_operator(float(J)) @ B
+    dim = OH_DOUBLE_IRREP_DIM[irrep]
+    B = _complex_subduction_matrix_half_int(float(J), irrep)
+    W = B.reshape(B.shape[0], B.shape[1] // dim, dim)    # columns are copy-major
+    if W.shape[1] <= 1:
+        return np.ascontiguousarray(W)
+    M = W[:, :, 0].conj().T @ _marker_operator(float(J)) @ W[:, :, 0]
     _, U = np.linalg.eigh(0.5 * (M + M.conj().T))
-    return np.ascontiguousarray(B @ U)
+    return np.ascontiguousarray(np.einsum('mcp,cd->mdp', W, U))
+
+
+def canonical_partner_vectors(J: float, irrep: str) -> np.ndarray:
+    """Partner-0 vector of every copy of ``irrep`` in D^J, ``(2J+1, multiplicity)``."""
+    return np.ascontiguousarray(canonical_partner_sets(J, irrep)[:, :, 0])
 
 
 def gauge_factor(Jb: float, Jk: float, k: int) -> complex:
@@ -105,11 +116,20 @@ def gauge_factor(Jb: float, Jk: float, k: int) -> complex:
 
 @dataclass
 class GaugedBasis:
-    """Gauge-fixed partner vectors of one calculation, keyed by :data:`Node`."""
+    """Gauge-fixed partner vectors of one calculation, keyed by :data:`Node`.
 
-    vectors: Dict[Node, np.ndarray]
+    ``partners[node]`` is ``(2J+1, dim_irrep)``, column p the p-th partner;
+    ``vectors[node]`` is its partner-0 column, which is all the scalar
+    operators need.
+    """
+
+    partners: Dict[Node, np.ndarray]
     nodes: List[Node] = field(default_factory=list)
     residual: float = 0.0          # largest relative |Im| found by the verification
+    vectors: Dict[Node, np.ndarray] = field(init=False)
+
+    def __post_init__(self) -> None:
+        self.vectors = {n: v[:, 0] for n, v in self.partners.items()}
 
     def copies(self, manifold: str, J: float, irrep: str) -> int:
         return sum(1 for n in self.nodes if n[0] == manifold and n[1] == J and n[2] == irrep)
@@ -121,6 +141,59 @@ class GaugedBasis:
         if abs(z.imag) > REALITY_TOL * max(abs(z), 1.0):
             raise RuntimeError(f"coupling {a} -> {b} rank {k} is not real in the fixed gauge: {z!r}")
         return float(z.real)
+
+    def operator_tensor(self, a: Node, b: Node, k: int, op_vecs: Sequence[np.ndarray]) -> np.ndarray:
+        """⟨partner p_a|O^(k)_q|partner p_b⟩ over every partner triple, with the i^(ΔJ) gauge.
+
+        Shape ``(dim_a, len(op_vecs), dim_b)``. Unlike :meth:`coefficient` the
+        entries are complex one by one: the partners of one pair pick different
+        phases, and only the invariant projection of
+        :func:`real_invariant_coefficients` is real.
+        """
+        g = gauge_factor(a[1], b[1], k)
+        Wa, Wb = self.partners[a], self.partners[b]
+        out = np.empty((Wa.shape[1], len(op_vecs), Wb.shape[1]), dtype=np.complex128)
+        for q, op_vec in enumerate(op_vecs):
+            out[:, q, :] = g * (Wa.conj().T @ _build_coupling_operator(a[1], b[1], k, op_vec) @ Wb)
+        return out
+
+
+def real_invariant_coefficients(tensors: Sequence[np.ndarray]) -> np.ndarray:
+    """Split one triad's partner matrix elements over its invariant channels.
+
+    ``tensors`` are the partner tensors M_P of one (Γ_bra, operator, Γ_ket)
+    triad, one per (J_bra copy, J_ket copy) pair P, all of the same shape
+    (:meth:`GaugedBasis.operator_tensor`). Returns a real ``(len(tensors),
+    n_channels)`` array whose row P holds the reduced matrix elements r_α(P) of
+
+        M_P = Σ_α r_α(P) T^α
+
+    over an orthonormal basis {T^α} of the invariant tensors of the triad
+    (group Wigner–Eckart: every M_P lies in that space). ``n_channels`` is the
+    rank of the pairs' Gram matrix — one for most triads, two for Γ8 ⊗ T1u ⊗ Γ8,
+    the repeated coupling ttrac writes twice in the .ban.
+
+    The basis is not built from the irrep matrices but *chosen* to make every
+    r_α real, which the RAC's real coefficients require: the Gram matrix
+    G(P,P') = ⟨M_P, M_P'⟩ is real in the gauge of :func:`gauged_basis` (checked
+    here), and its real eigendecomposition G = R Rᵀ gives r_α(P) = R[P, α].
+    Any orthogonal rotation of the channels is an equally good choice — it
+    leaves Σ_α |⟨f|T^α|g⟩|², the intensity the assembler sums over the .ban's
+    repeated triads, unchanged — so the channels are not individually
+    comparable with ttrac's, only their sum is.
+    """
+    if not tensors:
+        return np.zeros((0, 0))
+    A = np.array([np.asarray(T).ravel() for T in tensors])
+    G = A.conj() @ A.T
+    scale = max(float(np.abs(G).max()), 1e-300)
+    if float(np.abs(G.imag).max()) > REALITY_TOL * scale:
+        raise RuntimeError(f"the triad's Gram matrix is not real in the fixed gauge "
+                           f"({float(np.abs(G.imag).max()) / scale:.2e} relative); no real set of "
+                           f"reduced matrix elements exists for it")
+    ev, V = np.linalg.eigh(G.real)
+    keep = np.argsort(-ev)[: int((ev > 1e-10 * max(float(ev.max()), 1e-300)).sum())]
+    return V[:, keep] * np.sqrt(ev[keep])
 
 
 def _seed_operators(ranks: Iterable[int]) -> Dict[int, List[np.ndarray]]:
@@ -158,7 +231,8 @@ def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasi
     one another; without them the scalar couplings of different irreps are
     fixed independently and do not all come out real. Only the scalar
     couplings are then verified to be real, which is what the Hamiltonian and
-    crystal-field emitters need (see the module docstring for the dipole).
+    crystal-field emitters need; the dipole's own reality check is the Gram
+    matrix of :func:`real_invariant_coefficients`.
 
     Raises if a scalar coupling cannot be made real, or if a node stays
     unreachable, in which case its phase would be arbitrary.
@@ -166,35 +240,42 @@ def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasi
     seeds = _seed_operators((0, 1, 2, 4))
     scalar = (0, 2, 4)
 
-    vectors: Dict[Node, np.ndarray] = {}
+    raw_partners: Dict[Node, np.ndarray] = {}
     nodes: List[Node] = []
     for label, js in manifolds:
         for J in sorted(float(j) for j in js):
             if not is_half_integer(J):
                 raise ValueError(f"{label} manifold has integer J={J}; use the real emitters")
             for irrep in DOUBLE_IRREPS:
-                V = canonical_partner_vectors(J, irrep)
+                V = canonical_partner_sets(J, irrep)
                 for c in range(V.shape[1]):
                     node = (label, J, irrep, c)
                     nodes.append(node)
-                    vectors[node] = V[:, c]
+                    raw_partners[node] = V[:, c, :]
     if not nodes:
-        return GaugedBasis(vectors={}, nodes=[])
+        return GaugedBasis(partners={}, nodes=[])
 
     def allowed(a: Node, b: Node) -> Tuple[int, ...]:
         if a[0] == b[0]:
             return scalar if a[2] == b[2] else ()
         return (1,)
 
-    def raw(a: Node, b: Node, k: int) -> complex:
-        """Coupling through one fixed operator component per rank.
+    def raw(a: Node, b: Node, k: int, component: int) -> complex:
+        """Coupling of one pair through one operator component.
 
         The component is part of the gauge: different partners of the dipole
         pick different phases for the same pair (the quaternionic structure of
-        the module docstring), so the walk uses one of them throughout.
+        the module docstring), so the walk takes the first component that
+        couples the pair and keeps to that order everywhere. Components beyond
+        the first are only ever reached where the first gives nothing, which is
+        what happens in a sparse coupling graph (d⁹: partner 0 of T1u leaves
+        two nodes unreachable). Whether the resulting gauge is consistent is
+        not assumed — it is what the reality check below tests.
         """
         g = gauge_factor(a[1], b[1], k)
-        return g * (vectors[a].conj() @ _build_coupling_operator(a[1], b[1], k, seeds[k][0]) @ vectors[b])
+        return g * (raw_partners[a][:, 0].conj()
+                    @ _build_coupling_operator(a[1], b[1], k, seeds[k][component])
+                    @ raw_partners[b][:, 0])
 
     phase: Dict[Node, complex] = {nodes[0]: 1.0 + 0j}
     queue = collections.deque([nodes[0]])
@@ -206,17 +287,20 @@ def gauged_basis(manifolds: Sequence[Tuple[str, Iterable[float]]]) -> GaugedBasi
             for k in allowed(a, b):
                 if abs(a[1] - b[1]) > k or a[1] + b[1] < k:
                     continue
-                z = np.conj(phase[a]) * raw(a, b, k)   # the bra phase enters conjugated
-                if abs(z) > 1e-6:
-                    phase[b] = np.exp(-1j * np.angle(z))
-                    queue.append(b)
+                for component in range(len(seeds[k])):
+                    z = np.conj(phase[a]) * raw(a, b, k, component)   # the bra phase enters conjugated
+                    if abs(z) > 1e-6:
+                        phase[b] = np.exp(-1j * np.angle(z))
+                        queue.append(b)
+                        break
+                if b in phase:
                     break
     unreachable = [n for n in nodes if n not in phase]
     if unreachable:
         raise RuntimeError(f"no coupling path to {unreachable[:3]} (+{max(0, len(unreachable) - 3)} more): "
                            f"their phases would be arbitrary")
 
-    basis = GaugedBasis(vectors={n: phase[n] * vectors[n] for n in nodes}, nodes=nodes)
+    basis = GaugedBasis(partners={n: phase[n] * raw_partners[n] for n in nodes}, nodes=nodes)
     worst, where = 0.0, None
     for a in nodes:
         for b in nodes:

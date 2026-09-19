@@ -969,6 +969,25 @@ def build_two_shell_j_basis(
     return j_basis
 
 
+def cowan_term_gauge(S_total: float, L_total: float, n_electrons: int) -> float:
+    """Cowan's sign convention on a coupled two-shell term: (-1)^(L+S-S_min).
+
+    ``S_min = (n_electrons mod 2)/2`` is the lowest total spin the
+    configuration can carry; subtracting it keeps the exponent an integer for
+    an odd electron count, where ``S_total`` is half-integer. Dropping the
+    shift — writing the exponent as plain ``L+S`` — is harmless for an even
+    count and rounds a half-integer for an odd one, which is not a convention
+    at all but whatever the rounding rule does: it had the excited crystal
+    field of Cr³⁺/Mn²⁺/Fe³⁺/Co²⁺ upside down against ttrcg (WP-B2a-2) and the
+    dipole's excited states arbitrarily signed relative to it (WP-B2a-3).
+
+    A gauge cancels wherever a matrix element carries it on both sides, so
+    only operators between *different* bases — the dipole, whose bra is the
+    single-shell ground term — depend on which convention is used.
+    """
+    return (-1.0) ** int(round(L_total + S_total - (n_electrons % 2) / 2.0))
+
+
 # ─────────────────────────────────────────────────────────────
 # MULTIPOLE transition matrix elements (electric dipole)
 # ─────────────────────────────────────────────────────────────
@@ -1206,9 +1225,12 @@ def compute_multipole_blocks(
                                          R, fl_val, L_total_ex)
                         # else: J=1, just TC as is
 
-                    # Phase convention for two-shell basis (Fortran compatibility)
-                    phase = (-1) ** int(round(S_total_ex + L_total_ex + 1))
-                    mat[ib, ik] = TC * phase
+                    # Cowan's gauge on the excited two-shell term (the ground
+                    # bra is a single-shell term and carries none), times the
+                    # overall -1 of ttrcg's MULTIPOLE blocks. Identical to the
+                    # former (-1)^(S+L+1) for an even electron count.
+                    mat[ib, ik] = -TC * cowan_term_gauge(
+                        S_total_ex, L_total_ex, n_core_ex + n_val_ex)
 
             if np.any(np.abs(mat) > 1e-15):
                 blocks[(J_gs, J_ex)] = mat
@@ -1326,11 +1348,8 @@ def compute_two_shell_shell_blocks(
     # Build two-shell J basis
     two_shell_basis = build_two_shell_j_basis(core_terms, val_terms)
 
-    # Cowan's term gauge on the coupled state: (-1)^(L_total + S_total - S_min)
-    # with S_min = (electrons mod 2)/2. Only the S_min shift distinguishes it
-    # from (-1)^(L_total + S_total), and only for an odd electron count.
-    s_min = ((n_core_excited + n_val_excited) % 2) / 2.0
-    gauge = {J: [(-1.0) ** int(round(st.L_total + st.S_total - s_min)) for st in states]
+    n_ex = n_core_excited + n_val_excited
+    gauge = {J: [cowan_term_gauge(st.S_total, st.L_total, n_ex) for st in states]
              for J, states in two_shell_basis.items()}
 
     blocks: Dict[Tuple[float, float], np.ndarray] = {}

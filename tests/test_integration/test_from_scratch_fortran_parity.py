@@ -15,7 +15,8 @@ a T = 80 K Boltzmann pool (Known residual 15: max_gs=1 is ill-posed there).
 History: cosine 0.47 before 2026-09-10 (audit S3/S4/S5/S7); exact for Ni d⁸
 only until 2026-09-13, when the excited Hamiltonian was put in the valence-term
 gauge of the excited CF/MULTIPOLE blocks (V³⁺ was at 0.853, Fe²⁺ at 0.991).
-Half-integer J (Cr³⁺, Mn²⁺, Fe³⁺, Co²⁺) is WP-B.
+Half-integer J (Cr³⁺, Mn²⁺, Fe³⁺, Co²⁺) joined on 2026-09-19 with WP-B2a-3, in
+Oh; their D4h is WP-B2a-4.
 """
 from __future__ import annotations
 
@@ -44,6 +45,14 @@ IONS = [
     ("ni2_d8_oh", "Ni", "ii", 8, 1.0),
 ]
 
+# odd electron counts (half-integer J), Oh only until WP-B2a-4
+HALF_IONS = [
+    ("cr3_d3_oh", "Cr", "iii", 3, 1.8),
+    ("mn2_d5_oh", "Mn", "ii", 5, 1.0),
+    ("fe3_d5_oh", "Fe", "iii", 5, 1.2),
+    ("co2_d7_oh", "Co", "ii", 7, 1.0),
+]
+
 
 def _fixture_parameters(name):
     """Fortran store parameters (eV) → generate_ledge_rac keyword arguments (Ry)."""
@@ -70,9 +79,8 @@ def _spectrum(E, M, hi):
     return x, y
 
 
-@pytest.mark.parametrize("sym", ["oh", "d4h"])
-@pytest.mark.parametrize("name,element,valence,n,tendq", IONS, ids=[i[0] for i in IONS])
-def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, sym):
+def _assert_matches_fixture(name, element, valence, n, tendq, sym):
+    """From-scratch sticks and spectrum of one ion against its Fortran fixture."""
     res_f = _run_phase5_pipeline(element, valence, "oh", "l", {"tendq": tendq},
                                  slater=0.8, soc=1.0, delta=100.0, lmct=0.0, mlct=None)
     Ef, Mf = _bright(*get_sticks_from_banresult(res_f, **POOL)[:2])
@@ -94,6 +102,26 @@ def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, 
     p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
     assert p.cosine > 0.99999, p
     assert p.area_ratio == pytest.approx(1.0, abs=1e-5), p
+
+
+@pytest.mark.parametrize("sym", ["oh", "d4h"])
+@pytest.mark.parametrize("name,element,valence,n,tendq", IONS, ids=[i[0] for i in IONS])
+def test_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq, sym):
+    _assert_matches_fixture(name, element, valence, n, tendq, sym)
+
+
+@pytest.mark.parametrize("name,element,valence,n,tendq", HALF_IONS, ids=[i[0] for i in HALF_IONS])
+def test_half_integer_from_scratch_matches_fortran_fixture(name, element, valence, n, tendq):
+    """WP-B2a-3: the odd-electron ions, whose dipole comes from the double-group
+    invariants of each triad (:func:`_make_oh_dipole_adds_half`).
+
+    Before it, the legacy half-integer TRANSI emission gave cosine 0.73-0.91 and
+    2.2-3.3x the intensity; with the dipole invariants but ttrcg's excited-term
+    gauge still misapplied for an odd electron count (residual 30) the totals
+    were exact and the final-state distribution was not, at cosine 0.62-0.999.
+    D4h is WP-B2a-4 and stays refused.
+    """
+    _assert_matches_fixture(name, element, valence, n, tendq, "oh")
 
 
 @pytest.mark.parametrize("sym", ["oh", "d4h"])
@@ -205,4 +233,29 @@ for cf in t.D4H_CF:
 print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=600)
+    assert out.returncode == 0 and "OK" in out.stdout, out.stdout[-2000:] + out.stderr[-2000:]
+
+
+@pytest.mark.parametrize("seed", [2, 5])
+def test_half_integer_from_scratch_is_independent_of_the_lapack_basis_choice(seed):
+    """WP-B2a-3 under the scramble harness.
+
+    The half-integer path leans on two eigensolver calls that a different LAPACK
+    could answer differently: the copy order inside a (J, Γ) multiplicity space
+    (``double_group.canonical_partner_sets``) and the channel basis of a triad's
+    invariants (``double_group.real_invariant_coefficients``). Neither may move
+    the spectrum.
+    """
+    import subprocess
+    import sys
+    tools = Path(__file__).parent.parent / "tools"
+    code = f"""
+import sys; sys.path.insert(0, {str(tools)!r}); sys.path.insert(0, {str(Path(__file__).parent)!r})
+import lapack_scramble; lapack_scramble.install({seed})
+import test_from_scratch_fortran_parity as t
+for ion in t.HALF_IONS:
+    t.test_half_integer_from_scratch_matches_fortran_fixture(*ion)
+print("OK")
+"""
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=900)
     assert out.returncode == 0 and "OK" in out.stdout, out.stdout[-2000:] + out.stderr[-2000:]

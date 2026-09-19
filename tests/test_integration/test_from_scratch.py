@@ -116,15 +116,19 @@ def test_from_scratch_soc_changes_spectrum():
     ("Ni", "iii"),    # d7
     ("Cu", "ii"),     # d9
 ])
-def test_from_scratch_refuses_half_integer_j(element, valence):
-    """Odd electron counts raise until WP-B2a.
+def test_from_scratch_half_integer_j(element, valence):
+    """Odd electron counts run in Oh (WP-B2a-3) and raise in D4h (WP-B2a-4).
 
-    These calls used to return finite, nonzero spectra that broke the dipole
-    sum rule (non-integer ratios 4.5-10.2, FABLE_HANDOFF_2026-09-15 N5); the
-    old test only checked "nonzero and finite".
+    Until B2a-3 these calls returned finite, nonzero spectra that broke the
+    dipole sum rule (non-integer ratios 4.5-10.2), which the old "nonzero and
+    finite" test did not catch; the sum rule is now checked in
+    tests/test_spectrum/test_dipole_sum_rule.py and the spectra against the
+    Fortran fixtures in test_from_scratch_fortran_parity.py.
     """
+    x, y = calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200)
+    assert torch.isfinite(y).all() and float(y.sum()) > 0
     with pytest.raises(NotImplementedError, match="half-integer"):
-        calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200)
+        calcXAS_from_scratch(element=element, valence=valence, cf={'tendq': 1.0}, nbins=200, sym="d4h")
 
 
 # ─────────────────────────────────────────────────────────────

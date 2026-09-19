@@ -1205,11 +1205,10 @@ def _validate_from_scratch(element: str, valence: str, n_d: int, sym: str) -> No
     if not 1 <= n_d <= 9:
         raise ValueError(f"{element} {valence} has {n_d} 3d electrons; the from-scratch L-edge generator needs "
                          f"an open 3d shell (1 to 9 electrons); d0 and d10 are not supported")
-    if n_d % 2:
+    if n_d % 2 and sym != "oh":
         raise NotImplementedError(
-            f"{element} {valence} (d{n_d}) has half-integer J; the from-scratch generator supports even "
-            f"electron counts only (plan WP-B2a). Its half-integer Oh output broke the dipole sum rule "
-            f"(non-integer ratios 4.5-10.2), so it is disabled; use preload_fixture for Cr3+, Mn2+, Fe3+ and Co2+.")
+            f"{element} {valence} (d{n_d}) has half-integer J, which the from-scratch generator supports "
+            f"in Oh only (plan WP-B2a-4 adds D4h); use sym='oh', or preload_fixture for a D4h fixture.")
 
 
 def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: str):
@@ -1286,12 +1285,13 @@ def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.
     """
     from multitorch.io.read_ban import BanData, XHAMEntry
 
-    triads = []
-    for b in rac.blocks:
-        if b.kind == 'TRANSI' and b.add_entries:
-            triad = (b.bra_sym, b.op_sym, b.ket_sym)
-            if triad not in triads:
-                triads.append(triad)
+    # One entry per TRANSI block, in RAC order: a triad the generator emitted
+    # twice carries two independent invariants (half-integer J, Γ8 ⊗ T1u ⊗ Γ8)
+    # and the .ban lists it twice, as ttrac does, so the assembler assembles
+    # both PRMULT copies. Single-configuration only, so repeats never mean
+    # "same triad, next configuration".
+    triads = [(b.bra_sym, b.op_sym, b.ket_sym) for b in rac.blocks
+              if b.kind == 'TRANSI' and b.add_entries]
 
     if sym == 'd4h':
         xham = [XHAMEntry(

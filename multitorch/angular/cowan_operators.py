@@ -251,12 +251,15 @@ def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, flo
 
     Built from the MUPOLE port (:func:`~multitorch.angular.rme.compute_multipole_blocks`
     with the ligand as a full "core" shell and a general rank) and brought to the
-    store basis by (−1)^n σ(bra term) on rows and σ(metal term)·(−1)^(S+L) on
-    columns. Oracle: every hopping block of the eight bundled Oh LMCT fixtures
-    and nid8ct (tests/test_angular/test_hopping_operators.py), ≤ 2e-6.
+    store basis by σ(bra term) on rows and σ(metal term) on columns, after
+    undoing the MUPOLE block's own Cowan gauge on the coupled ket term
+    (:func:`~multitorch.angular.rme.cowan_term_gauge`); the overall −1 the
+    MUPOLE block carries is left in place. Oracle: every hopping block of the
+    eight bundled Oh LMCT fixtures and nid8ct
+    (tests/test_angular/test_hopping_operators.py), ≤ 2e-6.
     """
     from multitorch.angular.cfp import get_cfp_block
-    from multitorch.angular.rme import build_two_shell_j_basis, compute_multipole_blocks
+    from multitorch.angular.rme import build_two_shell_j_basis, compute_multipole_blocks, cowan_term_gauge
 
     terms_n, _, _ = _lsterms_and_cfp(l, n_metal)
     terms_n1, _, _ = _lsterms_and_cfp(l, n_metal + 1)
@@ -267,12 +270,13 @@ def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, flo
     bra_basis = _j_basis_for_terms(terms_n)
     ket_basis = build_two_shell_j_basis(terms_lig, terms_n1)   # MUPOLE order: ligand first
     g_bra, g_met = _term_gauge(l, n_metal), _term_gauge(l, n_metal + 1)
-    glob = _phase(n_metal)
+    n_ket = (4 * l + 1) + (n_metal + 1)        # electrons of the ligand-hole configuration
     out: Dict[Tuple[float, float], np.ndarray] = {}
     for (Jb, Jk), M in raw.items():
         row = np.array([g_bra[s.ls_term.index] for s in bra_basis[Jb]])
-        col = np.array([g_met[s.term2_idx] * _phase(s.S_total + s.L_total) for s in ket_basis[Jk]])
-        out[(Jb, Jk)] = glob * row[:, None] * M * col[None, :]
+        col = np.array([g_met[s.term2_idx] * cowan_term_gauge(s.S_total, s.L_total, n_ket)
+                        for s in ket_basis[Jk]])
+        out[(Jb, Jk)] = row[:, None] * M * col[None, :]
     return out
 
 
