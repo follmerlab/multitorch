@@ -29,6 +29,14 @@ SYSTEMS = {
                                        **{"gs_lh.zeta_1": 0.07, "ex_lh.zeta_1": 11.0})),
     "Fe_oh": ("Fe", "ii", "oh", dict(tendq=1.0, delta=3.0, u=1.0, eg=2.2, t2g=1.1, slater=0.8, soc=1.0,
                                      **{"gs_lh.F2_11": 7.5, "ex_lh.G1_12": 3.6})),
+    # odd electron count (WP-B2a-5): the same leaves through the half-integer
+    # double-group emitters, whose coefficients are constants of the angular
+    # problem and must not intercept the gradient
+    "Cr_oh": ("Cr", "iii", "oh", dict(tendq=1.2, delta=3.0, u=1.0, eg=2.0, t2g=1.0, slater=0.8, soc=1.0,
+                                      **{"gs_lh.F2_11": 8.0, "ex_lh.G1_12": 3.9})),
+    "Cr_d4h": ("Cr", "iii", "d4h", dict(tendq=1.2, dt=0.05, ds=0.1, delta=3.0, u=1.0,
+                                        b1=2.0, a1=1.6, b2=1.0, e=0.8, slater=0.8, soc=1.0,
+                                        **{"gs_lh.zeta_1": 0.07, "ex_lh.zeta_1": 5.7})),
 }
 CHANNELS = ("eg", "t2g", "b1", "a1", "b2", "e")
 

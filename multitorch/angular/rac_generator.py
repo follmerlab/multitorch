@@ -26,7 +26,7 @@ When assembled, the result matches the Fortran output to machine precision.
 from __future__ import annotations
 
 import math
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -1179,6 +1179,7 @@ def _make_d4h_dipole_adds_half(
     op_d4h_target: str,
     multipole_idx: Dict[Tuple[float, float], int],
     basis,
+    manifolds: Tuple[str, str] = ('gs', 'ex'),
 ) -> List[List[ADDEntry]]:
     """TRANSI ADD entries of one (D4h gs, D4h ex, dipole sub-irrep), one list per channel.
 
@@ -1191,6 +1192,32 @@ def _make_d4h_dipole_adds_half(
     emitter the same number is spelled ``factor × sqrt(3/(2J_b+1)) ×
     ‖M‖/sqrt(dim Γ_op)`` with ``factor = sqrt(dim Γ_op / 3)``, which is the
     same thing; the PERP/PARA factors are therefore not applied here.
+
+    A charge-transfer calculation projects its configurations together, in one
+    channel basis; :func:`_d4h_dipole_channels_half` does that and this is its
+    single-configuration case.
+    """
+    return _d4h_dipole_channels_half(
+        d4h_gs, d4h_ex, op_d4h_target,
+        [(gs_entries, ex_entries, multipole_idx)], basis, manifolds,
+    )[0]
+
+
+def _d4h_dipole_channels_half(
+    d4h_gs: str,
+    d4h_ex: str,
+    op_d4h_target: str,
+    configs: Sequence[Tuple[List[Tuple[float, str, int, int, int]],
+                            List[Tuple[float, str, int, int, int]],
+                            Dict[Tuple[float, float], int]]],
+    basis,
+    manifolds: Tuple[str, str] = ('gs', 'ex'),
+) -> List[List[List[ADDEntry]]]:
+    """One D4h double-group triad's TRANSI entries per configuration, in ONE channel basis.
+
+    The D4h counterpart of :func:`_oh_dipole_channels_half`; see there for why
+    the invariant projection runs once over the pooled pairs of every
+    configuration rather than once per configuration.
     """
     sub = oh_to_d4h_subduction_matrix('T1u')[op_d4h_target]
     U_1 = _c2r_unitary(1)
@@ -1198,40 +1225,50 @@ def _make_d4h_dipole_adds_half(
                for p in range(sub.shape[1])]
     gs_stem, ex_stem = d4h_gs[:-1], d4h_ex[:-1]
 
-    pairs: List[Tuple[int, int]] = []
+    pairs: List[Tuple[int, int, int]] = []
     tensors: List[np.ndarray] = []
-    for ib, (Jb, oh_b, cb, _pb, _nb) in enumerate(gs_entries):
-        Wb = basis.d4h_partners(('gs', Jb, oh_b, cb), gs_stem)
-        for ik, (Jk, oh_k, ck, _pk, _nk) in enumerate(ex_entries):
-            if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
-                continue
-            Wk = basis.d4h_partners(('ex', Jk, oh_k, ck), ex_stem)
-            g = double_group.gauge_factor(Jb, Jk, 1)
-            T = np.empty((Wb.shape[1], len(op_vecs), Wk.shape[1]), dtype=np.complex128)
-            for q, op_vec in enumerate(op_vecs):
-                T[:, q, :] = g * (Wb.conj().T @ _build_coupling_operator(Jb, Jk, 1, op_vec) @ Wk)
-            if np.abs(T).max() < 1e-12:
-                continue
-            pairs.append((ib, ik))
-            tensors.append(T)
+    for ic, (gs_entries, ex_entries, multipole_idx) in enumerate(configs):
+        for ib, (Jb, oh_b, cb, _pb, _nb) in enumerate(gs_entries):
+            Wb = basis.d4h_partners((manifolds[0], Jb, oh_b, cb), gs_stem)
+            for ik, (Jk, oh_k, ck, _pk, _nk) in enumerate(ex_entries):
+                if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
+                    continue
+                Wk = basis.d4h_partners((manifolds[1], Jk, oh_k, ck), ex_stem)
+                g = double_group.gauge_factor(Jb, Jk, 1)
+                T = np.empty((Wb.shape[1], len(op_vecs), Wk.shape[1]), dtype=np.complex128)
+                for q, op_vec in enumerate(op_vecs):
+                    T[:, q, :] = g * (Wb.conj().T @ _build_coupling_operator(Jb, Jk, 1, op_vec) @ Wk)
+                if np.abs(T).max() < 1e-12:
+                    continue
+                pairs.append((ic, ib, ik))
+                tensors.append(T)
     R = double_group.real_invariant_coefficients(tensors)
 
-    channels: List[List[ADDEntry]] = []
+    present = [any(p[0] == ic for p in pairs) for ic in range(len(configs))]
+    out: List[List[List[ADDEntry]]] = [[] for _ in configs]
     for alpha in range(R.shape[1] if R.size else 0):
-        adds: List[ADDEntry] = []
-        for p, (ib, ik) in enumerate(pairs):
+        per_config: List[List[ADDEntry]] = [[] for _ in configs]
+        for p, (ic, ib, ik) in enumerate(pairs):
+            gs_entries, ex_entries, multipole_idx = configs[ic]
             Jb, Jk = gs_entries[ib][0], ex_entries[ik][0]
             coeff = R[p, alpha] / math.sqrt(2.0 * Jb + 1.0)
             if abs(coeff) > 1e-13:
-                adds.append(ADDEntry(
+                per_config[ic].append(ADDEntry(
                     matrix_idx=multipole_idx[(Jb, Jk)],
                     bra=1 + sum(e[4] for e in gs_entries[:ib]),
                     ket=1 + sum(e[4] for e in ex_entries[:ik]),
                     nbra=gs_entries[ib][4], nket=ex_entries[ik][4], coeff=coeff,
                 ))
-        if adds:
-            channels.append(adds)
-    return channels
+        if not any(per_config):
+            continue
+        for ic, adds in enumerate(per_config):
+            if present[ic] and not adds:
+                raise NotImplementedError(
+                    f"dipole triad ({d4h_gs}, {op_d4h_target}, {d4h_ex}) channel {alpha} is "
+                    f"empty in configuration {ic} but not in the others")
+            if present[ic]:
+                out[ic].append(adds)
+    return out
 
 
 def _dipole_gauge_sign(Jb: float, Jk: float) -> float:
@@ -1455,6 +1492,7 @@ def _make_oh_dipole_adds_half(
     ex_j_order: List[Tuple[float, int, int]],
     multipole_idx: Dict[Tuple[float, float], int],
     basis,
+    manifolds: Tuple[str, str] = ('gs', 'ex'),
 ) -> List[List[ADDEntry]]:
     """TRANSI ADD entries of one double-group (Γ_gs, Γ_ex) pair, one list per channel.
 
@@ -1474,10 +1512,37 @@ def _make_oh_dipole_adds_half(
     normalized invariant is ‖M‖_F (a scalar operator's ``sqrt(dim)·⟨v_b|O|v_k⟩``,
     the dipole's ``sqrt(Σ_triples me²)``), so this subsumes both.
 
-    A charge-transfer calculation must project the configurations *together*
-    (one call over all of their pairs) so that the two configurations' blocks
-    are written in one channel basis; that is WP-B2a-5, and this signature takes
-    a single configuration's orders only.
+    A charge-transfer calculation must project its configurations *together*, in
+    one channel basis; :func:`_oh_dipole_channels_half` does that and this is
+    its single-configuration case.
+    """
+    return _oh_dipole_channels_half(
+        oh_gs, oh_ex, [(gs_j_order, ex_j_order, multipole_idx)], basis, manifolds,
+    )[0]
+
+
+def _oh_dipole_channels_half(
+    oh_gs: str,
+    oh_ex: str,
+    configs: Sequence[Tuple[List[Tuple[float, int, int]], List[Tuple[float, int, int]],
+                            Dict[Tuple[float, float], int]]],
+    basis,
+    manifolds: Tuple[str, str] = ('gs', 'ex'),
+) -> List[List[List[ADDEntry]]]:
+    """One double-group triad's TRANSI entries for every configuration, in ONE channel basis.
+
+    ``configs`` lists ``(gs_j_order, ex_j_order, multipole_idx)`` per
+    configuration; the return is ``[[adds per channel] per configuration]``.
+
+    The channel basis is shared deliberately. The configurations of a
+    charge-transfer calculation feed the *same* TRANSI triad and mix coherently
+    in the eigenstates, so their reduced elements have to be resolved over one
+    orthonormal set of the triad's invariants: a separate
+    :func:`~multitorch.angular.double_group.real_invariant_coefficients` call
+    per configuration would pick a different (equally valid) rotation of the
+    channels for each and rotate the two configurations against one another,
+    which is observable. This is the half-integer counterpart of the shared
+    ``ranked_triples`` of :func:`_make_oh_dipole_adds`.
     """
     from multitorch.angular.double_group import real_invariant_coefficients
 
@@ -1485,36 +1550,50 @@ def _make_oh_dipole_adds_half(
     U_1 = _c2r_unitary(1)
     op_vecs = [U_1.conj().T @ np.ascontiguousarray(B_op[:, p]).astype(np.complex128) for p in range(3)]
 
-    pairs: List[Tuple[int, int]] = []
+    pairs: List[Tuple[int, int, int]] = []
     tensors: List[np.ndarray] = []
-    for ib, (Jb, cb, _) in enumerate(gs_j_order):
-        for ik, (Jk, ck, _) in enumerate(ex_j_order):
-            if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
-                continue
-            T = basis.operator_tensor(('gs', Jb, oh_gs, cb), ('ex', Jk, oh_ex, ck), 1, op_vecs)
-            if np.abs(T).max() < 1e-12:
-                continue
-            pairs.append((ib, ik))
-            tensors.append(T)
+    for ic, (gs_j_order, ex_j_order, multipole_idx) in enumerate(configs):
+        for ib, (Jb, cb, _) in enumerate(gs_j_order):
+            for ik, (Jk, ck, _) in enumerate(ex_j_order):
+                if abs(Jb - Jk) > 1 or Jb + Jk < 1 or (Jb, Jk) not in multipole_idx:
+                    continue
+                T = basis.operator_tensor((manifolds[0], Jb, oh_gs, cb),
+                                          (manifolds[1], Jk, oh_ex, ck), 1, op_vecs)
+                if np.abs(T).max() < 1e-12:
+                    continue
+                pairs.append((ic, ib, ik))
+                tensors.append(T)
     R = real_invariant_coefficients(tensors)
 
-    channels: List[List[ADDEntry]] = []
+    present = [any(p[0] == ic for p in pairs) for ic in range(len(configs))]
+    out: List[List[List[ADDEntry]]] = [[] for _ in configs]
     for alpha in range(R.shape[1] if R.size else 0):
-        adds: List[ADDEntry] = []
-        for p, (ib, ik) in enumerate(pairs):
+        per_config: List[List[ADDEntry]] = [[] for _ in configs]
+        for p, (ic, ib, ik) in enumerate(pairs):
+            gs_j_order, ex_j_order, multipole_idx = configs[ic]
             Jb, _, nb = gs_j_order[ib]
             Jk, _, nk = ex_j_order[ik]
             coeff = R[p, alpha] / math.sqrt(2.0 * Jb + 1.0)
             if abs(coeff) > 1e-13:
-                adds.append(ADDEntry(
+                per_config[ic].append(ADDEntry(
                     matrix_idx=multipole_idx[(Jb, Jk)],
                     bra=1 + sum(e[2] for e in gs_j_order[:ib]),
                     ket=1 + sum(e[2] for e in ex_j_order[:ik]),
                     nbra=nb, nket=nk, coeff=coeff,
                 ))
-        if adds:
-            channels.append(adds)
-    return channels
+        if not any(per_config):
+            continue
+        # The assembler indexes a triad's blocks as (configuration, PRMULT copy),
+        # so every configuration that has this triad must carry every channel.
+        for ic, adds in enumerate(per_config):
+            if present[ic] and not adds:
+                raise NotImplementedError(
+                    f"dipole triad ({oh_gs}, T1u, {oh_ex}) channel {alpha} is empty in "
+                    f"configuration {ic} but not in the others; the assembler's "
+                    f"(configuration, copy) indexing cannot express that")
+            if present[ic]:
+                out[ic].append(adds)
+    return out
 
 
 def _oh_dipole_pair_elements(oh_gs, gs_j_order, oh_ex, ex_j_order, multipole_idx):

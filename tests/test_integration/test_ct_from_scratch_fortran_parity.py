@@ -9,11 +9,19 @@ read off the fixture HAMILTONIAN blocks, and the same Δ, u, V(Γ) and
 10Dq/Dt/Ds. Ground and final levels, stick intensities and the broadened
 spectrum must agree.
 
-Integer J only (V³⁺ d², Fe²⁺ d⁶, Ni²⁺ d⁸ in Oh; nid8ct, Ni²⁺ d⁸ in D4h).
+The four odd-electron fixtures (Cr³⁺ d³, Mn²⁺ d⁵, Fe³⁺ d⁵, Co²⁺ d⁷) are
+themselves two-configuration CT calculations, so they are a real Fortran oracle
+for the half-integer charge-transfer path too (WP-B2a-5), on the same footing as
+V³⁺ d², Fe²⁺ d⁶ and Ni²⁺ d⁸.
+
 Final levels of nid8ct agree to 2e-4 eV only: its store prints the 2p⁵ blocks
 around E_av = 860 eV with fewer decimals, and its exactly degenerate 2p⁵ L̲
 levels scatter by ±9e-5 eV in the Fortran store itself (1e-6 in the Oh stores,
 E_av = 20 eV).
+
+D4h with charge transfer at half-integer J has no Fortran reference at all
+(residual 32): its oracles are the Oh limit dt = ds = 0 against the Oh fixture
+below, the dipole sum rule, and the LAPACK scramble harness.
 """
 from __future__ import annotations
 
@@ -40,16 +48,29 @@ CASES = [
     ("Fe", "ii", "oh", 6, {"tendq": 1.0}, {"eg": 2.2, "t2g": 1.1}, 2e-5),
     ("Ni", "ii", "oh", 8, {"tendq": 1.1}, {"eg": 2.0, "t2g": 1.0}, 2e-5),
     ("Ni", "ii", "d4h", 8, {"tendq": 1.2, "dt": 0.05, "ds": 0.1}, {"b1": 2.0, "a1": 1.6, "b2": 1.0, "e": 0.8}, 2e-4),
+    # odd electron counts (WP-B2a-5): the four bundled half-integer fixtures are
+    # two-configuration CT calculations, so ttrcg/ttrac is the oracle here too
+    ("Cr", "iii", "oh", 3, {"tendq": 1.2}, {"eg": 2.0, "t2g": 1.0}, 2e-5),
+    ("Mn", "ii", "oh", 5, {"tendq": 1.0}, {"eg": 2.2, "t2g": 1.1}, 2e-5),
+    ("Fe", "iii", "oh", 5, {"tendq": 1.1}, {"eg": 2.0, "t2g": 1.0}, 2e-5),
+    ("Co", "ii", "oh", 7, {"tendq": 1.0}, {"eg": 1.8, "t2g": 0.9}, 2e-5),
 ]
 IDS = [f"{c[0]}{c[1]}-{c[2]}" for c in CASES]
 LABELS = (("gs", (2, "GROUND")), ("gs_lh", (2, "EXCITE")), ("ex", (3, "GROUND")), ("ex_lh", (3, "EXCITE")))
 
 
-def _run(element, valence, sym, n, cf, hyb):
-    fx = preload_fixture(element, valence, sym)
-    fortran = assemble_and_diagonalize_in_memory(
+def _run(element, valence, sym, n, cf, hyb, fortran=None):
+    """Fortran fixture path and from-scratch template for one ion.
+
+    ``fortran`` overrides the Fortran side as ``(sym, cf, hybridisation)``; the
+    from-scratch side still takes that fixture's atomic parameters. Used for the
+    D4h Oh limit, where the reference is the Oh fixture.
+    """
+    f_sym, f_cf, f_hyb = fortran if fortran is not None else (sym, cf, hyb)
+    fx = preload_fixture(element, valence, f_sym)
+    fortran_result = assemble_and_diagonalize_in_memory(
         rebuild_hamiltonian_store(fx.cowan_template, fx.decomposition, slater=0.8, soc=1.0),
-        fx.rac, _cache_ban(fx, cf, DELTA, U, hyb, None))
+        fx.rac, _cache_ban(fx, f_cf, DELTA, U, f_hyb, None))
     rac, store, dec = generate_ct_ledge_template(n, sym)
     for label, (section, kind) in LABELS:
         ours, theirs = dec.by_label(label), fx.decomposition.config(section, kind)
@@ -61,11 +82,27 @@ def _run(element, valence, sym, n, cf, hyb):
     scratch = assemble_and_diagonalize_in_memory(
         rebuild_hamiltonian_store(store, dec, slater=1.0, soc=1.0), rac,
         build_ct_ban(rac, sym, cf=cf, delta=DELTA, u=U, hybridisation=hyb))
-    return fortran, scratch
+    return fortran_result, scratch, fx.rac, rac
 
 
 def _levels(result, attr):
     E = torch.sort(torch.cat([getattr(t, attr) for t in {t.fs_sym if attr == "Ef" else t.gs_sym: t for t in result.triads}.values()]))[0]
+    return E - E[0]
+
+
+def _levels_by_state(result, rac, attr):
+    """Levels with each one repeated by the degeneracy of its irrep.
+
+    Comparing two *different* point groups needs this: an Oh Γ8 level is one
+    entry of a 4-dimensional irrep, and in D4h the same level is two entries
+    (E1/2 and E3/2) of 2-dimensional ones. Counting states makes the two
+    listings the same length and the same multiset.
+    """
+    dim = {i.name: i.dim for i in rac.irreps}
+    key = "fs_sym" if attr == "Ef" else "gs_sym"
+    per_irrep = {getattr(t, key): t for t in result.triads}
+    E = torch.sort(torch.cat([getattr(t, attr).repeat_interleave(dim[sym])
+                              for sym, t in per_irrep.items()]))[0]
     return E - E[0]
 
 
@@ -76,7 +113,7 @@ def _spectrum(E, M, hi):
 
 @pytest.mark.parametrize("element,valence,sym,n,cf,hyb,tol", CASES, ids=IDS)
 def test_charge_transfer_from_scratch_matches_fortran(element, valence, sym, n, cf, hyb, tol):
-    fortran, scratch = _run(element, valence, sym, n, cf, hyb)
+    fortran, scratch, _, _ = _run(element, valence, sym, n, cf, hyb)
 
     gf, gs = _levels(fortran, "Eg"), _levels(scratch, "Eg")
     assert gf.shape == gs.shape
@@ -92,6 +129,93 @@ def test_charge_transfer_from_scratch_matches_fortran(element, valence, sym, n, 
     hi = float(max(Ef.max() - Ef.min(), Es.max() - Es.min())) + 3.0
     p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
     assert p.cosine > 0.99999, p
+
+
+HALF_D4H = [("Cr", "iii", 3, 1.2, {"eg": 2.0, "t2g": 1.0}),
+            ("Fe", "iii", 5, 1.1, {"eg": 2.0, "t2g": 1.0}),
+            ("Co", "ii", 7, 1.0, {"eg": 1.8, "t2g": 0.9})]
+HALF_D4H_IDS = [f"{c[0]}{c[1]}-d4h-ct" for c in HALF_D4H]
+# residual 15 again: the Oh d5 ions' six ground components are split by µeV, and
+# the Oh and D4h labelings of the same manifold do not round them into the same
+# lowest "level", so a max_gs=1 pool takes different components on the two sides
+# (Fe3+ measured at cosine 0.99969 on 2026-09-24). Cr3+ and Co2+ are exact.
+RES15 = pytest.mark.xfail(strict=True, reason="plan residual 15: max_gs counts exactly equal levels only")
+HALF_D4H_SPECTRUM = [pytest.param(*c, marks=RES15) if (c[0], c[1]) == ("Fe", "iii") else c
+                     for c in HALF_D4H]
+
+
+def _oh_limit(element, valence, n, tendq, hyb):
+    """From-scratch D4h + CT at dt = ds = 0 against the same ion's Oh fixture with CT on.
+
+    D4h + CT at half-integer J has no Fortran reference (residual 32), so this
+    limit is its parity oracle. The channel sums make it exact rather than
+    approximate: B1HYBR + A1HYBR is EGHYBR and B2HYBR + EHYBR is T2GHYBR term by
+    term (:data:`~multitorch.angular.ct_generator.HYBR_ROUTES`), so equal V
+    within each pair is exactly the Oh hybridisation.
+    """
+    d4h_hyb = {"b1": hyb["eg"], "a1": hyb["eg"], "b2": hyb["t2g"], "e": hyb["t2g"]}
+    return _run(element, valence, "d4h", n, {"tendq": tendq, "dt": 0.0, "ds": 0.0}, d4h_hyb,
+                fortran=("oh", {"tendq": tendq}, hyb))
+
+
+@pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H, ids=HALF_D4H_IDS)
+def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_levels(element, valence, n, tendq, hyb):
+    """Ground and final levels of the Oh limit, counted by state (:func:`_levels_by_state`)."""
+    fortran, scratch, f_rac, s_rac = _oh_limit(element, valence, n, tendq, hyb)
+
+    gf, gs = _levels_by_state(fortran, f_rac, "Eg"), _levels_by_state(scratch, s_rac, "Eg")
+    assert gf.shape == gs.shape
+    assert float((gf - gs).abs().max()) < 1e-5
+    ff = _levels_by_state(fortran, f_rac, "Ef")
+    fs = _levels_by_state(scratch, s_rac, "Ef")
+    assert ff.shape == fs.shape
+    assert float((ff - fs).abs().max()) < 2e-5
+
+
+@pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H_SPECTRUM, ids=HALF_D4H_IDS)
+def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(element, valence, n, tendq, hyb):
+    """Spectral shape of the Oh limit, from the single lowest ground level.
+
+    ``max_gs=1``, not the ``POOL`` of the Fortran-parity tests, because the pool
+    is a truncation by *level* and D4h splits each Oh level in two: at
+    ``max_gs=40`` the two sides hold different physical states and the cosine
+    falls to ~0.70 for the long-validated integer ions as well (V³⁺ d²,
+    measured 2026-09-24), which is residual 15/D-1 and not a statement about
+    this path. Absolute intensity is deliberately not compared for the same
+    reason — the Cr³⁺ Oh side counts two components where the D4h side counts
+    one, an exact factor 2. The dipole sum rule pins the absolute scale instead.
+    """
+    fortran, scratch, _, _ = _oh_limit(element, valence, n, tendq, hyb)
+    pool = dict(T=80.0, max_gs=1)
+    Ef, Mf = get_sticks_from_banresult(fortran, **pool)[:2]
+    Es, Ms = get_sticks_from_banresult(scratch, **pool)[:2]
+    hi = float(max(Ef.max() - Ef.min(), Es.max() - Es.min())) + 3.0
+    p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
+    assert p.cosine > 0.99999, p
+
+
+@pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H, ids=HALF_D4H_IDS)
+def test_half_integer_d4h_charge_transfer_tetragonal_terms_act(element, valence, n, tendq, hyb):
+    """The Oh-limit test above would also pass if DT/DS or the tetragonal
+    hybridisation channels were dropped; this one would not."""
+    rac, store, dec = generate_ct_ledge_template(n, "d4h")
+    fx = preload_fixture(element, valence, "oh")
+    for label, (section, kind) in LABELS:
+        ours, theirs = dec.by_label(label), fx.decomposition.config(section, kind)
+        values = theirs.parameter_values(0.8, 1.0)
+        ours.reference = {name: float(values[name]) for name in ours.operators if name in values}
+    cowan = rebuild_hamiltonian_store(store, dec, slater=1.0, soc=1.0)
+
+    levels = {}
+    for cf, v in ((dict(tendq=tendq, dt=0.0, ds=0.0), {"b1": hyb["eg"], "a1": hyb["eg"],
+                                                       "b2": hyb["t2g"], "e": hyb["t2g"]}),
+                  (dict(tendq=tendq, dt=0.05, ds=0.1), {"b1": hyb["eg"], "a1": 0.6 * hyb["eg"],
+                                                        "b2": hyb["t2g"], "e": 0.7 * hyb["t2g"]})):
+        res = assemble_and_diagonalize_in_memory(
+            cowan, rac, build_ct_ban(rac, "d4h", cf=cf, delta=DELTA, u=U, hybridisation=v))
+        E = torch.sort(torch.cat([t.Eg for t in res.triads]))[0]
+        levels[cf["dt"]] = (E - E[0])[:20]
+    assert float((levels[0.0] - levels[0.05]).abs().max()) > 0.02
 
 
 def test_hybridisation_channels_project_onto_their_orbitals():
@@ -116,7 +240,13 @@ def test_hybridisation_channels_project_onto_their_orbitals():
 
 @pytest.mark.parametrize("seed", [2, 5])
 def test_charge_transfer_from_scratch_is_independent_of_the_lapack_basis_choice(seed):
-    """The Oh Fe2+ and D4h nid8ct oracles with every numpy eigen/singular basis scrambled (fresh process)."""
+    """The CT oracles with every numpy eigen/singular basis scrambled (fresh process).
+
+    Oh Fe²⁺ and D4h nid8ct for integer J; Oh Cr³⁺ and the D4h Cr³⁺ Oh limit for
+    half-integer J, where far more is a LAPACK output — the canonical copy
+    order, the spanning-tree node phases, the pinned D4h subduction routes and
+    the invariant channel basis are all eigendecompositions.
+    """
     import subprocess
     import sys
     from pathlib import Path
@@ -126,8 +256,10 @@ def test_charge_transfer_from_scratch_is_independent_of_the_lapack_basis_choice(
 import sys; sys.path.insert(0, {str(tools)!r}); sys.path.insert(0, {str(Path(__file__).parent)!r})
 import lapack_scramble; lapack_scramble.install({seed})
 import test_ct_from_scratch_fortran_parity as t
-for case in (t.CASES[1], t.CASES[3]):
+for case in (t.CASES[1], t.CASES[3], t.CASES[4]):
     t.test_charge_transfer_from_scratch_matches_fortran(*case)
+t.test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_levels(*t.HALF_D4H[0])
+t.test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(*t.HALF_D4H[0])
 print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1200)
@@ -144,7 +276,7 @@ def test_cached_charge_transfer_from_scratch_with_fortran_atomic_overrides(case)
     from multitorch.api.calc import calcXAS_cached, preload_from_scratch
 
     element, valence, sym, n, cf, hyb, tol = case
-    fortran, _ = _run(element, valence, sym, n, cf, hyb)
+    fortran = _run(element, valence, sym, n, cf, hyb)[0]
     Ef, Mf = get_sticks_from_banresult(fortran, **POOL)[:2]
 
     cache = preload_from_scratch(element, valence, sym, charge_transfer=True)

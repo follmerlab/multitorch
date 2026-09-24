@@ -114,6 +114,15 @@ SCRATCH = [
     ("Ni", "ii", "oh", True, {"cf": {"tendq": 1.1}, "delta": 3.0, "u": 1.0, "lmct": {"eg": 2.0, "t2g": 1.0}}),
     ("Fe", "ii", "d4h", True, {"cf": {"tendq": 1.2, "dt": 0.05, "ds": 0.1}, "delta": 3.0, "u": 1.0,
                                "lmct": {"b1": 2.0, "a1": 1.6, "b2": 1.0, "e": 0.8}}),
+    # charge transfer at odd electron counts (WP-B2a-5). The hole count is now
+    # configuration-weighted over two configurations *and* the dipole is the
+    # two-channel half-integer one, so this is the invariant that would catch a
+    # channel basis rotated between the configurations.
+    ("Cr", "iii", "oh", True, {"cf": {"tendq": 1.2}, "delta": 3.0, "u": 1.0, "lmct": {"eg": 2.0, "t2g": 1.0}}),
+    ("Fe", "iii", "oh", True, {"cf": {"tendq": 1.1}, "delta": 3.0, "u": 1.0, "lmct": {"eg": 2.0, "t2g": 1.0}}),
+    # half-integer D4h + CT has no Fortran reference at all (residual 32)
+    ("Fe", "iii", "d4h", True, {"cf": {"tendq": 1.5, "dt": -0.1, "ds": 0.25}, "delta": 3.0, "u": 1.0,
+                                "lmct": {"b1": 2.0, "a1": 1.6, "b2": 1.0, "e": 0.8}}),
 ]
 
 

@@ -126,8 +126,8 @@ def preload_from_scratch(
     this cache plus :func:`calcXAS_cached`.
 
     ``charge_transfer=True`` adds the ligand-hole configurations d^(n+1)L and
-    2p^5 d^(n+2)L (:func:`~multitorch.angular.ct_generator.generate_ct_ledge_template`;
-    integer J, i.e. even n, only). Their HFS parameters are those of the
+    2p^5 d^(n+2)L (:func:`~multitorch.angular.ct_generator.generate_ct_ledge_template`,
+    either parity of the electron count). Their HFS parameters are those of the
     configuration with one more 3d electron, as in pyctm; the ligand hole
     carries none. ``atomic`` labels are then ``'gs'``, ``'gs_lh'``, ``'ex'``,
     ``'ex_lh'``, and :func:`calcXAS_cached` requires ``delta`` and accepts ``u``

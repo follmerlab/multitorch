@@ -21,7 +21,10 @@ d^n + d^(n+1)L → 2p^5 d^(n+1) + 2p^5 d^(n+2)L, generated without Fortran:
   The ADD coefficients come from the same projected emitters as the
   single-configuration template (:func:`~multitorch.angular.rac_generator.generate_ledge_template`).
 
-Integer J only (even n); half-integer J is WP-B2a.
+Both parities of the electron count: for odd n the RAC coefficients come from
+the gauge-fixed double-group basis of :mod:`multitorch.angular.double_group`,
+with the two configurations of each parity sharing one node set and one
+invariant-channel basis per dipole triad (WP-B2a-5).
 """
 from __future__ import annotations
 
@@ -40,13 +43,28 @@ from multitorch.angular.cowan_operators import (
     hopping_blocks,
     shell_tensor_blocks,
 )
-from multitorch.angular.point_group import OH_IRREP_DIM, _c2r_unitary, _real_subduction_matrix, butler_label, oh_branching
+from multitorch.angular import double_group
+from multitorch.angular.double_group import DOUBLE_IRREPS, D4H_DOUBLE_IRREP_DIM, d4h_double_layout
+from multitorch.angular.point_group import (
+    OH_DOUBLE_IRREP_DIM,
+    OH_IRREP_DIM,
+    _build_coupling_operator,
+    _c2r_unitary,
+    _real_subduction_matrix,
+    butler_label,
+    oh_branching,
+)
 from multitorch.angular.rac_generator import (
+    D4H_DOUBLE_TO_BUTLER,
+    _d4h_dipole_channels_half,
     _d4h_partner_vector,
     _make_d4h_dipole_adds,
     _make_d4h_op_adds,
+    _make_d4h_op_adds_half,
     _make_oh_dipole_adds,
     _make_oh_op_adds,
+    _make_oh_op_adds_half,
+    _oh_dipole_channels_half,
     _oh_dipole_pair_elements,
     _operator_real_matrix,
 )
@@ -144,31 +162,73 @@ def _config_store(section: List[torch.Tensor], cfg: _Config, sym: str) -> Dict[s
     return maps
 
 
+def _real_transfer_element(
+    vector: Callable[[float, object], np.ndarray], op_vecs: Dict[int, np.ndarray],
+) -> Callable[[int, float, object, float, object], float]:
+    """⟨v_b|O^(k)|v_k⟩ between real (integer-J) partner-0 vectors, with the i^(J_k−J_b) gauge."""
+    cache: Dict[Tuple[int, float, float], np.ndarray] = {}
+
+    def element(k, Jb, kb, Jk, kk):
+        if (k, Jb, Jk) not in cache:
+            cache[(k, Jb, Jk)] = _operator_real_matrix(Jb, Jk, k, op_vecs[k])
+        me = float(vector(Jb, kb) @ cache[(k, Jb, Jk)] @ vector(Jk, kk))
+        return (-1.0) ** (int(round(Jk - Jb)) // 2) * me
+
+    return element
+
+
+def _gauged_transfer_element(
+    vector: Callable[[float, object], np.ndarray], op_vecs: Dict[int, np.ndarray],
+) -> Callable[[int, float, object, float, object], float]:
+    """⟨v_b|O^(k)|v_k⟩ between gauge-fixed double-group partner-0 vectors (half-integer J).
+
+    The hybridisation actors are point-group scalars connecting the two
+    configurations of one manifold, so the gauge that has to make them real is
+    the one *across* configurations. It does, for free: the partner vectors of
+    :mod:`~multitorch.angular.double_group` depend on (J, irrep, copy) and not
+    on the configuration, so both configurations of a parity are given one
+    shared node set and the reality already verified inside a configuration is
+    the same statement. Verified here per element rather than assumed.
+    """
+    cache: Dict[Tuple[int, float, float], np.ndarray] = {}
+
+    def element(k, Jb, kb, Jk, kk):
+        if (k, Jb, Jk) not in cache:
+            cache[(k, Jb, Jk)] = _build_coupling_operator(Jb, Jk, k, op_vecs[k])
+        z = double_group.gauge_factor(Jb, Jk, k) * (
+            vector(Jb, kb).conj() @ cache[(k, Jb, Jk)] @ vector(Jk, kk))
+        if abs(z.imag) > double_group.REALITY_TOL * max(abs(z), 1.0):
+            raise RuntimeError(f"hybridisation coupling (J={Jb}, {kb}) -> (J={Jk}, {kk}) at rank "
+                               f"{k} is not real in the fixed gauge: {z!r}")
+        return float(z.real)
+
+    return element
+
+
 def _scalar_transfer_adds(
     bra: Sequence[Tuple[float, object, int]],
     ket: Sequence[Tuple[float, object, int]],
-    vector: Callable[[float, object], np.ndarray],
+    element: Callable[[int, float, object, float, object], float],
     op_vecs: Dict[int, np.ndarray],
     idx_by_rank: Dict[int, Dict[Tuple[float, float], int]],
     dim: int,
 ) -> List[ADDEntry]:
     """ADD entries of a scalar (A1g) operator between two configurations of one irrep.
 
-    ``bra``/``ket`` list ``(J, key, n_states)`` in block order and ``vector(J, key)``
-    is the partner-0 basis vector. Same coefficient as the crystal-field
-    emitters: √(dim/(2J_b+1)) ⟨v_b|O(J_b, J_k)|v_k⟩ with the i^(J_k−J_b) gauge,
-    evaluated for J_b ≤ J_k and mirrored with (−1)^(J_b−J_k) (UNCPLA symmetry of
-    the rank-k store blocks), one entry per rank into that rank's store block.
+    ``bra``/``ket`` list ``(J, key, n_states)`` in block order and ``element``
+    (:func:`_real_transfer_element` or :func:`_gauged_transfer_element`) is the
+    gauged matrix element between their partner-0 basis vectors, called for
+    J_b ≤ J_k only. Same coefficient as the crystal-field emitters:
+    √(dim/(2J_b+1)) ⟨v_b|O(J_b, J_k)|v_k⟩, mirrored with (−1)^(J_b−J_k) for
+    J_b > J_k (UNCPLA symmetry of the rank-k store blocks), one entry per rank
+    into that rank's store block. ``op_vecs`` supplies the actor's ranks (the
+    vectors themselves are already bound into ``element``).
     """
-    O_cache: Dict[Tuple[int, float, float], np.ndarray] = {}
 
     def coefficient(k, Jb, kb, Jk, kk):
         if Jb > Jk:
             return (-1.0) ** int(round(Jb - Jk)) * coefficient(k, Jk, kk, Jb, kb)
-        if (k, Jb, Jk) not in O_cache:
-            O_cache[(k, Jb, Jk)] = _operator_real_matrix(Jb, Jk, k, op_vecs[k])
-        me = float(vector(Jb, kb) @ O_cache[(k, Jb, Jk)] @ vector(Jk, kk))
-        return (-1.0) ** (int(round(Jk - Jb)) // 2) * math.sqrt(dim / (2.0 * Jb + 1.0)) * me
+        return math.sqrt(dim / (2.0 * Jb + 1.0)) * element(k, Jb, kb, Jk, kk)
 
     adds: List[ADDEntry] = []
     bra_pos = 1
@@ -194,7 +254,7 @@ def _oh_j_order(dims: Dict[float, int], irrep: str) -> List[Tuple[float, int, in
 def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     """Parameter-free (RAC, store, decomposition) for d^n + d^(n+1)L L-edge XAS.
 
-    ``n`` metal d electrons in the ground configuration (even, 2..8); ``sym``
+    ``n`` metal d electrons in the ground configuration (1..8); ``sym``
     'oh' or 'd4h'. The decomposition holds the four configurations, labelled
     ``gs`` (d^n), ``gs_lh`` (d^(n+1)L), ``ex`` (2p^5 d^(n+1)) and ``ex_lh``
     (2p^5 d^(n+2)L), with zero anchors; fill ``reference`` (eV, operator names of
@@ -206,8 +266,6 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
 
     if sym not in ('oh', 'd4h'):
         raise ValueError(f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h'")
-    if n % 2:
-        raise NotImplementedError("charge transfer from scratch supports integer J (even n) only; half-integer J is WP-B2a")
     configs = ct_configurations(n)
     gs, gs_lh, ex, ex_lh = configs
 
@@ -227,41 +285,69 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     channels = list(HYBR_ROUTES[sym])
     hybr_vecs = {ch: hybridisation_operator_vectors(ch, sym) for ch in channels}
 
+    # Half-integer J (odd n): one gauge-fixed double-group basis for the whole
+    # calculation, with the two configurations of each parity sharing ONE node
+    # set. The partner vectors depend on (J, irrep, copy) only, so a node per
+    # parity (J values unioned over that parity's two configurations) is what
+    # makes the cross-configuration hybridisation couplings real — the
+    # configuration label never enters the angular problem.
+    half = double_group.is_half_integer(max(dims['gs']))
+    basis = None
+    if half:
+        basis = double_group.gauged_basis(
+            [('g', set(dims['gs']) | set(dims['gs_lh'])),
+             ('u', set(dims['ex']) | set(dims['ex_lh']))],
+            d4h=(sym == 'd4h'),
+        )
+    oh_irreps = DOUBLE_IRREPS if half else ('A1', 'A2', 'E', 'T1', 'T2')
+    oh_dim = OH_DOUBLE_IRREP_DIM if half else OH_IRREP_DIM
+    d4h_layout = d4h_double_layout if half else d4h_basis_layout
+    d4h_butler = D4H_DOUBLE_TO_BUTLER if half else D4H_TO_BUTLER
+
+    def d4h_dim(d4h: str) -> int:
+        return D4H_DOUBLE_IRREP_DIM[d4h[:-1]] if half else D4H_IRREP_DIM[d4h]
+
     def manifold(c1: _Config, c2: _Config, parity: str, kind: str, hop):
         if sym == 'oh':
-            for irrep in ('A1', 'A2', 'E', 'T1', 'T2'):
+            for irrep in oh_irreps:
                 o1, o2 = _oh_j_order(dims[c1.label], irrep), _oh_j_order(dims[c2.label], irrep)
                 if not o1 and not o2:
                     continue
-                label, dim = butler_label(irrep, '+' if parity == 'g' else '-'), OH_IRREP_DIM[irrep]
+                label, dim = butler_label(irrep, '+' if parity == 'g' else '-'), oh_dim[irrep]
                 irreps.append(IrrepInfo(name=label, kind=kind, multiplicity=sum(x[2] for x in o1), dim=dim))
                 for rac_kind, cfg, order in (('GROUND', c1, o1), ('EXCITE', c2, o2)):
                     if not order:
                         continue
                     m = maps[cfg.label]
                     for op, geometry in CF_ACTORS[sym]:
-                        adds = _make_oh_op_adds(irrep, order, op, m['ham'], m['cf4'])
+                        adds = (_make_oh_op_adds_half(irrep, parity, order, op, basis, m['ham'], m['cf4'])
+                                if half else _make_oh_op_adds(irrep, order, op, m['ham'], m['cf4']))
                         if adds:
                             size = sum(x[2] for x in order)
                             blocks.append(RACBlockFull(kind=rac_kind, bra_sym=label, op_sym='0+', ket_sym=label,
                                                        geometry=geometry, n_bra=size, n_ket=size, add_entries=adds))
                 if o1 and o2:
-                    def vector(J, copy, irrep=irrep, dim=dim):
-                        return np.ascontiguousarray(_real_subduction_matrix(int(round(J)), irrep)[:, copy * dim])
+                    if half:
+                        def vector(J, copy, irrep=irrep, parity=parity):
+                            return basis.vectors[(parity, J, irrep, copy)]
+                    else:
+                        def vector(J, copy, irrep=irrep, dim=dim):
+                            return np.ascontiguousarray(_real_subduction_matrix(int(round(J)), irrep)[:, copy * dim])
                     for ch in channels:
+                        build = _gauged_transfer_element if half else _real_transfer_element
                         adds = _scalar_transfer_adds([(J, c, s) for J, c, s in o1], [(J, c, s) for J, c, s in o2],
-                                                     vector, hybr_vecs[ch], hop, dim)
+                                                     build(vector, hybr_vecs[ch]), hybr_vecs[ch], hop, dim)
                         if adds:
                             blocks.append(RACBlockFull(kind='TRANSI', bra_sym=label, op_sym='0+', ket_sym=label, geometry=ch,
                                                        n_bra=sum(x[2] for x in o1), n_ket=sum(x[2] for x in o2), add_entries=adds))
         else:
-            l1, l2 = d4h_basis_layout(dims[c1.label], parity=parity), d4h_basis_layout(dims[c2.label], parity=parity)
+            l1, l2 = d4h_layout(dims[c1.label], parity=parity), d4h_layout(dims[c2.label], parity=parity)
             for d4h in sorted(set(l1) | set(l2)):
                 e1 = [e for e in l1.get(d4h, []) if e[3] == 0]
                 e2 = [e for e in l2.get(d4h, []) if e[3] == 0]
                 if not e1 and not e2:
                     continue
-                label, dim = D4H_TO_BUTLER[d4h], D4H_IRREP_DIM[d4h]
+                label, dim = d4h_butler[d4h], d4h_dim(d4h)
                 irreps.append(IrrepInfo(name=label, kind=kind, multiplicity=sum(e[4] for e in e1), dim=dim))
                 for rac_kind, cfg, entries in (('GROUND', c1, l1.get(d4h, [])), ('EXCITE', c2, l2.get(d4h, []))):
                     if not entries:
@@ -269,18 +355,26 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                     m = maps[cfg.label]
                     size = sum(e[4] for e in entries) // dim
                     for op, geometry in CF_ACTORS[sym]:
-                        adds = _make_d4h_op_adds(d4h, entries, op, ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
-                                                 cf_idx_map_rank2=m['cf2'])
+                        adds = (_make_d4h_op_adds_half(d4h, parity, entries, op, basis, ham_idx_map=m['ham'],
+                                                       cf_idx_map=m['cf4'], cf_idx_map_rank2=m['cf2'])
+                                if half else
+                                _make_d4h_op_adds(d4h, entries, op, ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
+                                                  cf_idx_map_rank2=m['cf2']))
                         if adds:
                             blocks.append(RACBlockFull(kind=rac_kind, bra_sym=label, op_sym='0+', ket_sym=label,
                                                        geometry=geometry, n_bra=size, n_ket=size, add_entries=adds))
                 if e1 and e2:
-                    def vector(J, key, d4h=d4h):
-                        return _d4h_partner_vector(J, key[0], key[1], d4h, 0)
+                    if half:
+                        def vector(J, key, d4h=d4h, parity=parity):
+                            return basis.d4h_partners((parity, J, key[0], key[1]), d4h[:-1])[:, 0]
+                    else:
+                        def vector(J, key, d4h=d4h):
+                            return _d4h_partner_vector(J, key[0], key[1], d4h, 0)
                     for ch in channels:
+                        build = _gauged_transfer_element if half else _real_transfer_element
                         adds = _scalar_transfer_adds([(e[0], (e[1], e[2]), e[4]) for e in e1],
                                                      [(e[0], (e[1], e[2]), e[4]) for e in e2],
-                                                     vector, hybr_vecs[ch], hop, dim)
+                                                     build(vector, hybr_vecs[ch]), hybr_vecs[ch], hop, dim)
                         if adds:
                             blocks.append(RACBlockFull(kind='TRANSI', bra_sym=label, op_sym='0+', ket_sym=label, geometry=ch,
                                                        n_bra=sum(e[4] for e in e1), n_ket=sum(e[4] for e in e2), add_entries=adds))
@@ -289,43 +383,49 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     # per-configuration dimensions in that order).
     pairs = ((gs, ex, dip[0]), (gs_lh, ex_lh, dip[1]))
     if sym == 'oh':
-        irr = ('A1', 'A2', 'E', 'T1', 'T2')
-        for ig in irr:
-            for ie in irr:
+        for ig in oh_irreps:
+            for ie in oh_irreps:
                 orders = [(_oh_j_order(dims[g.label], ig), _oh_j_order(dims[e.label], ie), idx) for g, e, idx in pairs]
-                weight: Dict[Tuple[int, int, int], float] = {}
-                for og, oe, idx in orders:
-                    for t, w in _oh_dipole_pair_elements(ig, og, ie, oe, idx)[1].items():
-                        weight[t] = weight.get(t, 0.0) + w
-                ranking = sorted(weight, key=lambda t: -weight[t])
-                emitted = []
-                for og, oe, idx in orders:
-                    adds = _make_oh_dipole_adds(ig, og, ie, oe, idx, ranked_triples=ranking) if og and oe else []
-                    emitted.append(RACBlockFull(kind='TRANSI', bra_sym=butler_label(ig, '+'), op_sym='1-',
-                                                ket_sym=butler_label(ie, '-'), geometry='MULTIPOLE',
-                                                n_bra=sum(x[2] for x in og), n_ket=sum(x[2] for x in oe),
-                                                add_entries=adds) if adds else None)
-                _emit_transi_pair(blocks, emitted)
+                if half:
+                    # One invariant-channel basis over the pooled pairs of both
+                    # configurations; they feed the same triad and mix coherently.
+                    per_config = _oh_dipole_channels_half(ig, ie, orders, basis, ('g', 'u'))
+                else:
+                    weight: Dict[Tuple[int, int, int], float] = {}
+                    for og, oe, idx in orders:
+                        for t, w in _oh_dipole_pair_elements(ig, og, ie, oe, idx)[1].items():
+                            weight[t] = weight.get(t, 0.0) + w
+                    ranking = sorted(weight, key=lambda t: -weight[t])
+                    per_config = [[_make_oh_dipole_adds(ig, og, ie, oe, idx, ranked_triples=ranking)] if og and oe else []
+                                  for og, oe, idx in orders]
+                emitted = [[RACBlockFull(kind='TRANSI', bra_sym=butler_label(ig, '+'), op_sym='1-',
+                                         ket_sym=butler_label(ie, '-'), geometry='MULTIPOLE',
+                                         n_bra=sum(x[2] for x in og), n_ket=sum(x[2] for x in oe),
+                                         add_entries=adds) for adds in chans if adds]
+                           for chans, (og, oe, _) in zip(per_config, orders)]
+                _emit_transi_group(blocks, emitted)
     else:
         factors = (('Eu', '1-', 'PERP', math.sqrt(2.0 / 3.0)), ('A2u', '^0-', 'PARA', math.sqrt(1.0 / 3.0)))
-        lay = [(d4h_basis_layout(dims[g.label], 'g'), d4h_basis_layout(dims[e.label], 'u'), idx) for g, e, idx in pairs]
+        lay = [(d4h_layout(dims[g.label], 'g'), d4h_layout(dims[e.label], 'u'), idx) for g, e, idx in pairs]
         g_irreps = sorted(set(lay[0][0]) | set(lay[1][0]))
         u_irreps = sorted(set(lay[0][1]) | set(lay[1][1]))
         for dg in g_irreps:
             for du in u_irreps:
                 for target, op_sym, geometry, factor in factors:
-                    emitted = []
-                    for lg, lu, idx in lay:
-                        eg = [e for e in lg.get(dg, []) if e[3] == 0]
-                        eu = [e for e in lu.get(du, []) if e[3] == 0]
-                        adds = (_make_d4h_dipole_adds(d4h_gs=dg, gs_entries=eg, d4h_ex=du, ex_entries=eu,
-                                                      op_d4h_target=target, multipole_idx=idx, factor=factor)
-                                if eg and eu else [])
-                        emitted.append(RACBlockFull(kind='TRANSI', bra_sym=D4H_TO_BUTLER[dg], op_sym=op_sym,
-                                                    ket_sym=D4H_TO_BUTLER[du], geometry=geometry,
-                                                    n_bra=sum(e[4] for e in eg), n_ket=sum(e[4] for e in eu),
-                                                    add_entries=adds) if adds else None)
-                    _emit_transi_pair(blocks, emitted)
+                    entries = [([e for e in lg.get(dg, []) if e[3] == 0],
+                                [e for e in lu.get(du, []) if e[3] == 0], idx) for lg, lu, idx in lay]
+                    if half:
+                        per_config = _d4h_dipole_channels_half(dg, du, target, entries, basis, ('g', 'u'))
+                    else:
+                        per_config = [[_make_d4h_dipole_adds(d4h_gs=dg, gs_entries=eg, d4h_ex=du, ex_entries=eu,
+                                                             op_d4h_target=target, multipole_idx=idx, factor=factor)]
+                                      if eg and eu else [] for eg, eu, idx in entries]
+                    emitted = [[RACBlockFull(kind='TRANSI', bra_sym=d4h_butler[dg], op_sym=op_sym,
+                                             ket_sym=d4h_butler[du], geometry=geometry,
+                                             n_bra=sum(e[4] for e in eg), n_ket=sum(e[4] for e in eu),
+                                             add_entries=adds) for adds in chans if adds]
+                               for chans, (eg, eu, _) in zip(per_config, entries)]
+                    _emit_transi_group(blocks, emitted)
 
     manifold(gs, gs_lh, 'g', 'GROUND', hop_g)
     manifold(ex, ex_lh, 'u', 'EXCITE', hop_f)
@@ -344,21 +444,31 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     return rac, store, decomposition
 
 
-def _emit_transi_pair(blocks: List[RACBlockFull], emitted: List[Optional[RACBlockFull]]) -> None:
-    """Append a triad's dipole blocks for configurations 1 and 2.
+def _emit_transi_group(blocks: List[RACBlockFull], emitted: List[List[RACBlockFull]]) -> None:
+    """Append a triad's dipole blocks, grouped by configuration.
 
-    The assembler reads the per-configuration dimensions of a triad from the
-    order of its TRANSI blocks, so a triad is emitted only when both
-    configurations have it; one-sided triads would be mistaken for
-    configuration 1 and are not supported.
+    ``emitted`` holds one list of blocks per configuration: one block per
+    invariant channel of the triad (a single block for integer J, where every
+    triad carries one invariant). The assembler reads the per-configuration
+    dimensions of a triad from the order of its TRANSI blocks and then indexes
+    the PRMULT copies inside a configuration, so the blocks go out grouped
+    ``conf 1 copy 1, conf 1 copy 2, conf 2 copy 1, ...``.
+
+    A triad is emitted only when every configuration has it, with the same
+    number of channels; a one-sided triad would be mistaken for configuration 1
+    and is not supported.
     """
-    present = [b for b in emitted if b is not None]
-    if not present:
+    counts = {len(group) for group in emitted}
+    if counts == {0}:
         return
-    if len(present) != len(emitted):
+    if len(counts) != 1:
+        first = next(b for group in emitted if group for b in group)
         raise NotImplementedError(
-            f"dipole triad {present[0].bra_sym} {present[0].op_sym} {present[0].ket_sym} exists in only one configuration")
-    blocks.extend(present)
+            f"dipole triad {first.bra_sym} {first.op_sym} {first.ket_sym} has "
+            f"{sorted(len(g) for g in emitted)} blocks across the configurations; "
+            f"the assembler needs the same number in each")
+    for group in emitted:
+        blocks.extend(group)
 
 
 def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta=0.0, u=0.0, hybridisation=None):
@@ -390,10 +500,28 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
         if len(values) != len(names):
             raise ValueError(f"{sym} needs {len(names)} hybridisation values {names}")
     xham = [1.0, cf.get('tendq', 0.0)] + ([cf.get('dt', 0.0), cf.get('ds', 0.0)] if sym == 'd4h' else [])
-    triads = []
+    # One .ban entry per invariant channel of a triad, in RAC order. The
+    # generator writes a triad's blocks grouped by configuration (n_channels
+    # per configuration), and the assembler reads the k-th listing as PRMULT
+    # copy k of every configuration, so the count divides out the two
+    # configurations. Half-integer J is the only case with more than one
+    # channel (Γ8 ⊗ T1u ⊗ Γ8), and it is the repeated coupling ttrac writes
+    # twice in the .ban.
+    order: List[Tuple[str, str, str]] = []
+    counts: Dict[Tuple[str, str, str], int] = {}
     for b in rac.blocks:
-        if b.kind == 'TRANSI' and 'HYBR' not in b.geometry and (b.bra_sym, b.op_sym, b.ket_sym) not in triads:
-            triads.append((b.bra_sym, b.op_sym, b.ket_sym))
+        if b.kind == 'TRANSI' and 'HYBR' not in b.geometry and b.add_entries:
+            key = (b.bra_sym, b.op_sym, b.ket_sym)
+            if key not in counts:
+                order.append(key)
+            counts[key] = counts.get(key, 0) + 1
+    triads = []
+    for key in order:
+        n_channels, remainder = divmod(counts[key], 2)
+        if remainder or n_channels < 1:
+            raise RuntimeError(f"triad {key} has {counts[key]} TRANSI blocks, not a whole number "
+                               f"of channels for two configurations")
+        triads.extend([key] * n_channels)
     return BanData(
         nconf_gs=2, nconf_fs=2,
         xham=[XHAMEntry(values=xham, combos=[(1, i + 1) for i in range(len(xham))])],
