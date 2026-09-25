@@ -274,17 +274,36 @@ def test_half_integer_from_scratch_is_independent_of_the_lapack_basis_choice(see
     partner-0 vector of each D4h subduction route
     (``double_group.oh_to_d4h_double_subduction``, whose free phase
     ``_pin_d4h_routes`` fixes). None may move the spectrum.
+
+    Two of those three take **complex Hermitian** input, whose LAPACK freedom is
+    a phase per eigenvector and a unitary mixing inside a degenerate cluster --
+    strictly more than the real sign flips and orthogonal rotations the harness
+    applied until 2026-09-25; see ``lapack_scramble``'s docstring.
+
+    The Fortran-fixture cases here all sit **at** the Oh limit in D4h
+    (dt = ds = 0), so they cannot see the route phases at all: TENDQ is an Oh
+    scalar, so its bra and ket always arrive by the same route and the phases
+    cancel. The analytic one-particle cases run below carry dt, ds != 0, which is
+    where a route phase or a rank-2 gauge that depended on the eigensolver would
+    show up -- the half-integer counterpart of what residual 21 was for integer J.
     """
     import subprocess
     import sys
     tools = Path(__file__).parent.parent / "tools"
+    hamiltonian = Path(__file__).parent.parent / "test_hamiltonian"
     code = f"""
 import sys; sys.path.insert(0, {str(tools)!r}); sys.path.insert(0, {str(Path(__file__).parent)!r})
+sys.path.insert(0, {str(hamiltonian)!r})
 import lapack_scramble; lapack_scramble.install({seed})
 import test_from_scratch_fortran_parity as t
 for ion in t.HALF_IONS:
     t.test_half_integer_from_scratch_matches_fortran_fixture(*ion)
     t.test_half_integer_d4h_reproduces_the_oh_limit(*ion)
+import test_cf_one_electron as ce
+for case in ce.HALF_CASES:
+    cf = case.values[0]
+    for n_val_gs, hole in ((1, False), (9, True)):
+        ce.test_from_scratch_d4h_half_integer_matches_ballhausen(cf, n_val_gs, hole)
 print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=900)

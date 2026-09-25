@@ -21,10 +21,11 @@ d^n + d^(n+1)L → 2p^5 d^(n+1) + 2p^5 d^(n+2)L, generated without Fortran:
   The ADD coefficients come from the same projected emitters as the
   single-configuration template (:func:`~multitorch.angular.rac_generator.generate_ledge_template`).
 
-Both parities of the electron count: for odd n the RAC coefficients come from
-the gauge-fixed double-group basis of :mod:`multitorch.angular.double_group`,
-with the two configurations of each parity sharing one node set and one
-invariant-channel basis per dipole triad (WP-B2a-5).
+Both parities of the electron count, 2 <= n <= 8: for odd n the RAC coefficients
+come from the gauge-fixed double-group basis of
+:mod:`multitorch.angular.double_group`, with the two configurations of each parity
+sharing one node set and one invariant-channel basis per dipole triad (WP-B2a-5).
+d^1 is the one refusal, for a structural reason (:func:`ct_configurations`).
 """
 from __future__ import annotations
 
@@ -129,8 +130,22 @@ class _Config:
 
 def ct_configurations(n: int) -> Tuple[_Config, _Config, _Config, _Config]:
     """(d^n, d^(n+1)L, 2p^5 d^(n+1), 2p^5 d^(n+2)L) in ttrcg's shell order."""
-    if not 1 <= n <= 8:
-        raise ValueError(f"charge transfer needs 1 <= n <= 8 metal d electrons, got {n}")
+    if n == 1:
+        # d^1 has J = 3/2, 5/2 only, which branch to G3/2 and E5/2 + G3/2: no E1/2
+        # (Gamma6) at all. Its ligand-hole partner d^2 L has J = 1/2 and does carry
+        # E1/2, so that ground irrep exists in the SECOND configuration only. The
+        # assembler reads a triad's per-configuration dimensions from the order of its
+        # TRANSI blocks and would take the single block for configuration 1, so a
+        # one-sided triad cannot be expressed (see `_emit_transi_group`). Supporting
+        # it needs a dimension-carrying placeholder for the absent configuration;
+        # plan residual 33.
+        raise NotImplementedError(
+            "charge transfer from scratch does not support 1 metal d electron: the E1/2 "
+            "(Gamma6) ground irrep of d^1 + d^2 L exists only in the ligand-hole "
+            "configuration, which the assembler's (configuration, copy) block indexing "
+            "cannot express. Supported: 2 <= n <= 8 (plan residual 33)")
+    if not 2 <= n <= 8:
+        raise ValueError(f"charge transfer needs 2 <= n <= 8 metal d electrons, got {n}")
     ex_lh = ((1, 5), (2, 9)) if n == 8 else ((1, 5), (2, n + 2), (2, 9))
     return (
         _Config('gs', 2, 'GROUND', ((2, n),), 0),
@@ -254,7 +269,8 @@ def _oh_j_order(dims: Dict[float, int], irrep: str) -> List[Tuple[float, int, in
 def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     """Parameter-free (RAC, store, decomposition) for d^n + d^(n+1)L L-edge XAS.
 
-    ``n`` metal d electrons in the ground configuration (1..8); ``sym``
+    ``n`` metal d electrons in the ground configuration (2..8; d^1 is refused,
+    see :func:`ct_configurations`); ``sym``
     'oh' or 'd4h'. The decomposition holds the four configurations, labelled
     ``gs`` (d^n), ``gs_lh`` (d^(n+1)L), ``ex`` (2p^5 d^(n+1)) and ``ex_lh``
     (2p^5 d^(n+2)L), with zero anchors; fill ``reference`` (eV, operator names of

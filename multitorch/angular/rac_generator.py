@@ -1765,7 +1765,10 @@ def generate_ledge_template(
           carries `[1.0, tendq, dt, ds]`. Implemented via the
           per-D4h-irrep dispatcher (`_make_d4h_op_adds`,
           `_make_d4h_dipole_adds`); see `docs/D4H_DISPATCHER_PLAN_V2.md`.
-          Half-integer J (odd-electron metals) is not yet supported.
+          Half-integer J (odd-electron metals) goes through the
+          double-group emitters (`_make_d4h_op_adds_half`,
+          `_make_d4h_dipole_adds_half`) on the gauge-fixed basis of
+          `angular.double_group` (WP-B2a-4).
 
     Returns
     -------

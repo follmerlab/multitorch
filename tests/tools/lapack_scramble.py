@@ -4,12 +4,26 @@ Every basis returned by ``np.linalg.eigh`` / ``np.linalg.svd`` inside a
 degenerate cluster is as valid as any other, and LAPACK builds differ in which
 they return. Code whose physics depends on that choice is machine-dependent
 (2026-09-14: from-scratch D4h was correct on macOS Accelerate and wrong on
-exxa). ``install(seed)`` replaces both functions with versions that flip the
-sign of every eigen/singular vector at random and apply a random orthogonal
-rotation inside every degenerate cluster, seeded by (seed, input matrix) so that
-identical inputs get identical outputs as with a real LAPACK, so such a
-dependence shows up on any machine. Use in a fresh process (angular
-structures are cached).
+exxa). ``install(seed)`` replaces both functions with versions that randomise the
+gauge of every eigen/singular vector and apply a random rotation inside every
+degenerate cluster, seeded by (seed, input matrix) so that identical inputs get
+identical outputs as with a real LAPACK, so such a dependence shows up on any
+machine. Use in a fresh process (angular structures are cached).
+
+**Complex inputs get the full freedom (extended 2026-09-25).** For a real
+symmetric matrix the only freedoms are a sign per eigenvector and a real
+orthogonal rotation inside a degenerate cluster. For a *complex Hermitian* one
+they are an arbitrary **phase** per eigenvector and an arbitrary **unitary**
+mixing inside a cluster — strictly more. The half-integer path added two
+complex-Hermitian ``eigh`` calls (``double_group.canonical_partner_sets``' rank-4
+marker, whose imaginary part reaches 0.42, and
+``oh_to_d4h_double_subduction``'s transfer projector), and a real-only scramble
+never exercises the freedom they actually have. A scientific audit on
+2026-09-25 found this gap and confirmed the path survives the stronger version
+(relative spectral change ≤ 5e-14 over three seeds in Oh and D4h), so the
+extension protects a property that already holds rather than fixing a defect.
+Real inputs keep exactly the old behaviour, so integer-J results and their
+determinism are unchanged.
 """
 import numpy as np
 
@@ -53,9 +67,21 @@ def install(seed, only=None, flip_signs=True):
 
     rng = None
 
-    def rot(k):
+    def rot(k, complex_valued=False):
+        """Haar-random orthogonal (real) or unitary (complex) k x k matrix."""
+        if complex_valued:
+            x = rng.standard_normal((k, k)) + 1j * rng.standard_normal((k, k))
+            q, r = np.linalg.qr(x)
+            d = np.diagonal(r)
+            return q * (d / np.abs(d)).conj()
         q, r = np.linalg.qr(rng.standard_normal((k, k)))
         return q * np.sign(np.diag(r))
+
+    def _gauge(n, complex_valued):
+        """Per-vector freedom: a sign if real, an arbitrary phase if complex."""
+        if complex_valued:
+            return np.exp(2j * np.pi * rng.random(n))
+        return rng.choice([-1.0, 1.0], size=n)
 
     def eigh(a, *args, **kw):
         nonlocal rng
@@ -64,13 +90,11 @@ def install(seed, only=None, flip_signs=True):
         if not _caller_ok():
             return w, v
         v = v.copy()
-        if flip_signs:  # LAPACK builds also differ in the sign of non-degenerate eigenvectors
-            v = v * rng.choice([-1.0, 1.0], size=v.shape[1])
+        cx = np.iscomplexobj(v)
+        if flip_signs:  # LAPACK builds also differ in the gauge of non-degenerate eigenvectors
+            v = v * _gauge(v.shape[1], cx)
         for g in _clusters(w):
-            R = rot(len(g))
-            if np.iscomplexobj(v):
-                R = R.astype(complex)
-            v[:, g] = v[:, g] @ R
+            v[:, g] = v[:, g] @ rot(len(g), cx)
         return w, v
 
     def svd(a, full_matrices=True, compute_uv=True, **kw):
@@ -81,14 +105,17 @@ def install(seed, only=None, flip_signs=True):
             return out
         U, S, Vh = out
         U, Vh = U.copy(), Vh.copy()
+        cx = np.iscomplexobj(U) or np.iscomplexobj(Vh)
         if flip_signs:
-            sgn = rng.choice([-1.0, 1.0], size=S.shape[0])
+            # A = U diag(S) Vh is preserved by U[:,i] -> U[:,i] p_i together with
+            # Vh[i,:] -> conj(p_i) Vh[i,:] for any |p_i| = 1 (a sign is its own conjugate).
+            sgn = _gauge(S.shape[0], cx)
             U[:, :len(sgn)] = U[:, :len(sgn)] * sgn
-            Vh[:len(sgn), :] = sgn[:, None] * Vh[:len(sgn), :]
+            Vh[:len(sgn), :] = np.conj(sgn)[:, None] * Vh[:len(sgn), :]
         for g in _clusters(S):
             if S[g[0]] < 1e-12:
                 continue
-            R = rot(len(g)).astype(U.dtype)
+            R = rot(len(g), cx).astype(U.dtype)
             U[:, g] = U[:, g] @ R
             Vh[g, :] = R.conj().T @ Vh[g, :]
         return U, S, Vh

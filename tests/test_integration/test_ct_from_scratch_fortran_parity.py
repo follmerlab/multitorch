@@ -196,8 +196,26 @@ def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(eleme
 
 @pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H, ids=HALF_D4H_IDS)
 def test_half_integer_d4h_charge_transfer_tetragonal_terms_act(element, valence, n, tendq, hyb):
-    """The Oh-limit test above would also pass if DT/DS or the tetragonal
-    hybridisation channels were dropped; this one would not."""
+    """Each tetragonal term moves the levels *on its own*.
+
+    The Oh-limit test above runs at dt = ds = 0, where only the Oh-scalar TENDQ
+    acts, so it would pass with DT, DS and the tetragonal hybridisation channels
+    all dead. This test varies exactly one of the three at a time against a
+    common dt = ds = 0, symmetric-V baseline, so none of them can hide behind
+    another.
+
+    An earlier version varied dt, ds *and* the hybridisation ratios in one step
+    and was therefore vacuous for DT/DS: measured on 2026-09-25, the
+    hybridisation change alone moves the levels 0.172 eV against a 0.02 eV
+    threshold, so it passed with DT and DS completely inert. The thresholds below
+    are each a comfortable fraction of the measured isolated effect (Cr³⁺:
+    dt-only 0.416 eV, ds-only 0.421 eV, hybridisation-only 0.172 eV).
+
+    The *magnitudes* of DT and DS are pinned analytically, not here:
+    ``tests/test_hamiltonian/test_cf_one_electron.py`` compares the d¹ and d⁹
+    half-integer levels with the Ballhausen one-particle energies, which is what
+    catches a sign or scale error in either.
+    """
     rac, store, dec = generate_ct_ledge_template(n, "d4h")
     fx = preload_fixture(element, valence, "oh")
     for label, (section, kind) in LABELS:
@@ -206,16 +224,22 @@ def test_half_integer_d4h_charge_transfer_tetragonal_terms_act(element, valence,
         ours.reference = {name: float(values[name]) for name in ours.operators if name in values}
     cowan = rebuild_hamiltonian_store(store, dec, slater=1.0, soc=1.0)
 
-    levels = {}
-    for cf, v in ((dict(tendq=tendq, dt=0.0, ds=0.0), {"b1": hyb["eg"], "a1": hyb["eg"],
-                                                       "b2": hyb["t2g"], "e": hyb["t2g"]}),
-                  (dict(tendq=tendq, dt=0.05, ds=0.1), {"b1": hyb["eg"], "a1": 0.6 * hyb["eg"],
-                                                        "b2": hyb["t2g"], "e": 0.7 * hyb["t2g"]})):
+    symmetric = {"b1": hyb["eg"], "a1": hyb["eg"], "b2": hyb["t2g"], "e": hyb["t2g"]}
+    asymmetric = {"b1": hyb["eg"], "a1": 0.6 * hyb["eg"], "b2": hyb["t2g"], "e": 0.7 * hyb["t2g"]}
+
+    def levels(dt, ds, v):
         res = assemble_and_diagonalize_in_memory(
-            cowan, rac, build_ct_ban(rac, "d4h", cf=cf, delta=DELTA, u=U, hybridisation=v))
+            cowan, rac, build_ct_ban(rac, "d4h", cf=dict(tendq=tendq, dt=dt, ds=ds),
+                                     delta=DELTA, u=U, hybridisation=v))
         E = torch.sort(torch.cat([t.Eg for t in res.triads]))[0]
-        levels[cf["dt"]] = (E - E[0])[:20]
-    assert float((levels[0.0] - levels[0.05]).abs().max()) > 0.02
+        return (E - E[0])[:20]
+
+    baseline = levels(0.0, 0.0, symmetric)
+    for name, dt, ds, v, floor in (("DT", 0.05, 0.0, symmetric, 0.1),
+                                   ("DS", 0.0, 0.4, symmetric, 0.1),
+                                   ("hybridisation channels", 0.0, 0.0, asymmetric, 0.05)):
+        shift = float((baseline - levels(dt, ds, v)).abs().max())
+        assert shift > floor, f"{name} alone moved the levels only {shift:.4f} eV"
 
 
 def test_hybridisation_channels_project_onto_their_orbitals():

@@ -264,9 +264,15 @@ def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, flo
     terms_n, _, _ = _lsterms_and_cfp(l, n_metal)
     terms_n1, _, _ = _lsterms_and_cfp(l, n_metal + 1)
     terms_lig, _, _ = _lsterms_and_cfp(l, 4 * l + 1)
-    parents = _lsterms_and_cfp(l, n_metal - 1)[0] if n_metal > 0 else []
+    # A single metal electron has no parent term: l^0 is not in the CFP tables, so
+    # the no-parent branch has to start at n_metal == 1, not 0. (The threshold read
+    # `> 0` until 2026-09-25 and raised "No CFP data for l=2, n=0" for n_metal == 1.)
+    # n_metal == 1 has no bundled two-configuration fixture, so these blocks have no
+    # Fortran oracle; d^1 charge transfer is refused anyway, for the structural
+    # reason in `ct_generator.ct_configurations`.
+    parents = _lsterms_and_cfp(l, n_metal - 1)[0] if n_metal > 1 else []
     raw = compute_multipole_blocks(l, n_metal, l, 4 * l + 2, terms_n, parents,
-                                   get_cfp_block(l, n_metal).cfp if n_metal > 0 else np.array([]), rank=rank)
+                                   get_cfp_block(l, n_metal).cfp if n_metal > 1 else np.array([]), rank=rank)
     bra_basis = _j_basis_for_terms(terms_n)
     ket_basis = build_two_shell_j_basis(terms_lig, terms_n1)   # MUPOLE order: ligand first
     g_bra, g_met = _term_gauge(l, n_metal), _term_gauge(l, n_metal + 1)
