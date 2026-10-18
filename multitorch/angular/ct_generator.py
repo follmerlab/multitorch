@@ -224,7 +224,7 @@ def _scalar_transfer_adds(
     bra: Sequence[Tuple[float, object, int]],
     ket: Sequence[Tuple[float, object, int]],
     element: Callable[[int, float, object, float, object], float],
-    op_vecs: Dict[int, np.ndarray],
+    ranks: Sequence[int],
     idx_by_rank: Dict[int, Dict[Tuple[float, float], int]],
     dim: int,
 ) -> List[ADDEntry]:
@@ -236,8 +236,8 @@ def _scalar_transfer_adds(
     J_b ≤ J_k only. Same coefficient as the crystal-field emitters:
     √(dim/(2J_b+1)) ⟨v_b|O(J_b, J_k)|v_k⟩, mirrored with (−1)^(J_b−J_k) for
     J_b > J_k (UNCPLA symmetry of the rank-k store blocks), one entry per rank
-    into that rank's store block. ``op_vecs`` supplies the actor's ranks (the
-    vectors themselves are already bound into ``element``).
+    into that rank's store block. ``ranks`` are the actor's ranks; its vectors
+    are already bound into ``element``.
     """
 
     def coefficient(k, Jb, kb, Jk, kk):
@@ -250,7 +250,7 @@ def _scalar_transfer_adds(
     for Jb, kb, nb in bra:
         ket_pos = 1
         for Jk, kk, nk in ket:
-            for k in sorted(op_vecs):
+            for k in sorted(ranks):
                 idx = idx_by_rank.get(k, {})
                 if abs(Jb - Jk) > k or Jb + Jk < k or (Jb, Jk) not in idx:
                     continue
@@ -352,7 +352,7 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                     for ch in channels:
                         build = _gauged_transfer_element if half else _real_transfer_element
                         adds = _scalar_transfer_adds([(J, c, s) for J, c, s in o1], [(J, c, s) for J, c, s in o2],
-                                                     build(vector, hybr_vecs[ch]), hybr_vecs[ch], hop, dim)
+                                                     build(vector, hybr_vecs[ch]), sorted(hybr_vecs[ch]), hop, dim)
                         if adds:
                             blocks.append(RACBlockFull(kind='TRANSI', bra_sym=label, op_sym='0+', ket_sym=label, geometry=ch,
                                                        n_bra=sum(x[2] for x in o1), n_ket=sum(x[2] for x in o2), add_entries=adds))
@@ -390,7 +390,7 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                         build = _gauged_transfer_element if half else _real_transfer_element
                         adds = _scalar_transfer_adds([(e[0], (e[1], e[2]), e[4]) for e in e1],
                                                      [(e[0], (e[1], e[2]), e[4]) for e in e2],
-                                                     build(vector, hybr_vecs[ch]), hybr_vecs[ch], hop, dim)
+                                                     build(vector, hybr_vecs[ch]), sorted(hybr_vecs[ch]), hop, dim)
                         if adds:
                             blocks.append(RACBlockFull(kind='TRANSI', bra_sym=label, op_sym='0+', ket_sym=label, geometry=ch,
                                                        n_bra=sum(e[4] for e in e1), n_ket=sum(e[4] for e in e2), add_entries=adds))
@@ -519,10 +519,13 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
     # One .ban entry per invariant channel of a triad, in RAC order. The
     # generator writes a triad's blocks grouped by configuration (n_channels
     # per configuration), and the assembler reads the k-th listing as PRMULT
-    # copy k of every configuration, so the count divides out the two
-    # configurations. Half-integer J is the only case with more than one
+    # copy k of every configuration, so the count divides out the
+    # configurations -- ``nconf`` of them, the same number this BAN declares
+    # as ``nconf_gs``/``nconf_fs``. LMCT is the only structure the generator
+    # emits today; MLCT would raise it and must raise it here too. Half-integer J is the only case with more than one
     # channel (Γ8 ⊗ T1u ⊗ Γ8), and it is the repeated coupling ttrac writes
     # twice in the .ban.
+    nconf = 2
     order: List[Tuple[str, str, str]] = []
     counts: Dict[Tuple[str, str, str], int] = {}
     for b in rac.blocks:
@@ -533,13 +536,13 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
             counts[key] = counts.get(key, 0) + 1
     triads = []
     for key in order:
-        n_channels, remainder = divmod(counts[key], 2)
+        n_channels, remainder = divmod(counts[key], nconf)
         if remainder or n_channels < 1:
             raise RuntimeError(f"triad {key} has {counts[key]} TRANSI blocks, not a whole number "
-                               f"of channels for two configurations")
+                               f"of channels for {nconf} configurations")
         triads.extend([key] * n_channels)
     return BanData(
-        nconf_gs=2, nconf_fs=2,
+        nconf_gs=nconf, nconf_fs=nconf,
         xham=[XHAMEntry(values=xham, combos=[(1, i + 1) for i in range(len(xham))])],
         xmix=[XMIXEntry(values=values, combos=[(1, 1, 2), (2, 1, 2)])],
         tran=[(1, 1), (2, 2)], triads=triads,

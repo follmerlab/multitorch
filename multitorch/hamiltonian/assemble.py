@@ -18,7 +18,7 @@ The assembly pipeline:
 from __future__ import annotations
 import math
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 from pathlib import Path
 import torch
 
@@ -108,30 +108,38 @@ def _find_transi_block(
     gs_sym: str,
     act_sym: str,
     fs_sym: str,
-    geometry: str,
+    geometries: Sequence[str],
     n_bra: int,
     n_ket: int,
     copy: int = 0,
 ) -> Optional[RACBlockFull]:
     """Find a TRANSI block for a specific triad, geometry and multiplicity copy.
 
-    Tries exact geometry match first, then falls back to any geometry
-    matching the symmetry labels and dimensions (handles format differences
-    between ttrac versions that use PERP/PARA vs MULTIPOLE).
+    ``geometries`` lists the labels ttrac may write for this actor, most
+    specific first; the first one with a match wins. ttrac writes the D4h
+    dipole as PERP/PARA and the Oh dipole as MULTIPOLE (every bundled Oh
+    fixture, and the from-scratch Oh emitter follows it), so the Oh path
+    needs MULTIPOLE in the list or it would fall through to the
+    geometry-blind match below and leave the dimensions as the only
+    discriminator.
 
     ``copy`` selects among repeated couplings of the same triad (PRMULT: a
     triad whose actor occurs twice in Γ_gs ⊗ Γ_fs, listed in the .ban as
     ``S1+ 1- S1- 0`` and ``S1+ 1- S1- 1``), which ttrac writes as consecutive
     blocks of equal dimensions.
     """
-    def matches(check_geometry):
+    def matches(geometry):
         return [b for b in rac.blocks
                 if b.kind == 'TRANSI' and b.bra_sym == gs_sym
                 and b.op_sym == act_sym and b.ket_sym == fs_sym
-                and (not check_geometry or b.geometry == geometry)
+                and (geometry is None or b.geometry == geometry)
                 and b.n_bra == n_bra and b.n_ket == n_ket]
 
-    found = matches(True) or matches(False)
+    found: List[RACBlockFull] = []
+    for geometry in list(geometries) + [None]:
+        found = matches(geometry)
+        if found:
+            break
     if copy >= len(found):
         if copy and found:
             raise ValueError(f"triad ({gs_sym}, {act_sym}, {fs_sym}) copy {copy}: the RAC has only "
@@ -399,6 +407,17 @@ def _get_config_dims_from_transi(
         # of 1410-state Fe3+ final block (ttban prints 1410).
         if len(blocks) > nconf and len(blocks) % nconf == 0:
             blocks = blocks[::len(blocks) // nconf]
+        # :func:`_find_transi_block` separates the configurations of a triad by
+        # (n_bra, n_ket) alone — it takes no configuration argument — so two
+        # configurations of equal dimensions would silently both read the
+        # first one's block. True for every reachable n x symmetry today (at
+        # n = 8 the final-manifold dims already coincide in every irrep, and
+        # only the ground dims keep the pairs apart), but nothing enforced it.
+        pairs = [(b.n_bra, b.n_ket) for b in blocks]
+        if len(set(pairs)) != len(pairs):
+            raise RuntimeError(
+                f"triad ({gs_sym}, {act_sym}, {fs_sym}) geometry {geom}: configurations share "
+                f"the TRANSI dimensions {pairs}, which the assembler cannot tell apart")
         if gs_sym not in gs_dims:
             gs_dims[gs_sym] = []
         if fs_sym not in fs_dims:
@@ -600,16 +619,13 @@ def _assemble_one_triad(
                     tran_cowan_sec = icg  # section 0 for conf1, 1 for conf2
                     tran_sec = cowan[tran_cowan_sec] if tran_cowan_sec < len(cowan) else []
 
-                    # Determine geometry from actor symmetry
-                    if act_sym in ('1-',):
-                        geom = 'PERP'
-                    elif act_sym in ('^0-',):
-                        geom = 'PARA'
-                    else:
-                        geom = 'PERP'
+                    # Geometry labels this actor may carry, most specific
+                    # first: D4h splits the dipole into PERP/PARA, Oh writes
+                    # the whole rank-1 actor as MULTIPOLE.
+                    geoms = ('PARA', 'MULTIPOLE') if act_sym == '^0-' else ('PERP', 'MULTIPOLE')
 
                     tran_block = _find_transi_block(
-                        rac, gs_sym, act_sym, fs_sym, geom, dg, df, copy=copy,
+                        rac, gs_sym, act_sym, fs_sym, geoms, dg, df, copy=copy,
                     )
                     if tran_block is not None:
                         T_sub = assemble_matrix_from_adds(

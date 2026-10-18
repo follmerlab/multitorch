@@ -31,12 +31,18 @@ SYSTEMS = {
                                      **{"gs_lh.F2_11": 7.5, "ex_lh.G1_12": 3.6})),
     # odd electron count (WP-B2a-5): the same leaves through the half-integer
     # double-group emitters, whose coefficients are constants of the angular
-    # problem and must not intercept the gradient
+    # problem and must not intercept the gradient. Cr3+ d3 carries the
+    # multi-copy (PRMULT) triad Gamma8 x T1u x Gamma8, listed twice in the
+    # .ban, which no D4h half-integer case has.
     "Cr_oh": ("Cr", "iii", "oh", dict(tendq=1.2, delta=3.0, u=1.0, eg=2.0, t2g=1.0, slater=0.8, soc=1.0,
                                       **{"gs_lh.F2_11": 8.0, "ex_lh.G1_12": 3.9})),
-    "Cr_d4h": ("Cr", "iii", "d4h", dict(tendq=1.2, dt=0.05, ds=0.1, delta=3.0, u=1.0,
-                                        b1=2.0, a1=1.6, b2=1.0, e=0.8, slater=0.8, soc=1.0,
-                                        **{"gs_lh.zeta_1": 0.07, "ex_lh.zeta_1": 5.7})),
+    # d7, not the d3 this case used to run: identical triad structure (the same
+    # six triads, both D4h dipole actors, both ground irreps) through the same
+    # emitters, with a 219- instead of a 4098-dimensional final block. That one
+    # case was ~12 of the suite's ~21 minutes.
+    "Co_d4h": ("Co", "ii", "d4h", dict(tendq=1.2, dt=0.05, ds=0.1, delta=3.0, u=1.0,
+                                       b1=2.0, a1=1.6, b2=1.0, e=0.8, slater=0.8, soc=1.0,
+                                       **{"gs_lh.zeta_1": 0.08, "ex_lh.zeta_1": 9.6})),
 }
 CHANNELS = ("eg", "t2g", "b1", "a1", "b2", "e")
 

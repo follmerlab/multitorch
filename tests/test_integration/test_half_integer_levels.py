@@ -6,9 +6,9 @@ Those two operators fix every energy level, so the levels are the oracle here:
 both manifolds of Cr³⁺, Mn²⁺, Fe³⁺ and Co²⁺ must match the Fortran fixture at
 the fixture's own atomic parameters, with charge transfer switched off.
 
-Intensities are *not* checked: the TRANSI blocks are still the legacy
-half-integer ones, which break the dipole sum rule. That is increment B2a-3,
-and ``api.calc`` keeps refusing these ions until it lands.
+Intensities are *not* checked here: the dipole is increment B2a-3, which
+rebuilt the half-integer TRANSI blocks by invariant projection and has its own
+oracles. ``api.calc`` accepts these ions.
 """
 from __future__ import annotations
 

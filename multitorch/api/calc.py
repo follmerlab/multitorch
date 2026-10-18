@@ -1343,8 +1343,8 @@ def calcXAS_from_scratch(
       5. Hamiltonian assembly + diagonalization
       6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
 
-    Single configuration (no charge transfer); ``sym`` 'oh' or 'd4h' (D4h for
-    integer J only). Differentiable in ``slater``, ``soc``, every ``atomic``
+    Single configuration (no charge transfer); ``sym`` 'oh' or 'd4h', for
+    integer and half-integer J alike (WP-B2a). Differentiable in ``slater``, ``soc``, every ``atomic``
     override and the ``cf`` entries: pass tensors with ``requires_grad=True``.
     The HFS radial part is a constant (WP-A7).
 

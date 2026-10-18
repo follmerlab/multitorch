@@ -137,11 +137,13 @@ HALF_D4H = [("Cr", "iii", 3, 1.2, {"eg": 2.0, "t2g": 1.0}),
 HALF_D4H_IDS = [f"{c[0]}{c[1]}-d4h-ct" for c in HALF_D4H]
 # residual 15 again: the Oh d5 ions' six ground components are split by µeV, and
 # the Oh and D4h labelings of the same manifold do not round them into the same
-# lowest "level", so a max_gs=1 pool takes different components on the two sides
-# (Fe3+ measured at cosine 0.99969 on 2026-09-24). Cr3+ and Co2+ are exact.
-RES15 = pytest.mark.xfail(strict=True, reason="plan residual 15: max_gs counts exactly equal levels only")
-HALF_D4H_SPECTRUM = [pytest.param(*c, marks=RES15) if (c[0], c[1]) == ("Fe", "iii") else c
-                     for c in HALF_D4H]
+# lowest "level", so a max_gs=1 pool takes different components on the two sides.
+# Cr3+ and Co2+ are exact; Fe3+ measured cosine 0.99969 on 2026-09-24. That
+# shortfall is bounded on both sides rather than carried as a strict xfail: the
+# lower bound catches a regression (a strict xfail still "passes" at cosine
+# 0.5), the upper bound says when residual 15 has been fixed.
+EXACT, RES15_FE = (0.99999, 1.0), (0.9996, 0.99999)
+HALF_D4H_SPECTRUM = [c + (RES15_FE if (c[0], c[1]) == ("Fe", "iii") else EXACT,) for c in HALF_D4H]
 
 
 def _oh_limit(element, valence, n, tendq, hyb):
@@ -172,8 +174,9 @@ def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_levels(element
     assert float((ff - fs).abs().max()) < 2e-5
 
 
-@pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H_SPECTRUM, ids=HALF_D4H_IDS)
-def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(element, valence, n, tendq, hyb):
+@pytest.mark.parametrize("element,valence,n,tendq,hyb,cosine_bounds", HALF_D4H_SPECTRUM, ids=HALF_D4H_IDS)
+def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(
+        element, valence, n, tendq, hyb, cosine_bounds):
     """Spectral shape of the Oh limit, from the single lowest ground level.
 
     ``max_gs=1``, not the ``POOL`` of the Fortran-parity tests, because the pool
@@ -191,7 +194,12 @@ def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(eleme
     Es, Ms = get_sticks_from_banresult(scratch, **pool)[:2]
     hi = float(max(Ef.max() - Ef.min(), Es.max() - Es.min())) + 3.0
     p = spectral_parity(*_spectrum(Es - Es.min(), Ms, hi), *_spectrum(Ef - Ef.min(), Mf, hi))
-    assert p.cosine > 0.99999, p
+    lo, ceiling = cosine_bounds
+    assert p.cosine > lo, p
+    if ceiling < 1.0:
+        assert p.cosine < ceiling, (
+            f"cosine {p.cosine} now clears {ceiling}: residual 15 looks fixed for this "
+            f"case, tighten its bounds to EXACT")
 
 
 @pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H, ids=HALF_D4H_IDS)
@@ -283,7 +291,7 @@ import test_ct_from_scratch_fortran_parity as t
 for case in (t.CASES[1], t.CASES[3], t.CASES[4]):
     t.test_charge_transfer_from_scratch_matches_fortran(*case)
 t.test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_levels(*t.HALF_D4H[0])
-t.test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(*t.HALF_D4H[0])
+t.test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(*t.HALF_D4H_SPECTRUM[0])
 print("OK")
 """
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=1200)

@@ -34,3 +34,34 @@ def test_final_state_dimensions_match_ttban(case, element, valence):
     for fs_sym, n in fortran.items():
         assert sum(fs[fs_sym]) == n, (fs_sym, fs[fs_sym], n)
     assert all(len(v) <= cache.ban.nconf_gs for v in list(gs.values()) + list(fs.values()))
+
+
+def test_configurations_of_equal_dimensions_are_refused():
+    """Inject the collision the dimension decoding cannot survive and watch it raise.
+
+    ``_find_transi_block`` takes no configuration argument: it separates a
+    triad's two configurations by ``(n_bra, n_ket)`` alone, so equal dimensions
+    would silently give configuration 2 configuration 1's transition block.
+    Every reachable ion keeps the pairs apart today (at n = 8 the final-manifold
+    dims already coincide, and only the ground dims still differ), which is
+    exactly why nothing had ever exercised the failure.
+    """
+    import dataclasses
+
+    cache = preload_fixture("Ni", "ii", "oh")
+    nconf = cache.ban.nconf_gs
+    gs, fs = _get_config_dims_from_transi(cache.rac, nconf)
+    assert any(len(v) == nconf and len(set(v)) > 1 for v in gs.values())
+
+    dipoles = [b for b in cache.rac.blocks
+               if b.kind == "TRANSI" and "HYBR" not in b.geometry and b.add_entries]
+    first = dipoles[0]
+    twin = [b for b in dipoles if (b.bra_sym, b.op_sym, b.ket_sym, b.geometry)
+            == (first.bra_sym, first.op_sym, first.ket_sym, first.geometry) and b is not first]
+    assert twin, "need a second configuration of this triad to collide with"
+
+    blocks = [dataclasses.replace(b, n_bra=first.n_bra, n_ket=first.n_ket) if b is twin[0] else b
+              for b in cache.rac.blocks]
+    collided = dataclasses.replace(cache.rac, blocks=blocks)
+    with pytest.raises(RuntimeError, match="share the TRANSI dimensions"):
+        _get_config_dims_from_transi(collided, nconf)
