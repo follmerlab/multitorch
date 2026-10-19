@@ -1013,7 +1013,7 @@ def fixture_defaults(element: str, valence: str, sym: str) -> dict:
     'ii', 'd4h')`` is ``nid8ct`` (Ds = 0.1, Δ = 5, u = 1, sticks near 855 eV),
     ``('Ni', 'ii', 'oh')`` is ``ni2_d8_oh`` (Δ = 4.5, u = 6, sticks near 15 eV).
     """
-    from multitorch.hamiltonian.build_ban import _HYBR_CHANNELS
+    from multitorch.angular.symmetry_plan import plan_for_sym
     from multitorch.io.read_ban import read_ban
 
     fixture_dir = _find_fixture_dir(element, valence, sym)
@@ -1028,8 +1028,15 @@ def fixture_defaults(element: str, valence: str, sym: str) -> dict:
         out["delta"] = float(ban.eg[2])
         out["u"] = float(ban.eg[2]) - float(ban.ef.get(2, 0.0))
     if ban.xmix:
-        names = _HYBR_CHANNELS.get(len(ban.xmix[0].values))
-        out["lmct"] = dict(zip(names, (float(v) for v in ban.xmix[0].values)))
+        # ``sym`` is an argument here, so the channel names come from its plan;
+        # there is nothing to infer from the XMIX length (WP-B5).
+        names = plan_for_sym(sym).hybr_parameter_names
+        values = ban.xmix[0].values
+        if len(names) != len(values):
+            raise ValueError(
+                f"fixture {fixture_dir.name} has a {len(values)}-channel XMIX but "
+                f"{sym} has {len(names)} hybridisation channels {names}")
+        out["lmct"] = dict(zip(names, (float(v) for v in values)))
     return out
 
 
@@ -1323,6 +1330,7 @@ def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.
         triads=triads,
         eg={1: 0.0},
         ef={1: 0.0},
+        symmetry=sym,
     )
 
 

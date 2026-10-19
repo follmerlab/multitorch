@@ -300,9 +300,29 @@ def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
     eg_offsets = [ban.eg.get(i, 0.0) for i in range(1, nconf + 1)]
     ef_offsets = [ban.ef.get(i, 0.0) for i in range(1, nconf + 1)]
 
-    # Determine operator and hybridization channel names from XHAM length
+    # Operator and hybridisation channel names. When the .ban says which point
+    # group it describes, they come from that group's SymmetryPlan; otherwise
+    # they are inferred from the XHAM length, as they always were.
+    #
+    # The inference is kept because a parsed .ban file has no group field, and
+    # it is *correct* for Oh and D4h -- the plan reproduces
+    # OPERATOR_ORDER_OH/_D4H and HYBR_ORDER_OH/_D4H exactly, order included
+    # (tests/test_angular/test_symmetry_plan.py). It is not correct beyond
+    # them: n_ops = 4 is D4h, C4v *and* D3d, n_ops = 2 is Oh and Td, n_ops = 6
+    # is D2h and C2v, and their channel names and order all differ, so the
+    # inference would hand D4h's DT/DS and B1/A1/B2/E to any of them (WP-B5).
     n_ops = len(xham)
-    if n_ops == 4:
+    if ban.symmetry is not None:
+        from multitorch.angular.symmetry_plan import plan_for_sym
+
+        plan = plan_for_sym(ban.symmetry)
+        operators = list(plan.operator_order)
+        hybr_channels = list(plan.hybr_channels)
+        if len(operators) != n_ops:
+            raise ValueError(
+                f"the .ban declares symmetry {ban.symmetry!r}, whose plan has "
+                f"{len(operators)} operators ({operators}), but XHAM carries {n_ops}")
+    elif n_ops == 4:
         operators = OPERATOR_ORDER_D4H
         hybr_channels = HYBR_ORDER_D4H
     elif n_ops == 2:

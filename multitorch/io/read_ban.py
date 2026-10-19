@@ -48,6 +48,14 @@ class BanData:
     tran: List[Tuple[int, int]] = field(default_factory=list)  # (conf_gs, conf_fs) pairs
     triads: List[Tuple[str, str, str]] = field(default_factory=list)
     prmult: bool = False
+    #: Point group this .ban describes, as one of the public ``sym`` strings
+    #: ('oh', 'd4h'), or None when it is not known. A parsed ``.ban`` file has
+    #: no such field, so :func:`read_ban` leaves it None and the assembler
+    #: falls back to inferring the group from ``len(xham)``; the from-scratch
+    #: builders set it, which is what lets the assembler stop inferring. See
+    #: :mod:`multitorch.angular.symmetry_plan` for why the inference is
+    #: ambiguous beyond Oh and D4h (WP-B5).
+    symmetry: Optional[str] = None
 
 
 def read_ban(path: str | Path) -> BanData:

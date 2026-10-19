@@ -180,7 +180,7 @@ def modify_ban_params(
     if lmct is not None and out.xmix:
         n_ch = len(out.xmix[0].values)
         if isinstance(lmct, dict):
-            names = _HYBR_CHANNELS.get(n_ch)
+            names = _hybr_channel_names(ban, n_ch)
             if names is None:
                 raise ValueError(f"no channel names for a {n_ch}-channel XMIX")
             unknown = set(lmct) - set(names)
@@ -205,7 +205,26 @@ def modify_ban_params(
 
 # XMIX channel order = RAC hybridization blocks EGHYBR, T2GHYBR (Oh) and
 # B1HYBR, A1HYBR, B2HYBR, EHYBR (D4h); pyctm write_BAN mix_keys.
+#
+# Keyed by channel count, which identifies the group only among Oh and D4h: 4
+# channels is D4h *and* C4v, 2 is Oh *and* Td, and D2h/C2v both have 5. A .ban
+# that declares its symmetry is read through its SymmetryPlan instead; this map
+# remains for templates parsed from a file, which carry no such field (WP-B5).
 _HYBR_CHANNELS = {2: ('eg', 't2g'), 4: ('b1', 'a1', 'b2', 'e')}
+
+
+def _hybr_channel_names(ban, n_ch):
+    """Channel names for *ban*: from its declared symmetry, else by count."""
+    if getattr(ban, 'symmetry', None) is not None:
+        from multitorch.angular.symmetry_plan import plan_for_sym
+
+        names = plan_for_sym(ban.symmetry).hybr_parameter_names
+        if len(names) != n_ch:
+            raise ValueError(
+                f"the .ban declares symmetry {ban.symmetry!r} with {len(names)} "
+                f"hybridisation channels {names}, but XMIX carries {n_ch}")
+        return names
+    return _HYBR_CHANNELS.get(n_ch)
 
 
 def _lmct_value(x, name):

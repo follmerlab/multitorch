@@ -547,4 +547,5 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
         xmix=[XMIXEntry(values=values, combos=[(1, 1, 2), (2, 1, 2)])],
         tran=[(1, 1), (2, 2)], triads=triads,
         eg={1: 0.0, 2: delta}, ef={1: 0.0, 2: delta - u},
+        symmetry=sym,
     )
