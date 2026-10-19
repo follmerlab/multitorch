@@ -173,12 +173,18 @@ def _cache_ban(cache: CachedFixture, cf, delta, u, lmct, mlct):
     from multitorch.hamiltonian.build_ban import modify_ban_params
     from multitorch.io.read_ban import XHAMEntry
 
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
     cf = cf or {}
     if cache.source != "scratch":
         return modify_ban_params(copy.deepcopy(cache.ban), cf=cf, delta=delta, u=u, lmct=lmct, mlct=mlct)
-    unknown = set(cf) - {"tendq", "dt", "ds"}
-    if unknown:
-        raise ValueError(f"unknown crystal-field keys {sorted(unknown)}")
+    # The accepted keys, their order and their defaults are the group's
+    # SymmetryPlan (WP-B5-4). Before that this checked `cf` against the union
+    # {tendq, dt, ds} and then built the XHAM per group, so an Oh cache
+    # *accepted* `dt`/`ds` and silently dropped them while the fixture path
+    # refused the same call -- residual 43.
+    plan = plan_for_sym(cache.sym)
+    xham_values = plan.xham_values(cf)
     if cache.ban.nconf_gs >= 2:
         if delta is None:
             raise ValueError("charge-transfer from-scratch caches need delta (eV)")
@@ -188,10 +194,7 @@ def _cache_ban(cache: CachedFixture, cf, delta, u, lmct, mlct):
                          "delta/u/lmct/mlct are not supported")
     else:
         ban = copy.copy(cache.ban)
-    values = [1.0, cf.get("tendq", 1.0)]
-    if cache.sym == "d4h":
-        values += [cf.get("dt", 0.0), cf.get("ds", 0.0)]
-    ban.xham = [XHAMEntry(values=values, combos=list(cache.ban.xham[0].combos))]
+    ban.xham = [XHAMEntry(values=xham_values, combos=list(cache.ban.xham[0].combos))]
     return ban
 
 
@@ -1289,19 +1292,32 @@ def _from_scratch_ct_structure(element: str, valence: str, sym: str, zeta_method
     return rac, template, dec
 
 
-def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.0,
-                         sym: str = 'oh'):
+def _build_ban_from_rac(rac, tendq=None, dt=None, ds=None, sym: str = 'oh', cf=None):
     """Build a minimal BanData from a generated RAC for single-config calcs.
 
     Extracts triads from TRANSI blocks and constructs XHAM entries.
 
-    For sym='oh':  XHAM = [1.0, tendq]            (HAMILTONIAN, 10DQ)
-    For sym='d4h': XHAM = [1.0, tendq, dt, ds]    (HAMILTONIAN, 10DQ, DT, DS)
+    The XHAM is ``[1.0]`` — HAMILTONIAN, never scaled — followed by one value
+    per crystal-field operator of the group, in store order, from the group's
+    :class:`~multitorch.angular.symmetry_plan.SymmetryPlan` (WP-B5-4): Oh gives
+    ``[1.0, tendq]``, D4h ``[1.0, tendq, dt, ds]``, matching the assembler's
+    ``OPERATOR_ORDER_*``. The parameters may be passed as the legacy
+    ``tendq``/``dt``/``ds`` keywords or as a ``cf`` dict; either way an operator
+    the group does not have is **refused**, not dropped.
 
-    The D4h layout matches the assembler's expectation noted in
-    multitorch/hamiltonian/assemble.py:40.
+    ``sym`` must agree with ``rac.symmetry`` when the RAC carries one.
     """
+    from multitorch.angular.symmetry_plan import plan_for_rac
     from multitorch.io.read_ban import BanData, XHAMEntry
+
+    plan = plan_for_rac(rac, sym)
+    merged = dict(cf or {})
+    for key, value in (("tendq", tendq), ("dt", dt), ("ds", ds)):
+        if value is not None:
+            if key in merged:
+                raise ValueError(f"{key!r} given both in cf and as a keyword")
+            merged[key] = value
+    xham_values = plan.xham_values(merged)
 
     # One entry per TRANSI block, in RAC order: a triad the generator emitted
     # twice carries two independent invariants (half-integer J, Γ8 ⊗ T1u ⊗ Γ8)
@@ -1311,16 +1327,10 @@ def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.
     triads = [(b.bra_sym, b.op_sym, b.ket_sym) for b in rac.blocks
               if b.kind == 'TRANSI' and b.add_entries]
 
-    if sym == 'd4h':
-        xham = [XHAMEntry(
-            values=[1.0, tendq, dt, ds],
-            combos=[(1, 1), (1, 2), (1, 3), (1, 4)],
-        )]
-    else:
-        xham = [XHAMEntry(
-            values=[1.0, tendq],
-            combos=[(1, 1), (1, 2)],
-        )]
+    xham = [XHAMEntry(
+        values=xham_values,
+        combos=[(1, i + 1) for i in range(len(xham_values))],
+    )]
 
     return BanData(
         nconf_gs=1,
@@ -1330,7 +1340,7 @@ def _build_ban_from_rac(rac, tendq: float = 1.0, dt: float = 0.0, ds: float = 0.
         triads=triads,
         eg={1: 0.0},
         ef={1: 0.0},
-        symmetry=sym,
+        symmetry=plan.group.lower(),
     )
 
 

@@ -102,10 +102,10 @@ def _from_scratch_ground_levels(sym: str, cf: dict, n_val_gs: int = 8) -> np.nda
         raw_zeta_ex_ry={"d": 0.0, "p": 0.0},
         sym=sym,
     )
-    ban = _build_ban_from_rac(
-        rac, tendq=cf.get("tendq", 0.0), dt=cf.get("dt", 0.0),
-        ds=cf.get("ds", 0.0), sym=sym,
-    )
+    # the caller's cf, passed through rather than expanded into every key:
+    # expanding it manufactured dt=ds=0.0 for Oh, which WP-B5-4 refuses
+    # (residual 43). Every case here names tendq, so no default is in play.
+    ban = _build_ban_from_rac(rac, sym=sym, cf=cf)
     result = assemble_and_diagonalize_in_memory(cowan, rac, ban)
     eigs = torch.cat([t.Eg for t in result.triads])
     return _relative_levels(eigs)

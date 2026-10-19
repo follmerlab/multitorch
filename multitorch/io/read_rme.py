@@ -431,6 +431,13 @@ class RACFileFull:
     """Complete parsed .rme_rac file with full ADD entry data."""
     irreps: List[IrrepInfo] = field(default_factory=list)
     blocks: List[RACBlockFull] = field(default_factory=list)
+    #: Point group this RAC describes, as one of the public ``sym`` strings
+    #: ('oh', 'd4h'), or None when it is not known. The from-scratch
+    #: generators set it, which is what lets the BAN builders read the
+    #: operator and hybridisation-channel lists off the structure instead of
+    #: restating them per group (WP-B5-4); a ``.rme_rac`` parsed from a file
+    #: has no such field, so :func:`read_rme_rac_full` leaves it None.
+    symmetry: Optional[str] = None
 
     def get_blocks(self, kind: str, bra_sym: str, op_sym: str, ket_sym: str,
                    geometry: Optional[str] = None) -> List[RACBlockFull]:

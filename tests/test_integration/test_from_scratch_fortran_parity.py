@@ -89,7 +89,10 @@ def _assert_matches_fixture(name, element, valence, n, tendq, sym):
     Ef, Mf = _bright(*get_sticks_from_banresult(res_f, **POOL)[:2])
 
     rac, cowan = generate_ledge_rac(2, n, sym=sym, **_fixture_parameters(name))
-    ban = _build_ban_from_rac(rac, tendq=tendq, dt=0.0, ds=0.0, sym=sym)
+    # only the crystal-field parameters the group actually has: Oh refuses dt
+    # and ds outright since WP-B5-4 (residual 43), and D4h's defaults are the
+    # 0.0 this used to pass explicitly, so the XHAM is unchanged either way
+    ban = _build_ban_from_rac(rac, tendq=tendq, sym=sym)
     Es, Ms = _bright(*get_sticks_from_banresult(assemble_and_diagonalize_in_memory(cowan, rac, ban), **POOL)[:2])
 
     ef, es = (Ef - Ef.min()).numpy(), (Es - Es.min()).numpy()

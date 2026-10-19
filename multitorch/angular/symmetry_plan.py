@@ -49,7 +49,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import lru_cache
-from typing import Dict, Tuple
+from typing import Dict, List, Mapping, Optional, Tuple
 
 from multitorch.angular.crystal_field import CF_RANKS, cf_invariant_vectors
 from multitorch.angular.finite_group import point_group
@@ -64,11 +64,18 @@ D_SHELL = (2, +1)
 class GroupConventions:
     """The store's names and orders for one group — looked up, not derived.
 
-    ``cf_operators`` is ``(store name, rank)`` in store order; ``hybr`` is
-    ``(irrep, HYBR string, public lmct key)`` in store order.
+    ``cf_operators`` is ``(store name, rank, public cf key, default)`` in store
+    order; ``hybr`` is ``(irrep, HYBR string, public lmct key)`` in store order.
+
+    The public key and the default are here because they were previously
+    restated at four sites, which is how the Oh path came to accept ``dt`` and
+    ``ds`` and silently drop them (residual 43). The default is the value the
+    XHAM carries when the caller's ``cf`` dict omits that operator: 1.0 for the
+    cubic field, so an unspecified 10Dq is 1 eV rather than no crystal field at
+    all, and 0.0 for every distortion, so an unspecified distortion is absent.
     """
 
-    cf_operators: Tuple[Tuple[str, int], ...]
+    cf_operators: Tuple[Tuple[str, int, str, float], ...]
     hybr: Tuple[Tuple[str, str, str], ...]
 
 
@@ -77,11 +84,12 @@ class GroupConventions:
 #: existing ``OPERATOR_ORDER_D4H`` and ``HYBR_ORDER_D4H`` use.
 CONVENTIONS: Dict[str, GroupConventions] = {
     "Oh": GroupConventions(
-        cf_operators=(("10DQ", 4),),
+        cf_operators=(("10DQ", 4, "tendq", 1.0),),
         hybr=(("Eg", "EGHYBR", "eg"), ("T2g", "T2GHYBR", "t2g")),
     ),
     "D4h": GroupConventions(
-        cf_operators=(("10DQ", 4), ("DT", 4), ("DS", 2)),
+        cf_operators=(("10DQ", 4, "tendq", 1.0), ("DT", 4, "dt", 0.0),
+                      ("DS", 2, "ds", 0.0)),
         hybr=(("B1g", "B1HYBR", "b1"), ("A1g", "A1HYBR", "a1"),
               ("B2g", "B2HYBR", "b2"), ("Eg", "EHYBR", "e")),
     ),
@@ -102,7 +110,7 @@ class SymmetryPlan:
     """
 
     group: str
-    cf_operators: Tuple[Tuple[str, int], ...]
+    cf_operators: Tuple[Tuple[str, int, str, float], ...]
     operator_order: Tuple[str, ...]
     hybr_irreps: Tuple[Tuple[str, int], ...]
     hybr_channels: Tuple[str, ...]
@@ -117,6 +125,56 @@ class SymmetryPlan:
     def n_operators(self) -> int:
         """What ``assemble``'s ``n_ops = len(xham)`` sees. Not a group identifier."""
         return len(self.operator_order)
+
+    @property
+    def cf_parameter_names(self) -> Tuple[str, ...]:
+        """The public ``cf`` keys this group accepts, in store order."""
+        return tuple(key for _name, _rank, key, _default in self.cf_operators)
+
+    def xham_values(self, cf: Optional[Mapping[str, object]] = None) -> List[object]:
+        """The XHAM values for one ``cf`` dict: ``[1.0]`` then one per operator.
+
+        The leading 1.0 is HAMILTONIAN, which is never scaled. Each operator
+        takes its value from *cf* under this group's public key, or its default
+        when absent. **A key this group has no operator for is an error, not a
+        silently dropped parameter** -- which is what three of the four sites
+        this replaces used to do in Oh (residual 43). Values pass through
+        untouched, so a tensor keeps its gradient.
+        """
+        cf = dict(cf or {})
+        unknown = sorted(set(cf) - set(self.cf_parameter_names))
+        if unknown:
+            raise ValueError(
+                f"unknown crystal-field keys {unknown} for {self.group}; "
+                f"allowed {list(self.cf_parameter_names)}")
+        return [1.0] + [cf.get(key, default)
+                        for _name, _rank, key, default in self.cf_operators]
+
+    def hybr_values(self, hybridisation=None) -> List[object]:
+        """The XMIX values: one per hybridisation channel, in store order.
+
+        Accepts a dict keyed by this group's public channel names, a single
+        value for every channel, a sequence in store order, or ``None`` for no
+        hybridisation. An unknown channel name is an error.
+        """
+        names = self.hybr_parameter_names
+        if hybridisation is None:
+            return [0.0] * len(names)
+        if isinstance(hybridisation, Mapping):
+            unknown = sorted(set(hybridisation) - set(names))
+            if unknown:
+                raise ValueError(
+                    f"unknown hybridisation channels {unknown}; "
+                    f"{self.group} has {list(names)}")
+            return [hybridisation.get(k, 0.0) for k in names]
+        if isinstance(hybridisation, (list, tuple)):
+            values = list(hybridisation)
+            if len(values) != len(names):
+                raise ValueError(
+                    f"{self.group} needs {len(names)} hybridisation values {list(names)}, "
+                    f"got {len(values)}")
+            return values
+        return [hybridisation] * len(names)      # one value for every channel
 
 
 def _derived_cf_ranks(group: str) -> Tuple[int, ...]:
@@ -156,7 +214,7 @@ def symmetry_plan(group: str) -> SymmetryPlan:
 
     # --- crystal field: the count and ranks are derived, the names are not ---
     derived_ranks = sorted(_derived_cf_ranks(group))
-    named_ranks = sorted(rank for _name, rank in conventions.cf_operators)
+    named_ranks = sorted(rank for _name, rank, _key, _default in conventions.cf_operators)
     if derived_ranks != named_ranks:
         raise RuntimeError(
             f"{group}: the group has crystal-field parameters of ranks {derived_ranks} but "
@@ -173,7 +231,8 @@ def symmetry_plan(group: str) -> SymmetryPlan:
     return SymmetryPlan(
         group=group,
         cf_operators=conventions.cf_operators,
-        operator_order=(HAMILTONIAN,) + tuple(name for name, _rank in conventions.cf_operators),
+        operator_order=(HAMILTONIAN,) + tuple(
+            name for name, _rank, _key, _default in conventions.cf_operators),
         hybr_irreps=derived_hybr,
         hybr_channels=tuple(channel for _irrep, channel, _key in conventions.hybr),
         hybr_parameter_names=tuple(key for _irrep, _channel, key in conventions.hybr),
@@ -195,3 +254,26 @@ def plan_for_sym(sym: str) -> SymmetryPlan:
         raise ValueError(
             f"unknown symmetry {sym!r}; available: {sorted(SYM_TO_GROUP)}") from None
     return symmetry_plan(group)
+
+
+def plan_for_rac(rac, sym: Optional[str] = None) -> SymmetryPlan:
+    """The plan for a generated RAC: from the RAC's own group, else from *sym*.
+
+    The from-scratch generators stamp ``RACFileFull.symmetry``, so a consumer
+    holding a generated RAC need not be told the group again — which is what
+    WP-B5-4 is for. *sym* remains accepted, because a ``.rme_rac`` parsed from
+    a file carries no such field, and a *sym* that **contradicts** the RAC is
+    refused rather than silently preferred either way: the two disagreeing is a
+    caller bug, and picking a winner would hide it.
+    """
+    declared = getattr(rac, "symmetry", None)
+    if declared is not None and sym is not None and declared != sym:
+        raise ValueError(
+            f"this RAC was generated for symmetry {declared!r} but {sym!r} was requested; "
+            f"they must agree")
+    group = declared if declared is not None else sym
+    if group is None:
+        raise ValueError(
+            "this RAC does not record which point group it describes (a parsed .rme_rac "
+            "has no such field), so pass sym='oh' or sym='d4h'")
+    return plan_for_sym(group)

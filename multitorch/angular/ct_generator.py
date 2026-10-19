@@ -445,7 +445,7 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
 
     manifold(gs, gs_lh, 'g', 'GROUND', hop_g)
     manifold(ex, ex_lh, 'u', 'EXCITE', hop_f)
-    rac = RACFileFull(irreps=irreps, blocks=blocks)
+    rac = RACFileFull(irreps=irreps, blocks=blocks, symmetry=sym)
     rac.index_maps = {'dipole': dip, 'hopping_ground': hop_g, 'hopping_final': hop_f, 'configs': maps}
 
     decomposition = HamiltonianDecomposition([
@@ -493,29 +493,25 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
     ``cf``: Ballhausen ``tendq`` (and ``dt``, ``ds`` in D4h), raw as in the
     single-configuration from-scratch path. ``delta`` = E(d^(n+1)L) − E(d^n)
     (``EG2``), ``u`` = U_pd − U_dd (``EF2 = Δ − u``), pyctm's convention.
-    ``hybridisation``: V per channel, dict ``{'eg', 't2g'}`` (Oh) or
-    ``{'b1', 'a1', 'b2', 'e'}`` (D4h), or a list in that order, applied to the
-    ground and final manifolds.
+    ``hybridisation``: V per channel, as a dict keyed by the group's channel
+    names (``{'eg', 't2g'}`` in Oh, ``{'b1', 'a1', 'b2', 'e'}`` in D4h), a list
+    in that order, or one value for every channel; applied to the ground and
+    final manifolds. The names, the order and the accepted ``cf`` keys are the
+    group's :class:`~multitorch.angular.symmetry_plan.SymmetryPlan`, not a list
+    kept here.
+
+    *sym* must agree with ``rac.symmetry`` when the RAC carries one.
     """
+    from multitorch.angular.symmetry_plan import plan_for_rac
     from multitorch.io.read_ban import BanData, XHAMEntry, XMIXEntry
 
-    cf = cf or {}
-    names = {'oh': ('eg', 't2g'), 'd4h': ('b1', 'a1', 'b2', 'e')}[sym]
-    unknown = set(cf) - ({'tendq'} if sym == 'oh' else {'tendq', 'dt', 'ds'})
-    if unknown:
-        raise ValueError(f"unknown crystal-field keys {sorted(unknown)} for {sym}")
-    if hybridisation is None:
-        values = [0.0] * len(names)
-    elif isinstance(hybridisation, dict):
-        unknown = set(hybridisation) - set(names)
-        if unknown:
-            raise ValueError(f"unknown hybridisation channels {sorted(unknown)}; {sym} has {names}")
-        values = [hybridisation.get(k, 0.0) for k in names]
-    else:
-        values = list(hybridisation)
-        if len(values) != len(names):
-            raise ValueError(f"{sym} needs {len(names)} hybridisation values {names}")
-    xham = [1.0, cf.get('tendq', 0.0)] + ([cf.get('dt', 0.0), cf.get('ds', 0.0)] if sym == 'd4h' else [])
+    # The operator list, the channel list, the public key of each and the
+    # default of each all come from the group's SymmetryPlan (WP-B5-4). They
+    # used to be restated here, and differently at three other sites; see
+    # residual 43 for what that cost.
+    plan = plan_for_rac(rac, sym)
+    xham = plan.xham_values(cf)
+    values = plan.hybr_values(hybridisation)
     # One .ban entry per invariant channel of a triad, in RAC order. The
     # generator writes a triad's blocks grouped by configuration (n_channels
     # per configuration), and the assembler reads the k-th listing as PRMULT

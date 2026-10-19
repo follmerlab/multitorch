@@ -2347,6 +2347,7 @@ def _generate_ledge_template_legacy(
     rac = RACFileFull(
         irreps=irrep_infos,
         blocks=blocks,
+        symmetry=sym,
     )
 
     # Diagnostics: expose the COWAN-store index maps (matrix_idx -> block key).

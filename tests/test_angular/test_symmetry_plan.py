@@ -46,14 +46,29 @@ def test_the_plan_reproduces_the_assembler_constants(group, operators, channels)
     assert list(plan.hybr_channels) == channels
 
 
-def test_the_plan_reproduces_the_public_lmct_channel_keys():
-    """``ct_generator`` holds ``{'oh': ('eg','t2g'), 'd4h': ('b1','a1','b2','e')}``."""
+def test_the_plan_is_now_the_only_copy_of_the_public_lmct_channel_keys():
+    """``ct_generator`` used to hold its own copy; WP-B5-4 removed it.
+
+    Until then ``build_ct_ban`` carried
+    ``names = {'oh': ('eg','t2g'), 'd4h': ('b1','a1','b2','e')}[sym]`` and this
+    test asserted the plan *reproduced* it. The plan is the source now, so what
+    is worth asserting is that the second copy has not come back -- a literal
+    channel-name table in a consumer is how the four sites of residual 43 drifted
+    apart. The names themselves stay here as the independent record, which is
+    the same arrangement ``test_operator_subduction.py`` uses for the dipole
+    factors.
+    """
     import inspect
 
     from multitorch.angular import ct_generator
 
     src = inspect.getsource(ct_generator)
-    assert "names = {'oh': ('eg', 't2g'), 'd4h': ('b1', 'a1', 'b2', 'e')}[sym]" in src
+    # gone as *code*; the words may still appear in a docstring, the same
+    # distinction test_operator_subduction.py draws for the dipole factors
+    assert "{'oh': ('eg', 't2g')" not in src
+    assert "('b1', 'a1', 'b2', 'e')}[sym]" not in src
+    assert "plan.hybr_values(" in src, "the channel list must come from the plan"
+    assert "plan.xham_values(" in src, "the operator list must come from the plan"
     assert symmetry_plan("Oh").hybr_parameter_names == ("eg", "t2g")
     assert symmetry_plan("D4h").hybr_parameter_names == ("b1", "a1", "b2", "e")
 
@@ -79,7 +94,7 @@ def test_the_crystal_field_operator_count_is_the_derived_one(group):
     derived = cf_parameter_count(group)
     assert plan.n_cf_parameters == sum(derived.values())
     by_rank = {}
-    for _name, rank in plan.cf_operators:
+    for _name, rank, _key, _default in plan.cf_operators:
         by_rank[rank] = by_rank.get(rank, 0) + 1
     assert by_rank == {k: v for k, v in derived.items() if v}
 
@@ -105,7 +120,7 @@ def test_a_convention_naming_the_wrong_ranks_is_refused(monkeypatch):
     import multitorch.angular.symmetry_plan as sp
 
     bad = dict(CONVENTIONS)
-    bad["Oh"] = GroupConventions(cf_operators=(("DS", 2),),
+    bad["Oh"] = GroupConventions(cf_operators=(("DS", 2, "ds", 0.0),),
                                  hybr=CONVENTIONS["Oh"].hybr)
     monkeypatch.setattr(sp, "CONVENTIONS", bad)
     sp.symmetry_plan.cache_clear()
@@ -235,17 +250,25 @@ def test_declaring_the_symmetry_changes_nothing_for_oh_and_d4h(sym, n):
 
     Beyond Oh and D4h they cannot agree, because the inference cannot tell
     those groups apart; that is what the ambiguity tests above measure.
+
+    The crystal-field parameters are now per group. This test used to pass
+    ``dt`` and ``ds`` in Oh as well, which worked only because the from-scratch
+    path dropped them in silence; WP-B5-4 refuses them (residual 43), so the
+    distortions go in only where the group has them.
     """
     import dataclasses
 
     import torch
 
     from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.angular.symmetry_plan import plan_for_sym
     from multitorch.api.calc import _build_ban_from_rac
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
 
+    cf = {k: v for k, v in (("tendq", 1.0), ("dt", 0.05), ("ds", 0.1))
+          if k in plan_for_sym(sym).cf_parameter_names}
     rac, cowan = generate_ledge_rac(2, n, sym=sym)
-    declared = _build_ban_from_rac(rac, tendq=1.0, dt=0.05, ds=0.1, sym=sym)
+    declared = _build_ban_from_rac(rac, sym=sym, cf=cf)
     assert declared.symmetry == sym, "the builder must declare the group"
     inferred = dataclasses.replace(declared, symmetry=None)
 
@@ -278,3 +301,133 @@ def test_a_declared_symmetry_inconsistent_with_xham_is_refused():
     lying = dataclasses.replace(ban, symmetry="oh")
     with pytest.raises(ValueError, match="declares symmetry 'oh'"):
         assemble_and_diagonalize_in_memory(cowan, rac, lying)
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B5-4: the plan is the only copy of the operator and channel lists
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("sym,expected", [
+    ("oh", [1.0, 1.0]),
+    ("d4h", [1.0, 1.0, 0.0, 0.0]),
+])
+def test_an_empty_cf_gives_the_documented_defaults(sym, expected):
+    """1 eV of cubic field, no distortion — the values the four sites used.
+
+    The leading 1.0 is HAMILTONIAN, which is never scaled. These are the
+    numbers ``_cache_ban`` and ``_build_ban_from_rac`` produced before the plan
+    owned them, so this pins behaviour preservation and not a new choice.
+    """
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    assert plan_for_sym(sym).xham_values({}) == expected
+
+
+def test_the_xham_order_is_the_operator_order():
+    """XHAM slot i+1 is ``operator_order[i]``, which is what ``assemble`` reads."""
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    plan = plan_for_sym("d4h")
+    values = plan.xham_values({"tendq": 7.0, "dt": 8.0, "ds": 9.0})
+    assert len(values) == len(plan.operator_order) == 4
+    assert values == [1.0, 7.0, 8.0, 9.0]
+    assert plan.operator_order == ("HAMILTONIAN", "10DQ", "DT", "DS")
+
+
+def test_a_crystal_field_key_the_group_does_not_have_is_refused():
+    """Residual 43: Oh has one crystal-field parameter, so ``dt`` is an error."""
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    for bad in ({"dt": 0.1}, {"ds": 0.1}, {"tendq": 1.0, "dt": 0.1}):
+        with pytest.raises(ValueError, match="unknown crystal-field keys"):
+            plan_for_sym("oh").xham_values(bad)
+    plan_for_sym("d4h").xham_values({"tendq": 1.0, "dt": 0.1, "ds": 0.2})   # fine here
+
+
+def test_xham_values_pass_tensors_through_with_their_gradient():
+    """The XHAM is where ``cf`` enters the Hamiltonian, so it must not cast."""
+    import torch
+
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    tendq = torch.tensor(1.3, dtype=torch.float64, requires_grad=True)
+    values = plan_for_sym("oh").xham_values({"tendq": tendq})
+    assert values[1] is tendq
+
+
+def test_the_hybridisation_values_accept_the_three_documented_forms():
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    plan = plan_for_sym("oh")
+    assert plan.hybr_values(None) == [0.0, 0.0]
+    assert plan.hybr_values(2.0) == [2.0, 2.0]
+    assert plan.hybr_values({"t2g": 3.0}) == [0.0, 3.0]        # store order, not dict order
+    assert plan.hybr_values([4.0, 5.0]) == [4.0, 5.0]
+    with pytest.raises(ValueError, match="unknown hybridisation channels"):
+        plan.hybr_values({"b1": 1.0})
+    with pytest.raises(ValueError, match="needs 2 hybridisation values"):
+        plan.hybr_values([1.0, 2.0, 3.0])
+
+
+@pytest.mark.parametrize("sym", ["oh", "d4h"])
+def test_the_generated_rac_records_its_own_group(sym):
+    """WP-B5-4: a consumer holding a generated RAC need not be told the group."""
+    from multitorch.angular.ct_generator import generate_ct_ledge_template
+    from multitorch.angular.rac_generator import generate_ledge_template
+
+    assert generate_ledge_template(2, 8, sym=sym)[0].symmetry == sym
+    assert generate_ct_ledge_template(8, sym=sym)[0].symmetry == sym
+
+
+def test_a_sym_contradicting_the_rac_is_refused():
+    """Disagreement is a caller bug; picking a winner would hide it."""
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.angular.symmetry_plan import plan_for_rac
+
+    rac, _store, _dec = generate_ledge_template(2, 8, sym="d4h")
+    assert plan_for_rac(rac).group == "D4h"              # no sym needed
+    assert plan_for_rac(rac, "d4h").group == "D4h"       # agreeing sym is fine
+    with pytest.raises(ValueError, match="generated for symmetry 'd4h'"):
+        plan_for_rac(rac, "oh")
+
+
+def test_a_parsed_rac_still_needs_a_sym():
+    """A ``.rme_rac`` from a file carries no group, so the keyword stays."""
+    import dataclasses
+
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.angular.symmetry_plan import plan_for_rac
+
+    rac, _store, _dec = generate_ledge_template(2, 8, sym="oh")
+    parsed_like = dataclasses.replace(rac, symmetry=None)
+    assert plan_for_rac(parsed_like, "oh").group == "Oh"
+    with pytest.raises(ValueError, match="does not record which point group"):
+        plan_for_rac(parsed_like)
+
+
+def test_the_from_scratch_path_refuses_the_keys_the_fixture_path_refuses():
+    """Residual 43, at the API where it mattered.
+
+    The same ``calcXAS_cached(cache, cf={'tendq': 1.0, 'dt': 0.1})`` in Oh used
+    to **refuse** on a fixture cache and be **silently accepted and ignored** on
+    a from-scratch cache -- measured: the spectrum came back bit-identical to
+    one computed without ``dt`` at all. Both refuse now, and the two messages
+    are checked together so the asymmetry cannot come back on one side only.
+    """
+    from multitorch.api.calc import (calcXAS_cached, preload_fixture,
+                                     preload_from_scratch)
+
+    for cache in (preload_fixture("Ni", "ii", "oh"), preload_from_scratch("Ni", "ii", "oh")):
+        for cf in ({"tendq": 1.0, "dt": 0.1}, {"ds": 0.1}):
+            with pytest.raises(ValueError, match="crystal-field keys"):
+                calcXAS_cached(cache, cf=cf, nbins=200)
+
+
+def test_the_same_parameter_twice_is_refused():
+    """``_build_ban_from_rac`` takes the legacy keywords or a ``cf`` dict, not both."""
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.api.calc import _build_ban_from_rac
+
+    rac, _store, _dec = generate_ledge_template(2, 8, sym="oh")
+    with pytest.raises(ValueError, match="both in cf and as a keyword"):
+        _build_ban_from_rac(rac, tendq=1.0, cf={"tendq": 2.0}, sym="oh")
