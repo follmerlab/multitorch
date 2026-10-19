@@ -137,9 +137,18 @@ def test_characters_are_orthonormal(name, order, n_classes):
     np.testing.assert_allclose(cols * sizes[:, None], np.eye(g.n_classes), atol=1e-8)
 
 
-@pytest.mark.parametrize("name", TARGETS)
-def test_first_irrep_is_totally_symmetric(name):
-    g = point_group(name)
+@pytest.mark.parametrize("name", [s[0] for s in SINGLE])
+@pytest.mark.parametrize("spinor", [False, True], ids=["single", "double"])
+def test_first_irrep_is_totally_symmetric(name, spinor):
+    """Widened from the 13 WP-B targets to all 22 groups, both covers, in B3.
+
+    It had been asserted only on TARGETS, and T failed it: the three
+    one-dimensional irreps of a complex-conjugate-pair family are labelled
+    ``Aa``/``Ab``/``Ac`` in character-table order, the last sort tiebreaker is
+    the label string, and the all-ones row was not the alphabetically first
+    one. Found by WP-B3 asking every group for its totally symmetric subspace.
+    """
+    g = point_group(name, spinor=spinor)
     np.testing.assert_allclose(g.character_table[0], np.ones(g.n_classes), atol=1e-9)
 
 

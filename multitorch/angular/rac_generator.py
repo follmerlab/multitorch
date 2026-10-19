@@ -722,10 +722,21 @@ def _d4h_op_routes(
     return routes
 
 
-def _d4h_operator_vector_complex(
+def _d4h_operator_vector_butler(
     operator: str, rank: int, target_d4h_irrep: str = 'A1g',
 ) -> np.ndarray:
-    """Build the operator's m-basis vector in ``D^k`` (complex basis).
+    """Butler-route build of the operator's m-basis vector in ``D^k``.
+
+    **No longer the production route** (WP-B3, 2026-10-19): the live path is
+    :func:`_d4h_operator_vector_complex` below, which derives the same vector
+    from the group's totally symmetric invariant subspace and the Ballhausen
+    one-electron convention. This implementation is kept because it is the only
+    *independent* construction of these vectors — Butler-weighted Oh-route sums
+    against a projection, sharing no code — and because its numbers are the
+    ones validated against the Fortran stores. It is the oracle in
+    ``tests/test_angular/test_crystal_field.py``; deleting it would delete the
+    oracle, which is how WP-B2's named oracle came to be dead and wrong (plan
+    residual 38).
 
     Sums Butler-weighted Oh-route contributions. Each contribution is the
     real-SH-basis target-partner (``B_oh_route @ sub_to_target``)
@@ -777,6 +788,44 @@ def _d4h_operator_vector_complex(
         m_z2 = _operator_real_matrix(l, l, rank, op_vec)[l, l]   # m=0 real harmonic = z2
         if abs(m_z2) > 1e-12 and (m_z2 > 0) != (expected > 0):
             op_vec = -op_vec
+    return op_vec
+
+
+def _d4h_operator_vector_complex(
+    operator: str, rank: int, target_d4h_irrep: str = 'A1g',
+) -> np.ndarray:
+    """The operator's m-basis vector in ``D^k``, derived rather than tabulated.
+
+    Same name, signature and numbers as the Butler-route implementation it
+    replaced (agreement measured at <= 4e-14 on vectors of norm 3.3 to 25.1,
+    i.e. ~1.6e-15 relative), so every caller is untouched: the Oh emitters
+    ``_make_oh_op_adds`` and ``_make_oh_op_adds_half``, the D4h emitters, and
+    the four call sites in ``angular/double_group.py``.
+
+    What changed is where the numbers come from. The vector is now the unique
+    element of the totally symmetric subspace of ``D^(rank)`` under the group
+    whose one-electron d matrix is ``sqrt(2l+1)`` times the operator's
+    Ballhausen pattern — see :mod:`multitorch.angular.crystal_field`. That
+    solve fixes direction, scale *and* sign together, so the two hand-placed
+    gauge pins the Butler route needed are gone rather than ported: the
+    per-route ``m = 0`` positivity fix (plan residual 21) and the overall
+    Ballhausen sign pin on the ``z^2`` element.
+
+    The Oh callers pass ``'TENDQ'``, and Oh's cubic operator is numerically the
+    same vector as D4h's (the cubic invariant is the one D4h rank-4 invariant
+    that is also Oh-invariant), so the D4h convention serves both exactly, as
+    it did before.
+    """
+    from multitorch.angular.crystal_field import cf_operator_vector
+
+    if target_d4h_irrep != 'A1g':
+        raise NotImplementedError(
+            f"crystal-field operators are scalars of the group; "
+            f"target_d4h_irrep={target_d4h_irrep!r} is not supported")
+    k, op_vec = cf_operator_vector('D4h', operator)
+    if k != rank:
+        raise ValueError(
+            f"{operator} is a rank-{k} operator, but rank {rank} was requested")
     return op_vec
 
 

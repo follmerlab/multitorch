@@ -731,7 +731,21 @@ class PointGroup:
                 return 0.0
             return float(sub.split("/")[0]) / 2.0 if "/" in sub else float(sub)
 
+        # The totally symmetric irrep leads, always. Without this term the last
+        # tiebreaker is the label string, and for the complex-conjugate-pair
+        # families the a/b/c suffixes are handed out in character-table order,
+        # which need not put the trivial irrep first: T came out
+        # ['Aa', 'Ab', 'Ac'] with the all-ones row *last*. Every group WP-B
+        # targets already had it first, so this changes none of them.
+        trivial = [bool(np.allclose(chi[t], np.ones(self.n_classes), atol=CHARACTER_TOL))
+                   for t in range(len(labels))]
+        if sum(trivial) != 1:
+            raise RuntimeError(
+                f"{self.name}: found {sum(trivial)} totally symmetric irreps, expected "
+                f"exactly one; the character table is not a character table")
+
         order = sorted(range(len(labels)), key=lambda t: (
+            0 if trivial[t] else 1,
             0 if parity[t] != "u" else 1,
             1 if (self.spinor and chi[t, self._two_pi_class].real < 0
                   if self._two_pi_class is not None else False) else 0,
