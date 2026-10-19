@@ -491,8 +491,9 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     x_ref, y_ref = calcXAS_cached(cache, cf=cf, lmct=0.0, delta=100.0, max_gs=40)
 
     # 1. Oh limit. max_gs=40 with T=80 K: the degenerate ground components sit
-    #    in several D4h irreps and differ by ~1e-15 eV, which max_gs=1 counts as
-    #    distinct levels (Known residual 15); a Boltzmann pool is well defined.
+    #    in several D4h irreps and differ by ~1e-15 eV. max_gs=1 counted those
+    #    as distinct levels until residual 15 was closed on 2026-10-18; either
+    #    way a deep pool is well defined, so this is left as it was.
     x_d4h, y_d4h = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h", max_gs=40)
     x_oh, y_oh = calcXAS_from_scratch("Ni", "ii", cf={"tendq": 1.0}, sym="oh", max_gs=40)
     p = spectral_parity(x_d4h, y_d4h, x_oh, y_oh)

@@ -145,3 +145,115 @@ def test_boltzmann_weights_are_unnormalised_pyctm_convention():
     assert lower.item() == 1.0                     # lowest level: weight exactly 1
     assert upper.item() == pytest.approx(math.exp(-gap / (K_B_FLOAT * T)), rel=1e-12)
     assert M.sum().item() > 1.0                    # not normalised by Z
+
+
+# ─────────────────────────────────────────────────────────────
+# Ground-level resolution for the Boltzmann pool (residual 15)
+# ─────────────────────────────────────────────────────────────
+
+def _one_triad(energies, n_final=1):
+    """A BanResult-shaped stand-in with unit amplitude from every ground state."""
+    from types import SimpleNamespace
+    from multitorch._constants import DTYPE
+    eg = torch.tensor(energies, dtype=DTYPE)
+    return SimpleNamespace(triads=[SimpleNamespace(
+        Eg=eg,
+        Ef=torch.full((n_final,), 10.0, dtype=DTYPE),
+        T=torch.ones(len(eg), n_final, dtype=DTYPE),
+    )])
+
+
+def test_level_pool_merges_a_scattered_degeneracy():
+    """Six components of one level, scattered the way eigh scatters them.
+
+    Residual 15: exact-float counting made these six states six levels, so
+    ``max_gs=1`` kept one and the dipole sum rule came out at 1/6 of the
+    ground degeneracy. The measured scatter of a real degenerate manifold is
+    1.7e-8 eV (Fortran stores) to 8.0e-7 eV (Fe3+ d5 from scratch); 3e-7 here.
+    """
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    scattered = [0.0, 1e-7, 1.5e-7, 2e-7, 2.5e-7, 3e-7]
+    _, M, _ = get_sticks_from_banresult(_one_triad(scattered), T=80.0, max_gs=1)
+    assert M.numel() == 6
+    # every member weighted by the level's energy, so each weight is exactly 1
+    assert float(M.sum()) == pytest.approx(6.0, abs=1e-12)
+
+    _, M0, _ = get_sticks_from_banresult(_one_triad(scattered), T=80.0, max_gs=1, level_window=0.0)
+    assert M0.numel() == 1, "level_window=0 must restore exact-float counting"
+
+
+def test_level_pool_resolves_a_real_splitting():
+    """A gap wider than the window stays two levels.
+
+    7.0e-5 eV is the axial splitting of the Fortran ``nid8ct`` ground manifold
+    (0.56 cm-1), the narrowest genuinely distinct pair of ground levels in the
+    2026-10-18 survey, and it must survive the default 1e-5 eV window.
+    """
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    pair = [0.0, 7.0e-5]
+    _, M1, _ = get_sticks_from_banresult(_one_triad(pair), T=80.0, max_gs=1)
+    assert M1.numel() == 1
+    _, M2, _ = get_sticks_from_banresult(_one_triad(pair), T=80.0, max_gs=2)
+    assert M2.numel() == 2
+
+
+def test_level_pool_anchors_rather_than_chains():
+    """A ladder of closely spaced states cannot drift one level arbitrarily wide.
+
+    Each step is 0.6 of the window, so chained grouping would swallow all six
+    into one level spanning 3 windows. Anchoring on the level's first member
+    closes it after the second state, as ``analyze_ground_state`` does.
+    """
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    w = 1e-5
+    ladder = [0.6 * w * i for i in range(6)]
+    _, M, _ = get_sticks_from_banresult(_one_triad(ladder), T=80.0, max_gs=1)
+    assert M.numel() == 2
+
+
+def test_level_pool_weights_by_the_level_not_the_state():
+    """Within a level every member carries the level's Boltzmann factor.
+
+    This is what keeps the dipole sum rule an exact integer: per-state weights
+    over a manifold scattered by 8e-7 eV scatter the sum by ~1e-4 at 80 K,
+    against the sum rule's 1e-6 tolerance. The level above still gets its own
+    weight from its own energy, so D-1's convention is untouched.
+    """
+    import math
+    from multitorch._constants import K_B_FLOAT
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    T, gap = 80.0, 0.01
+    _, M, _ = get_sticks_from_banresult(
+        _one_triad([0.0, 8e-7, gap, gap + 8e-7]), T=T, max_gs=2)
+    weights = sorted(float(x) for x in M)
+    expected = math.exp(-gap / (K_B_FLOAT * T))
+    assert weights[2:] == [pytest.approx(1.0, abs=1e-12)] * 2
+    assert weights[:2] == [pytest.approx(expected, rel=1e-12)] * 2
+
+
+def test_level_pool_rejects_a_negative_window():
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+    with pytest.raises(ValueError, match="non-negative"):
+        get_sticks_from_banresult(_one_triad([0.0]), T=80.0, max_gs=1, level_window=-1e-5)
+
+
+def test_level_pool_is_differentiable_through_the_level_energy():
+    """The pool is a selection, but the weights must still carry a gradient."""
+    from multitorch._constants import DTYPE, K_B_FLOAT
+    from types import SimpleNamespace
+    from multitorch.spectrum.sticks import get_sticks_from_banresult
+
+    T, gap = 80.0, 0.01
+    eg = torch.tensor([0.0, gap], dtype=DTYPE, requires_grad=True)
+    result = SimpleNamespace(triads=[SimpleNamespace(
+        Eg=eg, Ef=torch.full((1,), 10.0, dtype=DTYPE), T=torch.ones(2, 1, dtype=DTYPE))])
+    _, M, _ = get_sticks_from_banresult(result, T=T, max_gs=2)
+    (g,) = torch.autograd.grad(M.sum(), eg)
+    # d/dE_1 exp((E_0 - E_1)/kT) = -exp(...)/kT, and the lowest level's weight is
+    # pinned at 1 by E_min moving with it
+    import math
+    assert float(g[1]) == pytest.approx(-math.exp(-gap / (K_B_FLOAT * T)) / (K_B_FLOAT * T), rel=1e-10)

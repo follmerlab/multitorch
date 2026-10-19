@@ -16,11 +16,13 @@ with ⟨n_h⟩ the configuration-weighted metal hole count
 It caught residual 14 (Cr³⁺ fixture, ratio 4.008 at the template and 4.155 at
 10Dq 0.1: the second PRMULT copy of S1+→S1− was never assembled; fixed) and it
 is what flagged the legacy half-integer dipole (from-scratch ratios 4.5-10.2,
-now integers: WP-B2a-3). Still open:
-
-* residual 15 (exact-float level counting at ``max_gs=1``): an integer, but
-  below the ground degeneracy (Mn²⁺, Fe³⁺ count 2 of 6 near-degenerate
-  components split by µeV), on the fixture and from-scratch paths alike.
+now integers: WP-B2a-3), and it is the oracle that closed residual 15.
+Until 2026-10-18 ``max_gs`` counted exactly equal floats, so the Oh d5 ions
+counted 2 of their 6 near-degenerate ground components and this test xfailed
+for them on the fixture and from-scratch paths alike. ``get_sticks*`` now
+pools by level (:data:`~multitorch.spectrum.sticks.LEVEL_WINDOW_EV`) and
+weights each member by the level's energy, which is what keeps the ratio an
+exact integer instead of one scattered by the intra-level weight spread.
 """
 from __future__ import annotations
 
@@ -33,7 +35,6 @@ from multitorch.analysis.ground_state import configuration_label
 from multitorch.api.calc import calcXAS_cached, preload_fixture, preload_from_scratch
 
 T = 80.0
-RES15 = pytest.mark.xfail(strict=True, reason="plan residual 15: max_gs counts exactly equal levels only")
 
 FIXTURES = [("Ti", "iv"), ("V", "iii"), ("Cr", "iii"), ("Mn", "ii"), ("Fe", "ii"), ("Fe", "iii"), ("Co", "ii"), ("Ni", "ii")]
 REGIMES = {
@@ -84,7 +85,8 @@ def test_fixture_intensity_is_an_integer_multiple_of_the_hole_count(element, val
 
 @pytest.mark.parametrize("element,valence", [
     ("Ti", "iv"), ("V", "iii"), ("Fe", "ii"), ("Co", "ii"), ("Ni", "ii"),
-    pytest.param("Mn", "ii", marks=RES15), pytest.param("Fe", "iii", marks=RES15),
+    # the residual-15 cases: 6 ground components split by 2.4e-8 eV in the store
+    ("Mn", "ii"), ("Fe", "iii"),
 ])
 def test_fixture_counts_every_ground_component(element, valence):
     ratio, degeneracy = _ratio(_fixture(element, valence), **REGIMES["ionic_10dq0.1"])
@@ -127,12 +129,11 @@ SCRATCH = [
 
 
 SCRATCH_IDS = [f"{s[0]}{s[1]}-{s[2]}{'-ct' if s[3] else ''}" for s in SCRATCH]
-# residual 15 again: the Oh d5 ions count 2 of their 6 ground components, which
-# are split by µeV. Their D4h runs are not affected — the tetragonal field lifts
-# the degeneracy to a clean Kramers pair.
-SCRATCH_COUNTS = [pytest.param(*s, marks=RES15)
-                  if (s[0], s[1], s[2]) in {("Mn", "ii", "oh"), ("Fe", "iii", "oh")} else s
-                  for s in SCRATCH]
+# The Oh d5 ions were the residual-15 cases here: 6 ground components split by
+# 2.6e-7 (Mn2+) and 7.9e-7 eV (Fe3+), of which exact-float counting kept 2.
+# Their D4h runs never were -- the tetragonal field lifts the degeneracy to a
+# clean Kramers pair.
+SCRATCH_COUNTS = SCRATCH
 
 
 @pytest.mark.parametrize("element,valence,sym,ct,kw", SCRATCH, ids=SCRATCH_IDS)

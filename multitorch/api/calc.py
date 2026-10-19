@@ -277,6 +277,7 @@ def calcXAS_cached(
     return_sticks: bool = False,
     device: str = "cpu",
     atomic: Optional[dict] = None,
+    level_window: Optional[float] = None,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor],
            Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Calculate XAS from a pre-loaded fixture cache (no file I/O).
@@ -305,7 +306,7 @@ def calcXAS_cached(
         Charge-transfer parameters (fixture caches, and from-scratch caches
         preloaded with ``charge_transfer=True``, which require ``delta``).
     T, beam_fwhm, gamma1, gamma2, med_energy, max_gs, broaden_mode,
-    xmin, xmax, nbins, return_sticks, device
+    xmin, xmax, nbins, return_sticks, device, level_window
         Same as ``calcXAS``.
     atomic : dict, optional
         Absolute per-parameter overrides by configuration label (see
@@ -344,7 +345,7 @@ def calcXAS_cached(
 
     # Extract sticks
     E_sticks, M_sticks, _ = get_sticks_from_banresult(
-        result, T=T, max_gs=max_gs, device=device,
+        result, T=T, max_gs=max_gs, device=device, level_window=level_window,
     )
 
     if E_sticks.numel() == 0:
@@ -728,6 +729,7 @@ def calcXAS(
     return_sticks: bool = False,
     device: Optional[str] = None,
     ban_output_path: Optional[str] = None,
+    level_window: Optional[float] = None,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """
     Calculate an X-ray absorption spectrum.
@@ -844,6 +846,7 @@ def calcXAS(
             max_gs=max_gs, broaden_mode=broaden_mode,
             xmin=xmin, xmax=xmax, nbins=nbins,
             return_sticks=return_sticks, device=device,
+            level_window=level_window,
         )
 
     # Full PyTorch pipeline (Phase 5)
@@ -860,6 +863,7 @@ def calcXAS(
         max_gs=max_gs, broaden_mode=broaden_mode,
         xmin=xmin, xmax=xmax, nbins=nbins,
         return_sticks=return_sticks, device=device,
+        level_window=level_window,
     )
 
 
@@ -877,19 +881,29 @@ def _calcXAS_from_ban(
     nbins: int = 2000,
     return_sticks: bool = False,
     device: str = "cpu",
+    level_window: Optional[float] = None,
 ):
     """
     Compute XAS spectrum from a pre-computed .ban_out file.
 
     This is the primary path for Phase 5 validation — reads Fortran output
     and applies the PyTorch spectrum layer (Phase 1).
+
+    ``level_window`` is the ground-level resolution of the Boltzmann pool
+    (:data:`~multitorch.spectrum.sticks.LEVEL_WINDOW_EV`). Pass ``0.0`` to
+    reproduce a pyctm reference spectrum exactly: pyctm counts levels by exact
+    float equality, so for an ion whose ground level is scattered within the
+    window — the d5 ions' 6-fold sextet, split by 2.4e-8 eV in the stores — its
+    pool holds fewer components than ours and its total intensity is lower by
+    that ratio (exactly 3x for Mn2+ and Fe3+). Residual 15 and 36.
     """
     from multitorch.io.read_oba import read_ban_output
 
     ban = read_ban_output(ban_path)
 
     # Get Boltzmann-weighted sticks
-    E_sticks, M_sticks, _ = get_sticks(ban, T=T, max_gs=max_gs, device=device)
+    E_sticks, M_sticks, _ = get_sticks(ban, T=T, max_gs=max_gs, device=device,
+                                       level_window=level_window)
 
     if E_sticks.numel() == 0:
         raise ValueError(f"No transitions found in {ban_path}")
@@ -1035,6 +1049,7 @@ def _calcXAS_phase5(
     xmin=None, xmax=None, nbins: int = 2000,
     return_sticks: bool = False,
     device: str = "cpu",
+    level_window: Optional[float] = None,
 ):
     """Phase 5 pure-PyTorch XAS pipeline using fixture templates.
 
@@ -1078,7 +1093,7 @@ def _calcXAS_phase5(
 
     # Step 6: Extract stick spectrum
     E_sticks, M_sticks, _ = get_sticks_from_banresult(
-        result, T=T, max_gs=max_gs, device=device,
+        result, T=T, max_gs=max_gs, device=device, level_window=level_window,
     )
 
     if E_sticks.numel() == 0:

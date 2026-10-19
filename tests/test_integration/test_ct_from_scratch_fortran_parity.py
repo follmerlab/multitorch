@@ -135,15 +135,13 @@ HALF_D4H = [("Cr", "iii", 3, 1.2, {"eg": 2.0, "t2g": 1.0}),
             ("Fe", "iii", 5, 1.1, {"eg": 2.0, "t2g": 1.0}),
             ("Co", "ii", 7, 1.0, {"eg": 1.8, "t2g": 0.9})]
 HALF_D4H_IDS = [f"{c[0]}{c[1]}-d4h-ct" for c in HALF_D4H]
-# residual 15 again: the Oh d5 ions' six ground components are split by µeV, and
-# the Oh and D4h labelings of the same manifold do not round them into the same
-# lowest "level", so a max_gs=1 pool takes different components on the two sides.
-# Cr3+ and Co2+ are exact; Fe3+ measured cosine 0.99969 on 2026-09-24. That
-# shortfall is bounded on both sides rather than carried as a strict xfail: the
-# lower bound catches a regression (a strict xfail still "passes" at cosine
-# 0.5), the upper bound says when residual 15 has been fixed.
-EXACT, RES15_FE = (0.99999, 1.0), (0.9996, 0.99999)
-HALF_D4H_SPECTRUM = [c + (RES15_FE if (c[0], c[1]) == ("Fe", "iii") else EXACT,) for c in HALF_D4H]
+# All three ions are exact since residual 15 was closed on 2026-10-18: Fe3+
+# sat at cosine 0.99969 because a max_gs=1 pool took 2 of its 6 near-degenerate
+# ground components on the Oh side and a different 2 on the D4h side. The pool
+# is now cut at level boundaries, so both sides take all six (measured
+# 0.99999999999). The two-sided bound stays: the ceiling is what reported the
+# fix, and the floor still catches a regression a strict xfail would tolerate.
+HALF_D4H_SPECTRUM = [c + ((0.99999, 1.0),) for c in HALF_D4H]
 
 
 def _oh_limit(element, valence, n, tendq, hyb):
@@ -179,14 +177,17 @@ def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(
         element, valence, n, tendq, hyb, cosine_bounds):
     """Spectral shape of the Oh limit, from the single lowest ground level.
 
-    ``max_gs=1``, not the ``POOL`` of the Fortran-parity tests, because the pool
-    is a truncation by *level* and D4h splits each Oh level in two: at
-    ``max_gs=40`` the two sides hold different physical states and the cosine
-    falls to ~0.70 for the long-validated integer ions as well (V³⁺ d²,
-    measured 2026-09-24), which is residual 15/D-1 and not a statement about
-    this path. Absolute intensity is deliberately not compared for the same
-    reason — the Cr³⁺ Oh side counts two components where the D4h side counts
-    one, an exact factor 2. The dipole sum rule pins the absolute scale instead.
+    ``max_gs=1``, the shallowest pool, so that this test says as little as
+    possible about the pool and as much as possible about the CT path. The
+    reasons it used to *have* to be ``max_gs=1`` and shape-only are both gone:
+    exact-float level counting let the two sides hold a different number of
+    ground components (residual 15, closed 2026-10-18), which is what held
+    Fe³⁺ at 0.99969 and what made the Cr³⁺ Oh side count two components
+    against the D4h side's one, an exact factor 2 on intensity. A pool cut at
+    level boundaries removes both;
+    :func:`~tests.test_integration.test_from_scratch_fortran_parity.test_oh_and_d4h_agree_at_every_pool_depth`
+    now does the deep-pool, absolute-intensity version of this comparison
+    without charge transfer. The dipole sum rule pins the absolute scale here.
     """
     fortran, scratch, _, _ = _oh_limit(element, valence, n, tendq, hyb)
     pool = dict(T=80.0, max_gs=1)
@@ -198,8 +199,8 @@ def test_half_integer_d4h_charge_transfer_reproduces_the_oh_limit_spectrum(
     assert p.cosine > lo, p
     if ceiling < 1.0:
         assert p.cosine < ceiling, (
-            f"cosine {p.cosine} now clears {ceiling}: residual 15 looks fixed for this "
-            f"case, tighten its bounds to EXACT")
+            f"cosine {p.cosine} now clears {ceiling}: this case is more exact than its "
+            f"bound records, so tighten the bound and note what changed")
 
 
 @pytest.mark.parametrize("element,valence,n,tendq,hyb", HALF_D4H, ids=HALF_D4H_IDS)

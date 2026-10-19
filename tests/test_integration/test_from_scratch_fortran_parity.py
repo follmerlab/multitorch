@@ -9,8 +9,11 @@ input deck value to ≤ 1.3e-5 eV). Stick energies (relative to the lowest brigh
 stick), absolute stick intensities and the broadened spectrum must agree.
 
 D4h at dt = ds = 0 is the Oh limit and is checked against the same Oh fixture;
-its degenerate ground components sit in several D4h irreps, so both sides use
-a T = 80 K Boltzmann pool (Known residual 15: max_gs=1 is ill-posed there).
+its degenerate ground components sit in several D4h irreps, which exact-float
+level counting could not pool consistently with Oh's (residual 15, closed
+2026-10-18 by the level window in ``spectrum/sticks.py``). Both sides use a
+T = 80 K pool, and the two groups are now compared at every depth and on
+absolute intensity by :func:`test_oh_and_d4h_agree_at_every_pool_depth`.
 
 History: cosine 0.47 before 2026-09-10 (audit S3/S4/S5/S7); exact for Ni d⁸
 only until 2026-09-13, when the excited Hamiltonian was put in the valence-term
@@ -121,6 +124,107 @@ def test_half_integer_d4h_reproduces_the_oh_limit(name, element, valence, n, ten
     :func:`test_half_integer_d4h_away_from_the_oh_limit_splits_the_levels`.
     """
     _assert_matches_fixture(name, element, valence, n, tendq, "d4h")
+
+
+def _oh_vs_d4h_limit(name, n, tendq, max_gs, window):
+    """One ion's Oh and D4h-at-dt=ds=0 spectra for the same pool, same grid.
+
+    Aligned on the lowest *bright* stick, as :func:`_assert_matches_fixture` is:
+    D4h splits the final manifold into more irreps than Oh, so it lists
+    ground-final pairs Oh does not have, and the lowest stick *overall* is one
+    of those dark pairs. Aligning on it shifts the whole D4h spectrum by 1e-2
+    to 3e-2 eV and costs 1e-3 to 0.9 of cosine with nothing physical behind it
+    — which is where the "cosine 0.70 / 0.6987" figures in residual 15 and the
+    WP-B2a test comments came from (measured 2026-10-18; see residual 36).
+    """
+    sticks = {}
+    for sym, cf in (("oh", dict(tendq=tendq)), ("d4h", dict(tendq=tendq, dt=0.0, ds=0.0))):
+        rac, cowan = generate_ledge_rac(2, n, sym=sym, **_fixture_parameters(name))
+        result = assemble_and_diagonalize_in_memory(
+            cowan, rac, _build_ban_from_rac(rac, sym=sym, **cf))
+        sticks[sym] = _bright(*get_sticks_from_banresult(
+            result, T=80.0, max_gs=max_gs, level_window=window)[:2])
+    (Eo, Mo), (Ed, Md) = sticks["oh"], sticks["d4h"]
+    hi = float(max((Eo - Eo.min()).max(), (Ed - Ed.min()).max())) + 3.0
+    p = spectral_parity(*_spectrum(Ed - Ed.min(), Md, hi), *_spectrum(Eo - Eo.min(), Mo, hi))
+    return p, float(Md.sum() / Mo.sum())
+
+
+@pytest.mark.parametrize("max_gs", [1, 10, 40])
+@pytest.mark.parametrize("name,element,valence,n,tendq", IONS + HALF_IONS,
+                         ids=[i[0] for i in IONS + HALF_IONS])
+def test_oh_and_d4h_agree_at_every_pool_depth(name, element, valence, n, tendq, max_gs):
+    """Oh vs D4h at dt = ds = 0 on the same Boltzmann pool: shape *and* scale.
+
+    This is what residual 15 blocked. The two groups label one physical
+    manifold differently — an Oh Gamma8 level is one root of a 4-dimensional
+    irrep, in D4h it is two roots of 2-dimensional ones — so a pool truncated
+    by exact-float level counting held a different *number* of states on the
+    two sides, and the comparison could only ever be made at one depth and on
+    shape alone. With the pool cut at level boundaries the two sides hold the
+    same states at every depth (checked directly in
+    :func:`test_level_pooling_makes_the_two_groups_pool_the_same_states`), so
+    absolute intensity is compared here too.
+    """
+    p, scale = _oh_vs_d4h_limit(name, n, tendq, max_gs, None)
+    assert p.cosine > 0.999999, (name, max_gs, p)
+    assert scale == pytest.approx(1.0, rel=1e-9), (name, max_gs, scale)
+
+
+@pytest.mark.parametrize("name,n,tendq,expected", [("v3_d2_oh", 2, 1.8, 0.5),
+                                                   ("ni2_d8_oh", 8, 1.0, 2.0 / 3.0)])
+def test_exact_float_level_counting_loses_part_of_the_degenerate_ground_level(name, n, tendq, expected):
+    """The injected bug: residual 15, as an exact rational factor on intensity.
+
+    Not decoration. At ``level_window=0`` — what ``get_sticks*`` did until
+    2026-10-18 — a ``max_gs=1`` pool keeps whichever components of the ground
+    level happen to come out of ``eigh`` as the same float, and D4h scatters a
+    level that Oh does not. V3+ d2 keeps 1 of its 2 components in D4h and Ni2+
+    d8 keeps 2 of its 3, so the D4h/Oh intensity ratio is exactly 1/2 and 2/3
+    — the "keeps 2/3 of the degenerate ground level" of residual 15, measured.
+    Shape is untouched (cosine 1.0000000 either way), so only the scale sees
+    it. If someone retires the level window, this fails instead of the
+    comparison quietly going back to counting different states.
+    """
+    p0, scale0 = _oh_vs_d4h_limit(name, n, tendq, 1, 0.0)
+    assert p0.cosine > 0.999999, p0
+    assert scale0 == pytest.approx(expected, rel=1e-9)
+    _, scale = _oh_vs_d4h_limit(name, n, tendq, 1, None)
+    assert scale == pytest.approx(1.0, rel=1e-9)
+
+
+@pytest.mark.parametrize("name,n,tendq", [("ni2_d8_oh", 8, 1.0), ("co2_d7_oh", 7, 1.0),
+                                          ("fe3_d5_oh", 5, 1.2)])
+@pytest.mark.parametrize("max_gs", [10, 40])
+def test_level_pooling_makes_the_two_groups_pool_the_same_states(name, n, tendq, max_gs):
+    """Oh and D4h must cut the pool at the same physical depth.
+
+    The invariant behind the test above, stated without the spectrum: the same
+    number of levels down to the same energy, and the same number of *states*
+    once each is weighted by its irrep dimension. Measured at ``max_gs=40``:
+    Ni2+ 20 levels / 7.700447 eV on both sides, Co2+ 39 / 7.831292, Fe3+ 83 /
+    6.076738.
+    """
+    from multitorch.spectrum.sticks import LEVEL_WINDOW_EV
+
+    depths, counts = {}, {}
+    for sym, cf in (("oh", dict(tendq=tendq)), ("d4h", dict(tendq=tendq, dt=0.0, ds=0.0))):
+        rac, cowan = generate_ledge_rac(2, n, sym=sym, **_fixture_parameters(name))
+        result = assemble_and_diagonalize_in_memory(
+            cowan, rac, _build_ban_from_rac(rac, sym=sym, **cf))
+        dims = {ir.name: ir.dim for ir in rac.irreps if ir.kind == "GROUND"}
+        states = sorted((float(e), dims[t.gs_sym])
+                        for t in {t.gs_sym: t for t in result.triads}.values()
+                        for e in t.Eg)
+        anchors = [states[0][0]]
+        for e, _ in states[1:]:
+            if e - anchors[-1] > LEVEL_WINDOW_EV:
+                anchors.append(e)
+        depths[sym] = anchors[min(max_gs, len(anchors)) - 1] - anchors[0]
+        counts[sym] = sum(d for e, d in states if e - states[0][0] <= depths[sym] + LEVEL_WINDOW_EV)
+
+    assert depths["d4h"] == pytest.approx(depths["oh"], abs=1e-9), depths
+    assert counts["d4h"] == counts["oh"], counts
 
 
 @pytest.mark.parametrize("name,element,valence,n,tendq", HALF_IONS, ids=[i[0] for i in HALF_IONS])
