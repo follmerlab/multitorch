@@ -3,15 +3,10 @@
 **No longer a status sentinel**, despite the file name. The header used to say
 every test here was xfail-marked until the port landed; the port landed, the
 xfails were dropped, and nothing in this file has been xfail-marked for a long
-time. These 31 tests are the contract for the D4h dispatcher: Butler
+time. These tests are the contract for the D4h dispatcher: Butler
 coefficients against pyctm, branching, partner bases and canonical signs,
 ``nid8``/``nid8ct`` block and irrep sets, TRANSI singular values, the Oh limit
 at dt = ds = 0, and the half-integer path.
-
-Worth knowing while reading it: the four ``test_d4h_cf_operator_recipe_*``
-tests cover ``symmetry.d4h_cf_operator_recipe``, which has **no production call
-sites** -- WP-B3 replaced that layer, and this file is the only caller left.
-They pin dead code rather than behaviour (plan residual 41).
 
 The phased-plan file this used to cite, ``~/.claude/plans/lexical-toasting-
 kahan.md``, no longer exists; the current plan is
@@ -142,46 +137,6 @@ def test_d4h_branching_parity_for_odd_L():
     # J=1 is T1u in Oh → A2u + Eu in D4h. All irreps must be ungerade.
     for irr in j1:
         assert irr.endswith('u'), f"J=1 should produce ungerade irreps only, got {irr}"
-
-
-def test_d4h_cf_operator_recipe_tendq():
-    """TENDQ recipe: single rank-4 entry via Oh A1, scalar in D4h A1g."""
-    from multitorch.angular.symmetry import d4h_cf_operator_recipe
-    recipe = d4h_cf_operator_recipe('TENDQ')
-    assert len(recipe) == 1
-    rank, oh, d4h, coeff = recipe[0]
-    assert rank == 4
-    assert oh == 'A1'
-    assert d4h == 'A1g'
-    assert coeff == pytest.approx(6.0 * math.sqrt(30.0) / 10.0, rel=1e-12)
-
-
-def test_d4h_cf_operator_recipe_dt():
-    """DT recipe: two rank-4 entries (Oh A1 and Oh E paths), both → D4h A1g."""
-    from multitorch.angular.symmetry import d4h_cf_operator_recipe
-    recipe = d4h_cf_operator_recipe('DT')
-    assert len(recipe) == 2
-    paths = {(rank, oh, d4h): coeff for rank, oh, d4h, coeff in recipe}
-    assert paths[(4, 'A1', 'A1g')] == pytest.approx(-7.0 / 2.0 * math.sqrt(30.0), rel=1e-12)
-    assert paths[(4, 'E', 'A1g')] == pytest.approx(-5.0 / 2.0 * math.sqrt(42.0), rel=1e-12)
-
-
-def test_d4h_cf_operator_recipe_ds():
-    """DS recipe: single rank-2 entry via Oh E path, → D4h A1g."""
-    from multitorch.angular.symmetry import d4h_cf_operator_recipe
-    recipe = d4h_cf_operator_recipe('DS')
-    assert len(recipe) == 1
-    rank, oh, d4h, coeff = recipe[0]
-    assert rank == 2
-    assert oh == 'E'
-    assert d4h == 'A1g'
-    assert coeff == pytest.approx(-math.sqrt(70.0), rel=1e-12)
-
-
-def test_d4h_cf_operator_recipe_unknown_raises():
-    from multitorch.angular.symmetry import d4h_cf_operator_recipe
-    with pytest.raises(ValueError, match="Unknown D4h CF operator"):
-        d4h_cf_operator_recipe('NOPE')
 
 
 def test_oh_to_d4h_subduction_matrix_dimensions():

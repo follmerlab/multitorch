@@ -72,7 +72,7 @@ All on `origin/main`, validated:
 | Helper | File:line | Validation |
 |---|---|---|
 | `D4H_BRANCHES_BY_OPERATOR` (TENDQ/DT/DS) | `multitorch/angular/symmetry.py:97` | `test_d4h_butler_coefficients_match_pyctm` passes verbatim against `pyctm/write_RAC.py:gen_X400_X420_X220` |
-| `d4h_cf_operator_recipe(operator)` | `multitorch/angular/symmetry.py:201` | `test_d4h_cf_operator_recipe_{tendq,dt,ds,unknown_raises}` |
+| ~~`d4h_cf_operator_recipe(operator)`~~ | **deleted 2026-10-19** (WP-B3 replaced the layer; no production call sites) | was `test_d4h_cf_operator_recipe_{tendq,dt,ds,unknown_raises}`, deleted with it |
 | `_irrep_vector(k, op_irrep)` | `multitorch/angular/point_group.py:949` | A1-reduction matches `_a1_vector` for k=4 |
 | `oh_coupling_coefficients_for_op` (broken trace approach) | `multitorch/angular/point_group.py:1513` | Returns 0 for non-scalar ops — superseded by basis rotation |
 | `oh_to_d4h_subduction_matrix(oh_irrep)` | `multitorch/angular/symmetry.py:227` | All 5 g-irreps tested; orthonormality + dimensions + determinism |

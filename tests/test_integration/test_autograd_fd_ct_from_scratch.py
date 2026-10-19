@@ -31,11 +31,16 @@ SYSTEMS = {
                                      **{"gs_lh.F2_11": 7.5, "ex_lh.G1_12": 3.6})),
     # odd electron count (WP-B2a-5): the same leaves through the half-integer
     # double-group emitters, whose coefficients are constants of the angular
-    # problem and must not intercept the gradient. Cr3+ d3 carries the
+    # problem and must not intercept the gradient. Co2+ d7 carries the
     # multi-copy (PRMULT) triad Gamma8 x T1u x Gamma8, listed twice in the
-    # .ban, which no D4h half-integer case has.
-    "Cr_oh": ("Cr", "iii", "oh", dict(tendq=1.2, delta=3.0, u=1.0, eg=2.0, t2g=1.0, slater=0.8, soc=1.0,
-                                      **{"gs_lh.F2_11": 8.0, "ex_lh.G1_12": 3.9})),
+    # .ban, which no D4h half-integer case has -- measured, not assumed:
+    # ``test_the_half_integer_oh_case_still_lists_a_multi_copy_triad`` below.
+    # It is d7, not the d3 (Cr3+) this case ran until 2026-10-19: the same
+    # seven distinct triads with the same repeated one, through the same
+    # emitters, but a far smaller final block. That one case was 121 s, the
+    # slowest test in the suite.
+    "Co_oh": ("Co", "ii", "oh", dict(tendq=1.2, delta=3.0, u=1.0, eg=2.0, t2g=1.0, slater=0.8, soc=1.0,
+                                     **{"gs_lh.F2_11": 8.0, "ex_lh.G1_12": 3.9})),
     # d7, not the d3 this case used to run: identical triad structure (the same
     # six triads, both D4h dipole actors, both ground irreps) through the same
     # emitters, with a 219- instead of a 4098-dimensional final block. That one
@@ -82,3 +87,30 @@ def test_charge_transfer_autograd_matches_finite_difference(system):
         assert torch.isfinite(g), name
         assert abs(fd) > 1e-6, (name, fd)   # every leaf moves the spectrum
         assert abs(float(g) - fd) <= REL_TOL * abs(fd), (name, float(g), fd)
+
+
+def test_the_half_integer_oh_case_still_lists_a_multi_copy_triad():
+    """The odd-n Oh case must keep covering the PRMULT pair, whichever ion it is.
+
+    ``Co_oh`` replaced ``Cr_oh`` here for cost, not for coverage: the point of
+    the odd-n Oh entry is that Gamma8 x T1u x Gamma8 carries **two** dipole
+    channels and is therefore listed twice in the ``.ban``, so the assembler
+    builds both PRMULT copies and the gradient has to flow through both. No
+    D4h half-integer case has such a triad. This asserts the property of the
+    ion the parametrisation actually names, so re-pointing it again at an ion
+    without a repeated triad fails here instead of silently losing the
+    coverage.
+    """
+    import collections
+
+    found = []
+    for name, (element, valence, sym, _) in SYSTEMS.items():
+        if sym != "oh":
+            continue
+        triads = _cache(element, valence, sym).ban.triads
+        if not any("/" in label for label in triads[0]):
+            continue                      # integer J (Fe2+ d6), not this case
+        found.append(name)
+        repeated = {t: n for t, n in collections.Counter(triads).items() if n > 1}
+        assert repeated == {("3/2+", "1-", "3/2-"): 2}, (name, repeated)
+    assert found, "the odd-n Oh autograd case has gone missing"

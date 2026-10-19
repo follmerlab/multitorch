@@ -557,66 +557,6 @@ def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
     return sorted(result.items(), key=lambda kv: list(D4H_TO_BUTLER).index(kv[0]))
 
 
-def d4h_cf_operator_recipe(operator: str) -> List[Tuple[int, str, str, float]]:
-    """Return the COWAN-block recipe for one D4h crystal-field operator.
-
-    Each entry in the returned list says: "to assemble this D4h operator's
-    contribution, use the rank-K SHELL coupling for Oh single-group irrep
-    `oh_irrep`, route the result to D4h irrep `d4h_irrep`, and scale by
-    `branch_coeff` (the value when the atomic parameter equals 1.0)."
-
-    The atomic parameter scalar (tendq, dt, or ds) is applied separately
-    via the BAN XHAM mechanism, so the branch coefficients here are
-    parameter-independent.
-
-    Parameters
-    ----------
-    operator : {'TENDQ', 'DT', 'DS'}
-        The D4h CF operator name.
-
-    Returns
-    -------
-    list of (rank, oh_irrep, d4h_irrep, branch_coeff) tuples
-        rank: O3 rank (4 for tendq/dt, 2 for ds)
-        oh_irrep: Oh single-group irrep label without parity ('A1' or 'E')
-        d4h_irrep: D4h irrep label with parity ('A1g', 'Eg', etc.)
-        branch_coeff: unit-parameter Butler branch coefficient
-    """
-    if operator not in D4H_BRANCHES_BY_OPERATOR:
-        raise ValueError(
-            f"Unknown D4h CF operator {operator!r}; "
-            f"available: {sorted(D4H_BRANCHES_BY_OPERATOR)}"
-        )
-
-    # O3-irrep label → operator rank (the L value of the rank-K spherical
-    # tensor). Butler labels carry parity, but for CF (always gerade) the
-    # parity is +.
-    o3_to_rank = {'0+': 0, '2+': 2, '4+': 4}
-
-    # The middle slot of the Butler key (Oh_irrep) is in J-numbered Butler
-    # form ('0+' = A1, '2+' = E in the relevant decomposition). Map to the
-    # standard Oh single-group label that oh_coupling_coefficients returns.
-    # NOTE: For the CF operators in this table only A1 and E paths appear;
-    # the trickier '4+' slot mapping is unused here.
-    butler_oh_to_label = {'0+': 'A1', '2+': 'E'}
-
-    # All CF operators are scalar (A1g of D4h) — they're invariant under
-    # D4h symmetry operations. The BRANCH lines in pyctm/write_RAC.py all
-    # target '0+' on the D4h side (= D4h A1g). What differs between
-    # operators is the rank K and the Oh-irrep route.
-    recipe: List[Tuple[int, str, str, float]] = []
-    branches = D4H_BRANCHES_BY_OPERATOR[operator]
-    for (o3_irr, oh_irr_butler, d4h_irr_butler), coeff in branches.items():
-        rank = o3_to_rank[o3_irr]
-        oh_irr = butler_oh_to_label[oh_irr_butler]
-        assert d4h_irr_butler == '0+', (
-            f"Unexpected D4h target {d4h_irr_butler!r} in {operator} table; "
-            "all CF operators should target D4h A1g (Butler '0+')."
-        )
-        recipe.append((rank, oh_irr, 'A1g', coeff))
-    return recipe
-
-
 def d4h_branching(J) -> Dict[str, int]:
     """Compute the O3 → D4h branching for angular momentum J.
 
