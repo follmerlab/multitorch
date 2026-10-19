@@ -1340,6 +1340,7 @@ def calcXAS_from_scratch(
     cf: dict,
     slater: float = 0.8,
     soc: float = 1.0,
+    delta=None, u=None, lmct=None, mlct=None,
     T: float = 80.0,
     beam_fwhm: float = 0.2,
     gamma1: float = 0.2,
@@ -1355,6 +1356,7 @@ def calcXAS_from_scratch(
     zeta_method: str = "blume_watson",
     sym: str = "oh",
     atomic: Optional[dict] = None,
+    level_window: Optional[float] = None,
 ) -> Union[Tuple[torch.Tensor, torch.Tensor], Tuple[torch.Tensor, torch.Tensor, torch.Tensor]]:
     """Calculate an L-edge XAS spectrum from scratch — no Fortran fixture files.
 
@@ -1366,10 +1368,13 @@ def calcXAS_from_scratch(
       5. Hamiltonian assembly + diagonalization
       6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
 
-    Single configuration (no charge transfer); ``sym`` 'oh' or 'd4h', for
-    integer and half-integer J alike (WP-B2a). Differentiable in ``slater``, ``soc``, every ``atomic``
-    override and the ``cf`` entries: pass tensors with ``requires_grad=True``.
-    The HFS radial part is a constant (WP-A7).
+    ``sym`` 'oh' or 'd4h', for integer and half-integer J alike (WP-B2a).
+    Passing any of ``delta``/``u``/``lmct``/``mlct`` adds the ligand-hole
+    configurations, i.e. preloads with ``charge_transfer=True``; without them
+    this is a single-configuration calculation. Differentiable in ``slater``,
+    ``soc``, the charge-transfer parameters, every ``atomic`` override and the
+    ``cf`` entries: pass tensors with ``requires_grad=True``. The HFS radial
+    part is a constant (WP-A7).
 
     Parameters
     ----------
@@ -1385,6 +1390,15 @@ def calcXAS_from_scratch(
         configurations (default 0.8).
     soc : float or torch.Tensor
         Spin-orbit reduction: fraction of the HFS ζ (default 1.0).
+    delta, u, lmct, mlct : optional
+        Charge-transfer parameters (eV). Passing any of them switches the
+        preload to ``charge_transfer=True`` and ``delta`` becomes required:
+        Δ is the configuration energy separation, ``u`` the core-hole
+        potential difference U_cv − U_vv, and ``lmct`` the ligand-to-metal
+        hybridisation, either one value for every channel or a dict keyed by
+        channel (``eg``/``t2g`` in Oh, ``b1``/``a1``/``b2``/``e`` in D4h).
+        ``mlct`` has no configuration to act on yet and is refused. The
+        ``atomic`` labels become ``'gs'``, ``'gs_lh'``, ``'ex'``, ``'ex_lh'``.
     T : float
         Temperature in Kelvin.
     beam_fwhm, gamma1, gamma2 : float
@@ -1415,6 +1429,8 @@ def calcXAS_from_scratch(
         (``'gs'``: ``F2dd``, ``F4dd``, ``zeta_d``; ``'ex'``: ``F2dd``, ``F4dd``,
         ``F2pd``, ``G1pd``, ``G3pd``, ``zeta_p``, ``zeta_d``), e.g.
         ``{'ex': {'G1pd': torch.tensor(5.0, requires_grad=True)}}``.
+    level_window : float, optional
+        Degeneracy window (eV) for the Boltzmann pool, as in ``calcXAS``.
 
     Returns
     -------
@@ -1427,12 +1443,20 @@ def calcXAS_from_scratch(
     # HFS constants + parameter-free angular structure (preload), then the
     # parameter-linear contraction H = Σ p_i O_i (p_i = HFS_i × slater|soc or
     # an `atomic` override; tensors keep their gradients).
-    cache = preload_from_scratch(element, valence, sym, zeta_method)
+    charge_transfer = any(x is not None for x in (delta, u, lmct, mlct))
+    if charge_transfer and delta is None:
+        # Checked here rather than in `_cache_ban` so the message arrives
+        # before the HFS + angular preload, which is the expensive part.
+        raise ValueError("charge-transfer from-scratch caches need delta (eV)")
+    cache = preload_from_scratch(element, valence, sym, zeta_method,
+                                 charge_transfer=charge_transfer)
     return calcXAS_cached(
-        cache, cf=cf, slater=slater, soc=soc, T=T, beam_fwhm=beam_fwhm,
+        cache, cf=cf, slater=slater, soc=soc,
+        delta=delta, u=u, lmct=lmct, mlct=mlct, T=T, beam_fwhm=beam_fwhm,
         gamma1=gamma1, gamma2=gamma2, med_energy=med_energy, max_gs=max_gs,
         broaden_mode=broaden_mode, xmin=xmin, xmax=xmax, nbins=nbins,
         return_sticks=return_sticks, device=device, atomic=atomic,
+        level_window=level_window,
     )
 
 
