@@ -1998,8 +1998,13 @@ def generate_ledge_template(
     #   PARA (A2u, dim=1, Butler '^0-'): ADD ∝ √(dim_A2u / dim_T1u) = √(1/3)
     # Separate TRANSI blocks are created for each geometry so the assembler
     # can match triads by actor symmetry.
-    PERP_FACTOR = math.sqrt(2.0 / 3.0)  # √(dim_Eu / dim_T1u)
-    PARA_FACTOR = math.sqrt(1.0 / 3.0)  # √(dim_A2u / dim_T1u)
+    # Derived, not written out: the dipole's components under the group and
+    # their isotropic weights sqrt(d / 3) come from
+    # ``operator_subduction.dipole_geometries`` (WP-B4), which reproduces the
+    # PERP_FACTOR = sqrt(2/3) and PARA_FACTOR = sqrt(1/3) that used to be
+    # literals here, and generalises to groups that need three geometries
+    # rather than two (D2h, C2v) instead of two hard-coded rows.
+    from multitorch.angular.operator_subduction import dipole_geometries
 
     # Per-D4h-irrep TRANSI emission via _make_d4h_dipole_adds.
     # Operates on the D4h-Butler labels emitted by the per-D4h-irrep
@@ -2022,10 +2027,8 @@ def generate_ledge_template(
                     continue
                 n_ket = sum(e[4] for e in ex_filtered)
                 ex_butler = butler[d4h_ex]
-                for op_d4h_target, op_butler, geometry, factor in (
-                    ('Eu',  '1-',  'PERP', PERP_FACTOR),
-                    ('A2u', '^0-', 'PARA', PARA_FACTOR),
-                ):
+                for op_d4h_target, geometry, factor in dipole_geometries('D4h'):
+                    op_butler = D4H_TO_BUTLER[op_d4h_target]
                     if is_half_gs:
                         # one block per invariant of (Γ_gs, Γ_op, Γ_ex); the
                         # PERP/PARA factor is already inside the projection
