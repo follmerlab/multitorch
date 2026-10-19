@@ -32,6 +32,7 @@ import pytest
 from multitorch.angular.finite_group import (
     Element, GENERATORS, INVERSION, PointGroup, point_group, quaternion,
     quaternion_product, quaternion_to_matrix, matrix_to_quaternion,
+    wigner_from_quaternion,
 )
 from multitorch.angular.point_group import (
     OH_DOUBLE_IRREP_DIM, OH_IRREP_DIM, octahedral_rotations, oh_branching,
@@ -399,3 +400,220 @@ def test_wrong_so3_character_would_break_the_branching_guard():
     with mock.patch.object(PointGroup, "so3_character", return_value=bad):
         with pytest.raises(RuntimeError, match="non-integer|spans"):
             g.branching(2, parity=+1)
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B2: irrep matrices and O(3) -> G subduction
+# ─────────────────────────────────────────────────────────────
+
+def _isotypic(S, labels, dim, basis=None):
+    """Per-irrep projector from a subduction, which is gauge-free."""
+    from collections import defaultdict
+    M = S if basis is None else basis @ S
+    out = defaultdict(lambda: np.zeros((dim, dim), dtype=np.complex128))
+    for k, (irrep, _copy, _mu) in enumerate(labels):
+        v = M[:, k:k + 1]
+        out[irrep] += v @ v.conj().T
+    return out
+
+
+@pytest.mark.parametrize("J", [1, 2, 3, 4, 5, 6])
+def test_wigner_from_quaternion_matches_the_package_convention(J):
+    """The exponential map, conjugated into the package's phase convention.
+
+    Without the ``diag(exp(i pi m))`` similarity the two differ by O(1) in
+    every element while having identical characters, which would make every
+    subduction built here silently incomparable with the existing Oh path.
+    """
+    from multitorch.angular.point_group import wigner_D_matrix
+    g = point_group("Oh")
+    worst = max(np.abs(wigner_from_quaternion(J, e.quat) - wigner_D_matrix(J, e.rotation)).max()
+                for e in g.elements)
+    assert worst < 1e-12, worst
+
+
+@pytest.mark.parametrize("two_j", [1, 3, 5])
+def test_wigner_from_quaternion_is_a_spinor_representation(two_j):
+    """Half-integer J: a homomorphism on the double group, and -1 on the 2pi rotation."""
+    g = point_group("Oh", spinor=True)
+    J = two_j / 2.0
+    dim = two_j + 1
+    for e in g.elements[:24]:
+        D = wigner_from_quaternion(J, e.quat)
+        np.testing.assert_allclose(D @ D.conj().T, np.eye(dim), atol=1e-12)
+        other = g.elements[7]
+        np.testing.assert_allclose(
+            wigner_from_quaternion(J, (e * other).quat),
+            D @ wigner_from_quaternion(J, other.quat), atol=1e-12)
+    two_pi = Element((-1.0, 0.0, 0.0, 0.0), 1)
+    np.testing.assert_allclose(wigner_from_quaternion(J, two_pi.quat),
+                               -np.eye(dim), atol=1e-12)
+
+
+@pytest.mark.parametrize("name", ["C2v", "D2h", "C4v", "D3d", "D4h", "Td", "O", "Oh"])
+def test_irrep_matrices_are_unitary_homomorphisms_with_the_right_characters(name):
+    """The construction verifies itself; this asserts it from outside too."""
+    for spinor in (False, True):
+        g = point_group(name, spinor=spinor)
+        mats = g.irrep_matrices
+        assert set(mats) == set(g.irrep_labels)
+        for t, label in enumerate(g.irrep_labels):
+            M = mats[label]
+            d = int(g.irrep_dims[t])
+            assert M.shape == (g.order, d, d), (name, label, M.shape)
+            gram = np.einsum("gij,gkj->gik", M, M.conj())
+            assert np.abs(gram - np.eye(d)).max() < 1e-8, (name, label)
+            np.testing.assert_allclose(np.einsum("gii->g", M),
+                                       g.character_table[t][g.class_of], atol=1e-7)
+
+
+@pytest.mark.parametrize("J", list(range(0, 11)))
+def test_Oh_subduction_matches_the_production_real_subduction(J):
+    """The B2 oracle: isotypic subspaces against ``_real_subduction_matrix``.
+
+    That is the function ``rac_generator`` actually builds the Oh RAC from, so
+    it carries the Fortran validation. Projectors rather than columns, because
+    the partner gauge is free and only the subspaces are physics.
+    """
+    from multitorch.angular.point_group import _c2r_unitary, _real_subduction_matrix
+    g = point_group("Oh")
+    S, labels = g.subduction(J, +1)
+    U = _c2r_unitary(J) if J > 0 else np.ones((1, 1), dtype=np.complex128)
+    mine = _isotypic(S, labels, 2 * J + 1, basis=U)
+    for label, P in mine.items():
+        B = _real_subduction_matrix(J, label[:-1])
+        assert B.shape[1] == int(round(P.trace().real)), (J, label)
+        np.testing.assert_allclose(P, B @ B.T, atol=1e-12, err_msg=f"J={J} {label}")
+
+
+@pytest.mark.parametrize("two_j", [1, 3, 5, 7, 9, 11])
+def test_Oh_half_integer_subduction_matches_the_production_double_group(two_j):
+    """The same oracle for the double group, including the 4-dimensional G3/2."""
+    from multitorch.angular.point_group import _complex_subduction_matrix_half_int
+    g = point_group("Oh", spinor=True)
+    J = two_j / 2.0
+    S, labels = g.subduction(J, +1)
+    mine = _isotypic(S, labels, two_j + 1)
+    for label, P in mine.items():
+        B = _complex_subduction_matrix_half_int(J, label[:-1])
+        assert B.shape[1] == int(round(P.trace().real)), (J, label)
+        np.testing.assert_allclose(P, B @ B.conj().T, atol=1e-12, err_msg=f"J={J} {label}")
+
+
+@pytest.mark.parametrize("J", list(range(0, 9)))
+def test_D4h_subduction_matches_the_production_partner_basis(J):
+    """The D4h half of the B2 oracle, at the natural parity (-1)^J of D^J.
+
+    ``d4h_partner_basis_per_J`` composes the Oh subduction with the hand-written
+    Oh->D4h second step, which is the chain WP-B replaces; matching it means the
+    direct O(3)->D4h projection needs no chain.
+    """
+    from multitorch.angular.point_group import _c2r_unitary
+    from multitorch.angular.symmetry import d4h_partner_basis_per_J
+    g = point_group("D4h")
+    parity = +1 if J % 2 == 0 else -1
+    S, labels = g.subduction(J, parity)
+    U = _c2r_unitary(J) if J > 0 else np.ones((1, 1), dtype=np.complex128)
+    mine = _isotypic(S, labels, 2 * J + 1, basis=U)
+    for label, P in mine.items():
+        B = d4h_partner_basis_per_J(J, label)
+        assert B.shape[1] == int(round(P.trace().real)), (J, label, B.shape)
+        np.testing.assert_allclose(P, B @ B.conj().T, atol=1e-12, err_msg=f"J={J} {label}")
+
+
+@pytest.mark.parametrize("name", ["Oh", "D4h", "Td", "C4v", "D3d", "D2h", "C2v"])
+def test_subduction_block_diagonalises_the_representation(name):
+    """S^dag D(g) S is the direct sum of the irrep matrices, for every element.
+
+    The strongest internal statement there is: it pins the multiplicities, the
+    partner ordering and the gauge simultaneously, for groups that have no
+    hand-written counterpart to compare against.
+    """
+    g = point_group(name)
+    for J in range(0, 5):
+        for parity in (+1, -1):
+            S, labels = g.subduction(J, parity)
+            dim = 2 * J + 1
+            np.testing.assert_allclose(S.conj().T @ S, np.eye(dim), atol=1e-9)
+            want = np.zeros((g.order, dim, dim), dtype=np.complex128)
+            at = 0
+            for irrep, _copy, mu in labels:
+                if mu:
+                    continue
+                M = g.irrep_matrices[irrep]
+                d = M.shape[1]
+                want[:, at:at + d, at:at + d] = M
+                at += d
+            assert at == dim
+            for gi, e in enumerate(g.elements):
+                D = wigner_from_quaternion(J, e.quat) * (parity if e.parity < 0 else 1)
+                np.testing.assert_allclose(S.conj().T @ D @ S, want[gi], atol=1e-8,
+                                           err_msg=f"{name} J={J} parity={parity} element {gi}")
+
+
+@pytest.mark.parametrize("name", ["Oh", "D4h", "Td", "D3d", "C2v"])
+def test_subduction_agrees_with_the_gauge_free_character_projector(name):
+    """Isotypic subspaces must equal the character projector, which has no gauge.
+
+    ``P = (d/|G|) sum_g conj(chi(g)) D(g)`` involves no irrep matrices at all,
+    so this separates "the subspaces are right" from "the partner basis inside
+    them is the one we chose".
+    """
+    g = point_group(name)
+    for J in range(0, 6):
+        for parity in (+1, -1):
+            S, labels = g.subduction(J, parity)
+            dim = 2 * J + 1
+            mine = _isotypic(S, labels, dim)
+            D = np.stack([wigner_from_quaternion(J, e.quat) * (parity if e.parity < 0 else 1)
+                          for e in g.elements])
+            for t, label in enumerate(g.irrep_labels):
+                if label not in mine:
+                    continue
+                d = int(g.irrep_dims[t])
+                chi = g.character_table[t][g.class_of]
+                P = np.einsum("g,gij->ij", chi.conj(), D) * (d / g.order)
+                np.testing.assert_allclose(mine[label], P, atol=1e-10,
+                                           err_msg=f"{name} J={J} {label}")
+
+
+def test_dead_oh_subduction_matrix_disagrees_with_the_character_projector():
+    """point_group.oh_subduction_matrix is unused and its degenerate blocks are wrong.
+
+    Recorded as residual 38 rather than fixed: the function has **no call
+    sites** in the package or the tests, and the production path goes through
+    ``_real_subduction_matrix``, which uses the correct projector
+    ``Gamma(R)[mu, nu].conj()`` where the dead one uses ``Gamma(R)[nu, mu]``.
+    One-dimensional irreps survive the swap (the single diagonal element is the
+    character), degenerate ones do not. This test pins the defect so that
+    anyone who revives the function finds out, and so that WP-B2's oracle is
+    not mistaken for it again.
+    """
+    from multitorch.angular.point_group import (
+        OH_IRREP_DIM, _complex_to_real_matrix, _D_real_matrices,
+        _oh_characters_at_rotations, octahedral_rotations, oh_subduction_matrix,
+    )
+    from collections import defaultdict
+
+    rots = octahedral_rotations()
+    bad = {}
+    for J in (2, 3, 4):
+        D_real = _D_real_matrices(J)
+        S, labels = oh_subduction_matrix(J)
+        theirs = defaultdict(lambda: np.zeros((2 * J + 1, 2 * J + 1)))
+        for k, (irrep, _copy) in enumerate(labels):
+            w = S[:, k:k + 1]
+            theirs[irrep] += w @ w.T
+        for irrep, P_theirs in theirs.items():
+            chi = _oh_characters_at_rotations(rots, irrep)
+            P = sum(c * D for c, D in zip(chi, D_real)) * (OH_IRREP_DIM[irrep] / 24.0)
+            # the character projector is the unambiguous answer: idempotent,
+            # right rank, and the projectors sum to the identity
+            np.testing.assert_allclose(P @ P, P, atol=1e-10)
+            err = float(np.abs(P - P_theirs).max())
+            if OH_IRREP_DIM[irrep] > 1:
+                bad[(J, irrep)] = err
+            else:
+                assert err < 1e-10, (J, irrep, err)
+    assert bad, "oh_subduction_matrix now agrees; residual 38 may be fixed"
+    assert min(bad.values()) > 0.1, bad

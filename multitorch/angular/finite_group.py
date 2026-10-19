@@ -231,6 +231,7 @@ class PointGroup:
         self.spinor = spinor
         self.principal_axis = np.asarray(principal_axis, dtype=np.float64)
         self.principal_axis = self.principal_axis / np.linalg.norm(self.principal_axis)
+        self._subduction_cache: Dict[Tuple[float, int], Tuple[np.ndarray, List]] = {}
         self.elements: List[Element] = _close(generators, spinor=spinor)
         self._index = {_key(e, spinor=spinor): i for i, e in enumerate(self.elements)}
         self._verify_group()
@@ -761,6 +762,21 @@ class PointGroup:
         """Permutation taking :attr:`character_table` rows to label order."""
         return self._labelling[2]
 
+    # ---- representation matrices and subduction (WP-B2) ----
+
+    @cached_property
+    def irrep_matrices(self) -> Dict[str, np.ndarray]:
+        """``{label: (order, d, d)}`` unitary irrep matrices (see :func:`_irrep_matrices_of`)."""
+        return _irrep_matrices_of(self)
+
+    def subduction(self, J, parity: int = +1
+                   ) -> Tuple[np.ndarray, List[Tuple[str, int, int]]]:
+        """Partner-adapted basis of the O(3) rep (J, parity) — see :func:`_subduction_of`."""
+        key = (float(J), int(parity))
+        if key not in self._subduction_cache:
+            self._subduction_cache[key] = _subduction_of(self, float(J), int(parity))
+        return self._subduction_cache[key]
+
     def __repr__(self) -> str:
         kind = "double" if self.spinor else "single"
         return (f"PointGroup({self.name!r}, {kind}, order={self.order}, "
@@ -836,3 +852,309 @@ def point_group(name: str, *, spinor: bool = False) -> PointGroup:
         raise KeyError(f"unknown point group {name!r}; known: {sorted(GENERATORS)}")
     return PointGroup(name, GENERATORS[name], spinor=spinor,
                       principal_axis=PRINCIPAL_AXIS.get(name, (0.0, 0.0, 1.0)))
+
+
+# ─────────────────────────────────────────────────────────────
+# Irreducible representation matrices (WP-B2)
+# ─────────────────────────────────────────────────────────────
+
+def _spin_operators(J: float) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """``(Jx, Jy, Jz)`` in the ``|J, m>`` basis, ``m = -J .. J`` ascending.
+
+    Works for half-integer J, which is the whole point: the double group's
+    representation matrices are built from these by exponentiation.
+    """
+    two_j = int(round(2 * J))
+    dim = two_j + 1
+    m = np.arange(-J, J + 1.0, 1.0)
+    jz = np.diag(m).astype(np.complex128)
+    # <m+1| J+ |m> = sqrt(J(J+1) - m(m+1))
+    off = np.sqrt(J * (J + 1.0) - m[:-1] * (m[:-1] + 1.0))
+    jp = np.zeros((dim, dim), dtype=np.complex128)
+    jp[np.arange(1, dim), np.arange(dim - 1)] = off
+    jm = jp.conj().T
+    return 0.5 * (jp + jm), -0.5j * (jp - jm), jz
+
+
+@lru_cache(maxsize=64)
+def _phase_convention(J: float) -> np.ndarray:
+    """``diag(exp(i pi m))`` as a 1-D array: the similarity to the package's convention."""
+    two_j = int(round(2 * J))
+    m = np.arange(-two_j / 2.0, two_j / 2.0 + 0.5, 1.0)
+    return np.exp(1j * math.pi * m)
+
+
+def wigner_from_quaternion(J: float, q: np.ndarray) -> np.ndarray:
+    """``D^J(q)`` from a unit quaternion, half-integer J included.
+
+    ``exp(-i theta n.J)`` conjugated into the package's phase convention. The
+    quaternion carries ``theta/2 = acos(w)`` in ``[0, pi]``, so ``theta`` runs
+    over ``[0, 2pi]`` and ``q`` and ``-q`` give *different* matrices for
+    half-integer J — exactly the spinor distinction. Built by eigendecomposing
+    the Hermitian ``n.J`` rather than by a series, so it is exact.
+
+    **Phase convention.** The exponential map and
+    :func:`~multitorch.angular.point_group.wigner_D_matrix` differ by
+    ``D_package(g) = Delta D_exp(g) Delta^-1`` with
+    ``Delta = diag(exp(i pi m))`` — measured on 2026-10-18 at 1e-15 over all 48
+    Oh elements for J = 1..6. This function returns the *package's* convention,
+    so that a subduction built here is directly comparable with
+    ``oh_subduction_matrix`` instead of differing from it by a hidden
+    similarity. For integer J, ``Delta^-1 = Delta``; for half-integer J,
+    ``Delta^2 = -I``, so it has to be the similarity ``Delta D Delta^-1`` and
+    not the sandwich ``Delta D Delta``, which is not a representation at all.
+    """
+    two_j = int(round(2 * J))
+    if two_j == 0:
+        return np.ones((1, 1), dtype=np.complex128)
+    w = min(1.0, max(-1.0, float(q[0])))
+    theta = 2.0 * math.acos(w)
+    v = np.asarray(q[1:], dtype=np.float64)
+    nv = np.linalg.norm(v)
+    if nv < ELEMENT_TOL:
+        # q = +-(1, 0, 0, 0): identity or the 2pi rotation. Both are multiples
+        # of the identity, which the phase similarity leaves alone.
+        return np.eye(two_j + 1, dtype=np.complex128) * (1.0 if w > 0 else (-1.0) ** two_j)
+    n = v / nv
+    jx, jy, jz = _spin_operators(J)
+    nj = n[0] * jx + n[1] * jy + n[2] * jz
+    evals, evecs = np.linalg.eigh(nj)
+    D = (evecs * np.exp(-1j * theta * evals)) @ evecs.conj().T
+    delta = _phase_convention(J)
+    return delta[:, None] * D * delta.conj()[None, :]
+
+
+def _cluster(values: np.ndarray, tol: float = 1e-7) -> List[List[int]]:
+    """Indices of ``values`` grouped into runs that differ by less than ``tol``."""
+    order = np.argsort(values)
+    groups: List[List[int]] = []
+    for i in order:
+        if groups and abs(values[i] - values[groups[-1][0]]) <= tol:
+            groups[-1].append(int(i))
+        else:
+            groups.append([int(i)])
+    return groups
+
+
+def _verify_irrep(group: "PointGroup", label: str, mats: np.ndarray,
+                  characters: np.ndarray) -> None:
+    """Unitary, a homomorphism, and carrying the right character — all of it checked.
+
+    Vectorised: the homomorphism test is ``n`` batched ``(d,d) x (n,d,d)``
+    products rather than ``n^2`` small ones, which is what makes checking the
+    96-element Oh double group affordable enough to leave switched on.
+    """
+    n, d = mats.shape[0], mats.shape[1]
+    eye = np.eye(d)
+    gram = np.einsum("gij,gkj->gik", mats, mats.conj())
+    if not np.allclose(gram, eye, atol=1e-8):
+        gi = int(np.argmax(np.abs(gram - eye).reshape(n, -1).max(axis=1)))
+        raise RuntimeError(f"{group.name}: {label} matrix {gi} is not unitary")
+
+    traces = np.einsum("gii->g", mats)
+    want = characters[group.class_of]
+    if np.max(np.abs(traces - want)) > 1e-7:
+        gi = int(np.argmax(np.abs(traces - want)))
+        raise RuntimeError(
+            f"{group.name}: {label} matrix {gi} has trace {traces[gi]}, not the "
+            f"character {want[gi]}")
+
+    table = group.multiplication_table
+    for gi in range(n):
+        prod = mats[gi] @ mats                      # (n, d, d)
+        if not np.allclose(prod, mats[table[gi]], atol=1e-8):
+            gj = int(np.argmax(np.abs(prod - mats[table[gi]]).reshape(n, -1).max(axis=1)))
+            raise RuntimeError(
+                f"{group.name}: {label} is not a homomorphism at ({gi}, {gj})")
+
+
+def _irrep_matrices_of(group: "PointGroup") -> Dict[str, np.ndarray]:
+    """Unitary matrices of every irrep, from the regular representation.
+
+    Characters alone cannot give a subduction: the row projection operators
+    that split an isotypic subspace into *partners* need the matrices. They are
+    extracted without any tabulated data, from the fact that the left and right
+    regular representations commute:
+
+    1. the left regular representation's Gamma-isotypic subspace V has
+       dimension d^2 and is Gamma (x) C^d, with the left action on the first
+       factor and the commutant on the second;
+    2. the commutant is spanned by the *right* regular representation
+       restricted to V, which is free;
+    3. a generic Hermitian element of that commutant has d eigenvalues, each
+       with a d-dimensional eigenspace carrying exactly one copy of Gamma;
+    4. restricting the left action to one such eigenspace gives Gamma itself.
+
+    The gauge — which eigenspace, and the phase of each of its basis vectors —
+    is a free choice, fixed here by a seeded generic element and ``eigh``'s
+    output, and then **verified**: the result must be unitary, a homomorphism,
+    and have the irrep's character. That is WP-B2a's discipline (fix every free
+    choice, then check it on the hot path) applied one level up. Consumers that
+    need a *particular* gauge across different J must still pin it themselves,
+    as ``double_group`` does for Oh.
+    """
+    n = group.order
+    table = group.multiplication_table
+    chi = group.character_table
+    dims = group.irrep_dims
+    labels = group.irrep_labels
+
+    # left and right regular representations, as permutations
+    # L(g): e_h -> e_{gh};  R(g): e_h -> e_{hg}. They commute.
+    left = [table[gi, :] for gi in range(n)]
+    right = [table[:, gi] for gi in range(n)]
+
+    def permutation_matrix(perm: np.ndarray) -> np.ndarray:
+        M = np.zeros((n, n), dtype=np.complex128)
+        M[perm, np.arange(n)] = 1.0
+        return M
+
+    L = [permutation_matrix(p) for p in left]
+    R = [permutation_matrix(p) for p in right]
+
+    rng = np.random.default_rng(20261018)
+    out: Dict[str, np.ndarray] = {}
+    for t, label in enumerate(labels):
+        d = int(dims[t])
+        # 1. the Gamma-isotypic projector of the left regular representation
+        P = np.zeros((n, n), dtype=np.complex128)
+        for gi in range(n):
+            P += np.conj(chi[t, group.class_of[gi]]) * L[gi]
+        P *= d / n
+        evals, evecs = np.linalg.eigh((P + P.conj().T) / 2.0)
+        keep = np.abs(evals - 1.0) < 1e-6
+        if int(keep.sum()) != d * d:
+            raise RuntimeError(
+                f"{group.name}: the {label} isotypic subspace has dimension "
+                f"{int(keep.sum())}, not d^2 = {d * d}")
+        B = evecs[:, keep]                                     # (n, d*d)
+
+        if d == 1:
+            # one-dimensional: the character *is* the matrix
+            mats = chi[t, group.class_of].reshape(n, 1, 1).copy()
+            _verify_irrep(group, label, mats, chi[t])
+            out[label] = mats
+            continue
+
+        A = np.stack([B.conj().T @ L[gi] @ B for gi in range(n)])
+        comm = np.stack([B.conj().T @ R[gi] @ B for gi in range(n)])
+
+        # 2-3. a generic Hermitian element of the commutant. Both Hermitian
+        # parts are needed to span it: with only (C + C*)/2 the draw can come
+        # out proportional to the identity, which it did for C2v's E1/2 and
+        # which shows up as one cluster of d^2 instead of d clusters of d.
+        herm = np.concatenate([(comm + comm.conj().transpose(0, 2, 1)) / 2.0,
+                               1j * (comm - comm.conj().transpose(0, 2, 1)) / 2.0])
+        W = None
+        for _ in range(16):
+            H = np.tensordot(rng.normal(size=len(herm)), herm, axes=(0, 0))
+            hv, hvec = np.linalg.eigh(H)
+            clusters = _cluster(hv)
+            if len(clusters) == d and all(len(c) == d for c in clusters):
+                W = hvec[:, clusters[0]]                       # (d*d, d)
+                break
+        if W is None:
+            raise RuntimeError(
+                f"{group.name}: the commutant on the {label} isotypic subspace never split "
+                f"into {d} blocks of {d} (last: {[len(c) for c in clusters]})")
+
+        # 4. Gamma itself
+        mats = np.stack([W.conj().T @ A[gi] @ W for gi in range(n)])
+
+        _verify_irrep(group, label, mats, chi[t])
+        out[label] = mats
+    return out
+
+
+# ─────────────────────────────────────────────────────────────
+# O(3) -> G subduction (WP-B2)
+# ─────────────────────────────────────────────────────────────
+
+def _subduction_of(group: "PointGroup", J: float, parity: int
+                   ) -> Tuple[np.ndarray, List[Tuple[str, int, int]]]:
+    """Partner-adapted basis of the O(3) representation (J, parity), restricted to G.
+
+    Returns ``(S, labels)`` with ``S`` a ``(2J+1, 2J+1)`` unitary whose columns
+    are the symmetry-adapted basis vectors in the ``|J, m>`` basis, and
+    ``labels[k] = (irrep, copy, partner)``.
+
+    Built from the row projection operators
+    ``P[mu, nu] = (d/|G|) sum_g conj(Gamma(g)[mu, nu]) D(g)``: ``P[mu, mu]``
+    projects onto the mu-th partner subspace, and ``P[mu, 0]`` carries partner 0
+    to partner mu, which is what keeps the copies of a repeated irrep aligned
+    with one another.
+
+    Verified on the hot path: ``S`` is unitary and
+    ``S^dag D(g) S == direct_sum(Gamma(g))`` for every group element, which is
+    the statement that the subduction is right. That check is what the
+    multiplicities, the partner ordering and the gauge all have to survive.
+    """
+    two_j = int(round(2 * J))
+    if two_j % 2 and not group.spinor:
+        raise ValueError(
+            f"{group.name}: J = {J} is half-integer and needs the double group")
+    dim = two_j + 1
+    n = group.order
+    mats = group.irrep_matrices
+    mult = group.branching(J, parity)
+
+    # D(g) of the (J, parity) representation: an improper element contributes
+    # the rep's own parity times the rotation's Wigner matrix.
+    D = np.empty((n, dim, dim), dtype=np.complex128)
+    for gi, e in enumerate(group.elements):
+        D[gi] = wigner_from_quaternion(J, e.quat)
+        if e.parity < 0:
+            D[gi] = D[gi] * parity
+
+    columns: List[np.ndarray] = []
+    labels: List[Tuple[str, int, int]] = []
+    for irrep, copies in mult.items():
+        gamma = mats[irrep]
+        d = gamma.shape[1]
+        # P[mu, nu]
+        P = np.einsum("gmn,gij->mnij", gamma.conj(), D) * (d / n)
+
+        # partner 0 subspace: rank = number of copies
+        P00 = P[0, 0]
+        evals, evecs = np.linalg.eigh((P00 + P00.conj().T) / 2.0)
+        keep = np.abs(evals - 1.0) < 1e-6
+        if int(keep.sum()) != copies:
+            raise RuntimeError(
+                f"{group.name}: J = {J} {irrep} partner-0 subspace has dimension "
+                f"{int(keep.sum())}, not the multiplicity {copies}")
+        first = evecs[:, keep]
+
+        for copy in range(copies):
+            v0 = first[:, copy]
+            v0 = v0 / np.linalg.norm(v0)
+            for mu in range(d):
+                v = v0 if mu == 0 else P[mu, 0] @ v0
+                norm = np.linalg.norm(v)
+                if norm < 1e-10:
+                    raise RuntimeError(
+                        f"{group.name}: J = {J} {irrep} copy {copy} partner {mu} "
+                        f"projected to zero; the row projectors are inconsistent")
+                columns.append(v / norm)
+                labels.append((irrep, copy, mu))
+
+    S = np.column_stack(columns)
+    if not np.allclose(S.conj().T @ S, np.eye(dim), atol=1e-8):
+        raise RuntimeError(
+            f"{group.name}: J = {J} subduction is not unitary (max deviation "
+            f"{np.abs(S.conj().T @ S - np.eye(dim)).max():.2e})")
+
+    # the real test: S block-diagonalises every D(g) into the irrep matrices
+    order = [(irrep, copy) for irrep, copy, mu in labels if mu == 0]
+    for gi in range(n):
+        want = np.zeros((dim, dim), dtype=np.complex128)
+        at = 0
+        for irrep, _copy in order:
+            d = mats[irrep].shape[1]
+            want[at:at + d, at:at + d] = mats[irrep][gi]
+            at += d
+        got = S.conj().T @ D[gi] @ S
+        if not np.allclose(got, want, atol=1e-7):
+            raise RuntimeError(
+                f"{group.name}: J = {J} parity {parity:+d} subduction does not block-"
+                f"diagonalise element {gi} (max deviation {np.abs(got - want).max():.2e})")
+    return S, labels
