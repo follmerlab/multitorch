@@ -266,7 +266,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
 
   **Correction to this entry's stated target, and the oracle to use (surveyed 2026-10-19, before starting).** The entry says B3 "removes the per-operator recipe table `d4h_cf_operator_recipe`". That function has **no production call sites** — `grep` finds it only in `tests/test_d4h/test_d4h_from_scratch_status.py`, which calls it four times — so removing it is deleting dead code and is *not* the work, nor the benefit. This is the second time an entry in this plan has named a dead function (see residual 38 and its lesson). **The real target is `rac_generator._d4h_operator_vector_complex(operator, rank, target_d4h_irrep)`**, which is squarely on the Fortran-validated path: it is called from `double_group.py` in four places (`_d4h_cf_operators`, the rank-4 cubic marker, and the CF operator-vector lookup) and from `rac_generator` itself. It builds each CF operator's m-basis vector by summing Butler-weighted Oh-route contributions, where the Butler weights are the hand-tabulated `symmetry.D4H_BRANCHES_BY_OPERATOR` — four coefficients (`TENDQ`: one rank-4 A1 route; `DT`: rank-4 A1 **and** E routes; `DS`: one rank-2 E route) — and it carries **two hand-placed gauge pins** that B3 must either reproduce or make unnecessary: (i) a per-route sign fix requiring each route's m = 0 real-harmonic component to be positive, which is residual 21 (without it a flipped LAPACK eigenvector sign mixed the cubic field into Dt by up to 1.6 eV), and (ii) an overall sign pinned to the Ballhausen convention by requiring the one-electron z² matrix element to be positive for 10Dq and negative for Dt and Ds. B3's invariant space comes straight from B2: the totally-symmetric rows of `PointGroup.subduction(k, parity=+1)` for k = 2, 4 *are* the allowed CF operator vectors, with no Butler table and no route gauge. **Two oracles, and neither is code-vs-code.** (1) *Analytic*: the Ballhausen one-electron energies E(z²) = 6Dq − 2Ds − 6Dt, E(x²−y²) = 6Dq + 2Ds − Dt, E(xy) = −4Dq + 2Ds − Dt, E(xz, yz) = −4Dq − Ds + 4Dt, which fix the named-parameter adapter completely and independently of this package. (2) *Fortran, through the existing path*: the derived vectors must reproduce `_d4h_operator_vector_complex`'s output for TENDQ/DT/DS, and that function's numbers are what make the D4h store match the `nid8ct` fixture. Check the call sites above are still the live ones before starting — that is the residual-38 lesson applied.
 - **B4. General dipole/quadrupole operator subduction.** Rank-1 (and rank-2 for K pre-edge) operator components → G irreps and partners, giving linear and circular polarization selection for any G (generalizes PERP/PARA).
-- **B5. Symmetry Plan + generator rewrite — IN PROGRESS (B5-1 and B5-2 landed 2026-10-19; the generator loop itself is not done).**
+- **B5. Symmetry Plan + generator rewrite — IN PROGRESS (B5-1, B5-2 and B5-3 landed 2026-10-19; the generator loop itself is not done).**
 
   **Landed.** (1) `angular/symmetry_plan.py`: a `SymmetryPlan` per group, derived where it can be and named where it cannot — the crystal-field operator count and ranks from WP-B3, the hybridisation channels from `branching(2, +1)` (the d-orbital irreps: Oh gives Eg + T2g = `eg`/`t2g`, D4h gives A1g + B1g + B2g + Eg = `b1`/`a1`/`b2`/`e`), the dipole blocks from WP-B4; only the store's strings and the list *orders* are looked up, because the order is the order of blocks in the RAC file. It reproduces all four of today's hard-coded lists exactly: `OPERATOR_ORDER_OH`, `OPERATOR_ORDER_D4H`, `HYBR_ORDER_OH`, `HYBR_ORDER_D4H`. (2) `io/rac_text.py`: the **byte-equal RAC oracle this entry names, which did not previously exist** — `write_inputs.write_rac` writes a ttmult *input* file, not the `RACFileFull` the generator returns. `rac_fingerprint` renders every block field and every ADD entry at `%.17g`, order-preserving, and is tested to notice a coefficient perturbed in its last bits, every block field, every ADD field, and either reordering. (3) `BanData` gained an optional `symmetry`; the two from-scratch builders set it, and `assemble`, `build_ban` and `calc.fixture_defaults` use it in preference to guessing. `fixture_defaults` stopped guessing altogether, since `sym` was already one of its arguments. (4) The dead `_make_operator_adds` and `_make_cf_adds` are deleted (67 lines).
 
@@ -278,13 +278,49 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
 
   | # | work | gate |
   |---|---|---|
-  | **B5-3** | Keep today's generator as `_generate_ledge_template_legacy`; add the fingerprint-equality harness over the 18 (sym, n) cases. Green trivially at first — which is the point: it proves the net before anything moves. | subset (oh/d4h x n = 2, 5, 8) |
+  | ~~**B5-3**~~ **DONE 2026-10-19** | Today's generator is retained as `_generate_ledge_template_legacy` and `generate_ledge_template` delegates to it; `tests/test_angular/test_generator_refactor_parity.py` is the net, over **all 18** cases rather than the subset below. | **all 18**, 8.1 s |
   | **B5-4** | Generator returns its own operator list and hybridisation channels, from the plan, instead of consumers inferring them | fingerprint + suite |
   | **B5-5** | Unify **GROUND/EXCITE** emission: one plan-driven loop replacing the D4h `if` blocks (1951, 1981) and the two legacy Oh loops (2208, 2256), with Oh the case where the Oh->D4h subduction is the identity | fingerprint, all 18 |
   | **B5-6** | Unify **TRANSI** emission (D4h at 2012/2115, legacy Oh at 2063) | fingerprint, all 18 |
   | **B5-7** | Retire the Butler-string geometry match in `assemble.py:625` (`('PARA','MULTIPOLE')` vs `('PERP','MULTIPOLE')`, residual 35); the plan supplies the geometry per triad | fingerprint + suite |
   | **B5-8** | **Residual 40: decide the trigonal setting.** B5 is where orientation belongs, and D3d/D3/C3v are three of the WP-B targets, so this blocks B5-9 for them | new tests |
   | **B5-9** | **Add Td end-to-end** — the cheapest third group (one cubic CF parameter and one dipole irrep, exactly like Oh), as the proof the loop is general. This is the increment that first makes a new group reachable from `calcXAS` | dipole sum rule + Oh comparison |
+
+  **B5-3 close-out (2026-10-19), with two corrections to this entry's own sizing.**
+
+  (1) *The fingerprint is not a sufficient gate on its own, and that is now
+  measured rather than argued.* `rac_fingerprint` renders every ADD entry's
+  `matrix_idx` — but a `matrix_idx` is an *index into the COWAN store*, not a
+  value, so a refactor that reordered the store while leaving the indices alone
+  emits a **byte-identical RAC** and a different Hamiltonian.
+  `test_a_reordered_cowan_store_fails_the_gate` builds exactly that (swap two
+  same-shaped, unequal matrices of section 0, touch nothing else) and **asserts
+  that the two fingerprints stay equal through it** before checking that the
+  harness still fails — so the blind spot is demonstrated, not supposed. The
+  harness therefore compares all three returned objects: the RAC by
+  fingerprint, the COWAN store tensor by tensor with `torch.equal`, and every
+  field of each `ConfigDecomposition` — above all `block_index`, which is the
+  second place store positions are recorded. Bit-exact throughout, because a
+  refactor that only moves code has no licence to change a float. **Read every
+  later increment's "gate: fingerprint" in this table as "gate: the harness",
+  not "gate: `rac_fingerprint` alone".**
+
+  (2) *The subset gate was unnecessary.* This entry sized B5-3 at
+  oh/d4h x n = 2, 5, 8 on the assumption that 18 cases would be too slow.
+  Measured: one build of all 18 takes **3.9 s** (the generator is the
+  parameter-free angular structure — no HFS, no diagonalisation), the harness's
+  two builds take **7.8 s**, and the test file is **8.1 s for 25 tests**. All 18
+  run by default, so B5-5 and B5-6's "all 18" gate is in place already.
+
+  Six divergences were injected and each watched to fail the gate: a perturbed
+  ADD coefficient, a dropped block, a reordered store, a shifted
+  `block_index`, a perturbed operator tensor, and — in the delegation test — the
+  branchy body reappearing in the public entry point. One pre-existing test had
+  to be re-pointed: `test_operator_subduction.py` reads
+  `inspect.getsource(...)` to assert the `dipole_geometries` loop is in the code
+  that *runs*, and that is now the legacy function; the note there says to
+  re-point it again at the plan-driven emitter in B5-5/B5-6 rather than relax
+  it.
 
   **B5-9 is the one that delivers the headline goal.** B5-1 through B5-7 remove ambiguity and restructure; none of them lets a user call a new group, because `calcXAS` still takes only `sym='oh'|'d4h'`.
 

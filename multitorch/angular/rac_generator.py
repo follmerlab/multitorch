@@ -1826,6 +1826,42 @@ def generate_ledge_template(
         cowan_store: List of 4 sections (only section 0 populated for nconf=1).
         decomposition: HamiltonianDecomposition with configurations 'gs', 'ex'.
     """
+    return _generate_ledge_template_legacy(
+        l_val, n_val_gs, l_core, n_core_gs, cf_rank=cf_rank, sym=sym,
+    )
+
+
+def _generate_ledge_template_legacy(
+    l_val: int,
+    n_val_gs: int,
+    l_core: int = 1,
+    n_core_gs: int = 6,
+    cf_rank: int = 4,
+    sym: str = 'oh',
+):
+    """Today's generator, retained as WP-B5's reference implementation.
+
+    This is the function that produced every Fortran-validated RAC the package
+    has: the Oh path from the original port and the D4h dispatcher from
+    WP-B2a/B3, with the ``if sym == 'd4h'`` blocks and the
+    ``legacy_*_irreps = ... if sym == 'oh' else []`` loops that B5-5 and B5-6
+    replace with one plan-driven loop.
+
+    It is kept, not copied, and :func:`generate_ledge_template` delegates to it
+    for now, so that every later B5 increment can be gated on
+    :func:`~multitorch.io.rac_text.rac_fingerprint` equality against what today
+    emits -- the same pattern WP-B3 used when it kept
+    ``_d4h_operator_vector_butler`` as the Butler-route oracle rather than
+    deleting it. ``tests/test_angular/test_generator_refactor_parity.py`` is
+    that net; it compares the public entry point against this one over all 18
+    (sym, n) cases, and it compares the COWAN store and the decomposition as
+    well as the RAC, because the RAC's ADD entries carry store *indices* and a
+    reordered store would otherwise slip through a fingerprint comparison
+    unchanged.
+
+    Signature, semantics and return value are those of
+    :func:`generate_ledge_template`; see its docstring.
+    """
     from multitorch.hamiltonian.parametric import HamiltonianDecomposition, zero_anchor_config
 
     if sym not in ('oh', 'd4h'):
