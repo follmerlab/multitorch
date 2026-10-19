@@ -133,17 +133,57 @@ def test_the_harness_covers_every_electron_count_in_both_groups():
     assert {sym for sym, _n in CASES} == {"oh", "d4h"}
 
 
-def test_the_public_entry_point_delegates_to_the_retained_legacy_path():
-    """Today the two sides are the same code, and the file says so openly.
+def test_the_two_sides_of_the_gate_are_different_code():
+    """The gate must not be comparing the new emission against itself.
 
-    When a later increment makes them different this assertion is the one to
-    delete -- not the gate above, which is the whole point of the file.
+    **This is the failure mode that actually happened.** B5-5's first attempt
+    replaced the three emission loops *in place*, inside
+    ``_generate_ledge_template_legacy`` -- which the public entry point then
+    delegated to. Both sides of every comparison above changed together, all
+    25 tests passed, and the harness proved nothing. A 188-line restructure of
+    the Oh and D4h emission passing byte equality on the first try with no
+    iteration is what gave it away, not the suite.
+
+    So the gate needs a gate. ``_emit_operator_blocks`` is reached only by the
+    plan emission; perturbing it must make the comparison **fail**. If someone
+    again collapses the two sides into one body, the legacy path starts going
+    through it too, both sides move together, the comparison goes quiet -- and
+    this test fails instead.
     """
+    import multitorch.angular.rac_generator as rg
+
+    real = rg._emit_operator_blocks
+
+    def drops_the_last_block(blocks, *args, **kwargs):
+        real(blocks, *args, **kwargs)
+        if blocks:
+            blocks.pop()
+
+    rg._emit_operator_blocks = drops_the_last_block
+    try:
+        with pytest.raises(AssertionError):
+            _run_gate("oh", 8, generate_ledge_template)
+        with pytest.raises(AssertionError):
+            _run_gate("d4h", 8, generate_ledge_template)
+    finally:
+        rg._emit_operator_blocks = real
+
+    _run_gate("oh", 8, generate_ledge_template)      # and clean again afterwards
+
+
+def test_the_legacy_emission_is_retained_and_selectable():
+    """Both emissions still exist and the entry points pick different ones."""
     import inspect
 
-    src = inspect.getsource(generate_ledge_template)
-    assert "_generate_ledge_template_legacy(" in src
-    assert "if sym == 'd4h'" not in src, "the branchy body should live in the legacy function"
+    from multitorch.angular.rac_generator import (_generate_ledge_template_impl,
+                                                  _generate_ledge_template_legacy)
+
+    assert "emission='plan'" in inspect.getsource(generate_ledge_template)
+    assert "emission='legacy'" in inspect.getsource(_generate_ledge_template_legacy)
+    body = inspect.getsource(_generate_ledge_template_impl)
+    assert "def _emission_legacy()" in body and "def _emission_plan()" in body
+    with pytest.raises(ValueError, match="emission must be"):
+        _generate_ledge_template_impl(2, 8, sym="oh", emission="nonsense")
 
 
 # ─────────────────────────────────────────────────────────────

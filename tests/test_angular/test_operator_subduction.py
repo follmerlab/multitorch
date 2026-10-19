@@ -70,18 +70,20 @@ def test_the_generator_takes_its_dipole_blocks_from_this_module():
     of what the Fortran-validated generator held.
 
     The source read is whichever function **carries the emission**, which since
-    WP-B5-3 is ``_generate_ledge_template_legacy``: ``generate_ledge_template``
-    is now a one-line delegate to it, kept so that each B5 increment can be
-    gated on fingerprint equality against today's output. When B5-5/B5-6 move
-    the TRANSI loop into the plan-driven emitter, re-point this read at that
-    function rather than relaxing it — the assertion is that the loop is in the
-    code that runs, not that the words appear somewhere in the module.
+    WP-B5-5 is ``_generate_ledge_template_impl``: both entry points are thin
+    selectors over it (``emission='plan'`` / ``'legacy'``), and the TRANSI loop
+    this asserts on lives in its shared part. B5-6 moves that loop into a
+    plan-driven emitter of its own — re-point this read at that emitter then,
+    rather than relaxing it. The assertion is that the loop is in the code that
+    **runs**, not that the words appear somewhere in the module; a read aimed at
+    a function that no longer carries the emission would pass vacuously, which
+    is residual 45's failure mode one level down.
     """
     import inspect
 
     from multitorch.angular import rac_generator
 
-    src = inspect.getsource(rac_generator._generate_ledge_template_legacy)
+    src = inspect.getsource(rac_generator._generate_ledge_template_impl)
     assert "for op_d4h_target, geometry, factor in dipole_geometries(" in src
     # the literals are gone as *code*; the words may still appear in comments
     assert "PERP_FACTOR = math.sqrt" not in src

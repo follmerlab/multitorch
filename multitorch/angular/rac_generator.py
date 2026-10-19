@@ -1760,6 +1760,105 @@ def ledge_reference_ev(
     return gs, ex
 
 
+# ─────────────────────────────────────────────────────────────
+# WP-B5-5: one plan-driven GROUND/EXCITE emission
+#
+# This replaces three loops that were each other's copy with the parity and
+# the index maps changed: a D4h GROUND block, a D4h EXCITE block, and two
+# ``legacy_*_irreps = oh_irreps_* if sym == 'oh' else []`` loops. A group now
+# contributes exactly two things: the ordered irreps of one manifold, and the
+# ADD maker for one (irrep, operator) pair. The operator list itself comes
+# from the group's SymmetryPlan (WP-B5-4), so a new group is a layout function
+# and an ADD maker rather than a third copy of the loop.
+#
+# **The old emission is retained, not deleted**, as
+# ``_emission_legacy`` inside the generator body, and the two are selected by
+# the ``emission`` argument so that B5-3's harness compares genuinely
+# different code. Replacing the loops in place would have left the harness
+# comparing the new code against itself -- which it did, silently and greenly,
+# on the first attempt at this increment.
+#
+# Two per-group quirks are preserved deliberately, because this increment's
+# gate is byte equality and neither can be unified without changing output:
+#
+#   * ``skip_empty`` -- the D4h path drops an operator block with no ADD
+#     entries; the Oh path emits it. Observable at exactly one place in the
+#     18-case matrix: at d9 the excited manifold is 2p^5 3d^10, a closed d
+#     shell with no crystal field, so Oh emits two empty ``10DQ`` blocks that
+#     D4h would not. Harmless -- every consumer filters on ``add_entries``,
+#     as CLAUDE.md requires -- but a byte difference, so it is residual 44
+#     rather than a quiet tidy-up here.
+#   * the operator's *emitter* name. The RAC carries the plan's store name
+#     (``10DQ``); the D4h ADD makers want their own (``TENDQ``), while the Oh
+#     makers already take the store names. The mapping lives in the adapter,
+#     the only place that knows both vocabularies.
+# ─────────────────────────────────────────────────────────────
+
+#: D4h ADD-maker names for the plan's store names, where the two differ.
+_D4H_EMITTER_NAME = {'10DQ': 'TENDQ'}
+
+
+def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering):
+    """``(butler, dim, block_dim, payload)`` per Oh irrep, in the legacy order.
+
+    The order is ``oh_irreps``' own — A1, A2, E, T1, T2 for integer J, and
+    E1/2, E5/2, G3/2 for half-integer — which is the order of blocks in the
+    RAC file and therefore not ours to sort.
+    """
+    out = []
+    for irrep in oh_irreps:
+        j_order = j_ordering(j_sizes, irrep)
+        if not j_order:
+            continue
+        out.append((butler_label(irrep, parity), dim_lookup[irrep],
+                    sum(n_st for _, _, n_st in j_order), (irrep, j_order)))
+    return out
+
+
+def _d4h_manifold_irreps(j_sizes, parity, is_half):
+    """``(butler, dim, block_dim, payload)`` per D4h irrep, in the layout order."""
+    layout = (double_group.d4h_double_layout(j_sizes, parity=parity) if is_half
+              else d4h_basis_layout(j_sizes, parity=parity))
+    butler = D4H_DOUBLE_TO_BUTLER if is_half else D4H_TO_BUTLER
+    dims = double_group.D4H_DOUBLE_IRREP_DIM if is_half else D4H_IRREP_DIM
+    out = []
+    for d4h_irrep, entries in sorted(layout.items()):
+        if not entries:
+            continue
+        dim_here = dims[d4h_irrep[:-1] if is_half else d4h_irrep]
+        out.append((butler[d4h_irrep], dim_here,
+                    sum(e[4] for e in entries) // dim_here, (d4h_irrep, entries)))
+    return out
+
+
+def _emit_operator_blocks(blocks, irrep_infos, operator_order, manifold_irreps,
+                          make_adds, kind, skip_empty):
+    """Emit one manifold's operator blocks: one per (irrep, operator).
+
+    ``kind`` labels the :class:`IrrepInfo` — 'GROUND' or 'EXCITE' — while every
+    *block* is written ``kind='GROUND'``, which is the assembler's config-1
+    convention and not a slip (CLAUDE.md: "GROUND" = config 1, even in the
+    excited manifold).
+    """
+    for butler, dim_here, block_dim, payload in manifold_irreps:
+        irrep_infos.append(IrrepInfo(
+            name=butler, kind=kind, multiplicity=block_dim, dim=dim_here,
+        ))
+        for geometry in operator_order:
+            adds = make_adds(payload, geometry)
+            if skip_empty and not adds:
+                continue
+            blocks.append(RACBlockFull(
+                kind='GROUND',
+                bra_sym=butler,
+                op_sym=butler_label('A1', '+'),     # the scalar: '0+' in both groups
+                ket_sym=butler,
+                geometry=geometry,
+                n_bra=block_dim, n_ket=block_dim,
+                add_entries=adds,
+            ))
+
+
 def generate_ledge_template(
     l_val: int,
     n_val_gs: int,
@@ -1826,8 +1925,9 @@ def generate_ledge_template(
         cowan_store: List of 4 sections (only section 0 populated for nconf=1).
         decomposition: HamiltonianDecomposition with configurations 'gs', 'ex'.
     """
-    return _generate_ledge_template_legacy(
+    return _generate_ledge_template_impl(
         l_val, n_val_gs, l_core, n_core_gs, cf_rank=cf_rank, sym=sym,
+        emission='plan',
     )
 
 
@@ -1862,6 +1962,33 @@ def _generate_ledge_template_legacy(
     Signature, semantics and return value are those of
     :func:`generate_ledge_template`; see its docstring.
     """
+    return _generate_ledge_template_impl(
+        l_val, n_val_gs, l_core, n_core_gs, cf_rank=cf_rank, sym=sym,
+        emission='legacy',
+    )
+
+
+def _generate_ledge_template_impl(
+    l_val: int,
+    n_val_gs: int,
+    l_core: int = 1,
+    n_core_gs: int = 6,
+    cf_rank: int = 4,
+    sym: str = 'oh',
+    emission: str = 'plan',
+):
+    """The generator body, with the GROUND/EXCITE emission selectable.
+
+    ``emission='plan'`` runs WP-B5-5's single plan-driven loop;
+    ``emission='legacy'`` runs the three branchy loops it replaced, kept here
+    so B5-3's harness has something to compare against. Everything else — the
+    term data, the COWAN store, the index maps, the TRANSI emission (B5-6) and
+    the decomposition — is shared, which is the point: the harness then
+    differs over exactly the code under test and nothing else.
+    """
+    if emission not in ('plan', 'legacy'):
+        raise ValueError(f"emission must be 'plan' or 'legacy', not {emission!r}")
+    from multitorch.angular.symmetry_plan import plan_for_sym
     from multitorch.hamiltonian.parametric import HamiltonianDecomposition, zero_anchor_config
 
     if sym not in ('oh', 'd4h'):
@@ -2148,193 +2275,257 @@ def _generate_ledge_template_legacy(
     # --- D4h dispatcher — per-D4h-irrep GROUND + EXCITE emission ---
     # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The per-Oh-irrep
     # GROUND/EXCITE loops below are gated to `sym == 'oh'`.
-    if sym == 'd4h':
-        # GROUND blocks (gerade, parity='g')
-        d4h_butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
-        d4h_dim = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_gs else D4H_IRREP_DIM)
-        layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
-                     else d4h_basis_layout(gs_j_sizes, parity='g'))
-        for d4h_irrep, entries in sorted(layout_gs.items()):
-            if not entries:
-                continue
-            butler = d4h_butler[d4h_irrep]
-            dim_here = d4h_dim[d4h_irrep[:-1] if is_half_gs else d4h_irrep]
-            block_dim = sum(e[4] for e in entries) // dim_here
-            irrep_infos.append(IrrepInfo(
-                name=butler, kind='GROUND',
-                multiplicity=block_dim,
-                dim=dim_here,
-            ))
-            for op_name, geometry in (
-                ('HAMILTONIAN', 'HAMILTONIAN'),
-                ('TENDQ',       '10DQ'),
-                ('DT',          'DT'),
-                ('DS',          'DS'),
-            ):
-                op_adds = (_make_d4h_op_adds_half(
-                    d4h_irrep, 'gs', entries, op_name, half_basis,
-                    ham_idx_map=gs_ham_idx, cf_idx_map=gs_cf_idx,
-                    cf_idx_map_rank2=gs_cf_idx_rank2,
-                ) if is_half_gs else _make_d4h_op_adds(
-                    d4h_irrep, entries, op_name,
-                    ham_idx_map=gs_ham_idx,
-                    cf_idx_map=gs_cf_idx,
-                    cf_idx_map_rank2=gs_cf_idx_rank2,
-                ))
-                if not op_adds:
+    # --- GROUND and EXCITE operator blocks ---
+    # Two emissions, selected by `emission`; see this module's WP-B5-5 note.
+    # The legacy one is the three loops verbatim, kept as the harness's
+    # reference. Both run at this same point in the body, so block order is
+    # the same by construction rather than by care.
+
+    def _emission_legacy():
+        """The pre-B5-5 emission: three loops, one per (group, manifold)."""
+        if sym == 'd4h':
+            # GROUND blocks (gerade, parity='g')
+            d4h_butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
+            d4h_dim = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_gs else D4H_IRREP_DIM)
+            layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
+                         else d4h_basis_layout(gs_j_sizes, parity='g'))
+            for d4h_irrep, entries in sorted(layout_gs.items()):
+                if not entries:
                     continue
-                blocks.append(RACBlockFull(
-                    kind='GROUND',
-                    bra_sym=butler,
-                    op_sym='0+',                # D4h-A1g (scalar CF)
-                    ket_sym=butler,
-                    geometry=geometry,
-                    n_bra=block_dim, n_ket=block_dim,
-                    add_entries=op_adds,
+                butler = d4h_butler[d4h_irrep]
+                dim_here = d4h_dim[d4h_irrep[:-1] if is_half_gs else d4h_irrep]
+                block_dim = sum(e[4] for e in entries) // dim_here
+                irrep_infos.append(IrrepInfo(
+                    name=butler, kind='GROUND',
+                    multiplicity=block_dim,
+                    dim=dim_here,
                 ))
+                for op_name, geometry in (
+                    ('HAMILTONIAN', 'HAMILTONIAN'),
+                    ('TENDQ',       '10DQ'),
+                    ('DT',          'DT'),
+                    ('DS',          'DS'),
+                ):
+                    op_adds = (_make_d4h_op_adds_half(
+                        d4h_irrep, 'gs', entries, op_name, half_basis,
+                        ham_idx_map=gs_ham_idx, cf_idx_map=gs_cf_idx,
+                        cf_idx_map_rank2=gs_cf_idx_rank2,
+                    ) if is_half_gs else _make_d4h_op_adds(
+                        d4h_irrep, entries, op_name,
+                        ham_idx_map=gs_ham_idx,
+                        cf_idx_map=gs_cf_idx,
+                        cf_idx_map_rank2=gs_cf_idx_rank2,
+                    ))
+                    if not op_adds:
+                        continue
+                    blocks.append(RACBlockFull(
+                        kind='GROUND',
+                        bra_sym=butler,
+                        op_sym='0+',                # D4h-A1g (scalar CF)
+                        ket_sym=butler,
+                        geometry=geometry,
+                        n_bra=block_dim, n_ket=block_dim,
+                        add_entries=op_adds,
+                    ))
 
-        # EXCITE blocks (ungerade, parity='u')
-        d4h_butler_ex = D4H_DOUBLE_TO_BUTLER if is_half_ex else D4H_TO_BUTLER
-        d4h_dim_ex = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_ex else D4H_IRREP_DIM)
-        layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
-                     else d4h_basis_layout(ex_j_sizes, parity='u'))
-        for d4h_irrep, entries in sorted(layout_ex.items()):
-            if not entries:
-                continue
-            butler = d4h_butler_ex[d4h_irrep]
-            dim_here = d4h_dim_ex[d4h_irrep[:-1] if is_half_ex else d4h_irrep]
-            block_dim = sum(e[4] for e in entries) // dim_here
-            irrep_infos.append(IrrepInfo(
-                name=butler, kind='EXCITE',
-                multiplicity=block_dim,
-                dim=dim_here,
-            ))
-            for op_name, geometry in (
-                ('HAMILTONIAN', 'HAMILTONIAN'),
-                ('TENDQ',       '10DQ'),
-                ('DT',          'DT'),
-                ('DS',          'DS'),
-            ):
-                op_adds = (_make_d4h_op_adds_half(
-                    d4h_irrep, 'ex', entries, op_name, half_basis,
-                    ham_idx_map=ex_ham_idx, cf_idx_map=ex_cf_idx,
-                    cf_idx_map_rank2=ex_cf_idx_rank2,
-                ) if is_half_ex else _make_d4h_op_adds(
-                    d4h_irrep, entries, op_name,
-                    ham_idx_map=ex_ham_idx,
-                    cf_idx_map=ex_cf_idx,
-                    cf_idx_map_rank2=ex_cf_idx_rank2,
-                ))
-                if not op_adds:
+            # EXCITE blocks (ungerade, parity='u')
+            d4h_butler_ex = D4H_DOUBLE_TO_BUTLER if is_half_ex else D4H_TO_BUTLER
+            d4h_dim_ex = (double_group.D4H_DOUBLE_IRREP_DIM if is_half_ex else D4H_IRREP_DIM)
+            layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
+                         else d4h_basis_layout(ex_j_sizes, parity='u'))
+            for d4h_irrep, entries in sorted(layout_ex.items()):
+                if not entries:
                     continue
-                blocks.append(RACBlockFull(
-                    kind='GROUND',          # assembler config-1 convention
-                    bra_sym=butler,
-                    op_sym='0+',
-                    ket_sym=butler,
-                    geometry=geometry,
-                    n_bra=block_dim, n_ket=block_dim,
-                    add_entries=op_adds,
+                butler = d4h_butler_ex[d4h_irrep]
+                dim_here = d4h_dim_ex[d4h_irrep[:-1] if is_half_ex else d4h_irrep]
+                block_dim = sum(e[4] for e in entries) // dim_here
+                irrep_infos.append(IrrepInfo(
+                    name=butler, kind='EXCITE',
+                    multiplicity=block_dim,
+                    dim=dim_here,
                 ))
+                for op_name, geometry in (
+                    ('HAMILTONIAN', 'HAMILTONIAN'),
+                    ('TENDQ',       '10DQ'),
+                    ('DT',          'DT'),
+                    ('DS',          'DS'),
+                ):
+                    op_adds = (_make_d4h_op_adds_half(
+                        d4h_irrep, 'ex', entries, op_name, half_basis,
+                        ham_idx_map=ex_ham_idx, cf_idx_map=ex_cf_idx,
+                        cf_idx_map_rank2=ex_cf_idx_rank2,
+                    ) if is_half_ex else _make_d4h_op_adds(
+                        d4h_irrep, entries, op_name,
+                        ham_idx_map=ex_ham_idx,
+                        cf_idx_map=ex_cf_idx,
+                        cf_idx_map_rank2=ex_cf_idx_rank2,
+                    ))
+                    if not op_adds:
+                        continue
+                    blocks.append(RACBlockFull(
+                        kind='GROUND',          # assembler config-1 convention
+                        bra_sym=butler,
+                        op_sym='0+',
+                        ket_sym=butler,
+                        geometry=geometry,
+                        n_bra=block_dim, n_ket=block_dim,
+                        add_entries=op_adds,
+                    ))
 
-    # --- GROUND blocks (gerade, d^n) [Oh path] ---
-    # For sym='d4h' the GROUND emission lives in the per-D4h-irrep
-    # dispatcher above; iterating an empty list disables this Oh-only
-    # loop without re-indenting its body.
-    legacy_gs_irreps = oh_irreps_gs if sym == 'oh' else []
-    for irrep in legacy_gs_irreps:
-        gs_butler = butler_label(irrep, '+')
-        gs_j_order = irrep_j_ordering(gs_j_sizes, irrep)
-        if not gs_j_order:
-            continue
-        block_dim = sum(n_st for _, _, n_st in gs_j_order)
+        # --- GROUND blocks (gerade, d^n) [Oh path] ---
+        # For sym='d4h' the GROUND emission lives in the per-D4h-irrep
+        # dispatcher above; iterating an empty list disables this Oh-only
+        # loop without re-indenting its body.
+        legacy_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+        for irrep in legacy_gs_irreps:
+            gs_butler = butler_label(irrep, '+')
+            gs_j_order = irrep_j_ordering(gs_j_sizes, irrep)
+            if not gs_j_order:
+                continue
+            block_dim = sum(n_st for _, _, n_st in gs_j_order)
 
-        irrep_infos.append(IrrepInfo(
-            name=gs_butler,
-            kind='GROUND',
-            multiplicity=block_dim,
-            dim=dim_lookup_gs[irrep],
-        ))
+            irrep_infos.append(IrrepInfo(
+                name=gs_butler,
+                kind='GROUND',
+                multiplicity=block_dim,
+                dim=dim_lookup_gs[irrep],
+            ))
 
-        # HAMILTONIAN block (k=0)
-        if is_half_gs:
-            ham_adds = _make_oh_op_adds_half(irrep, 'gs', gs_j_order, 'HAMILTONIAN', half_basis,
-                                             gs_ham_idx, gs_cf_idx)
+            # HAMILTONIAN block (k=0)
+            if is_half_gs:
+                ham_adds = _make_oh_op_adds_half(irrep, 'gs', gs_j_order, 'HAMILTONIAN', half_basis,
+                                                 gs_ham_idx, gs_cf_idx)
+            else:
+                ham_adds = _make_oh_op_adds(irrep, gs_j_order, 'HAMILTONIAN', gs_ham_idx, gs_cf_idx)
+            blocks.append(RACBlockFull(
+                kind='GROUND',
+                bra_sym=gs_butler,
+                op_sym=butler_label('A1', '+'),
+                ket_sym=gs_butler,
+                geometry='HAMILTONIAN',
+                n_bra=block_dim,
+                n_ket=block_dim,
+                add_entries=ham_adds,
+            ))
+
+            # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
+            cf_adds = (_make_oh_op_adds_half(irrep, 'gs', gs_j_order, '10DQ', half_basis, gs_ham_idx, gs_cf_idx)
+                       if is_half_gs
+                       else _make_oh_op_adds(irrep, gs_j_order, '10DQ', gs_ham_idx, gs_cf_idx))
+            blocks.append(RACBlockFull(
+                kind='GROUND',
+                bra_sym=gs_butler,
+                op_sym=butler_label('A1', '+'),
+                ket_sym=gs_butler,
+                geometry='10DQ',
+                n_bra=block_dim,
+                n_ket=block_dim,
+                add_entries=cf_adds,
+            ))
+
+        # --- EXCITE blocks (ungerade, p^5 d^(n+1)) [Oh path] ---
+        legacy_ex_irreps = oh_irreps_ex if sym == 'oh' else []
+        for irrep in legacy_ex_irreps:
+            ex_butler = butler_label(irrep, '-')
+            ex_j_order = irrep_j_ordering(ex_j_sizes, irrep)
+            if not ex_j_order:
+                continue
+            block_dim = sum(n_st for _, _, n_st in ex_j_order)
+
+            irrep_infos.append(IrrepInfo(
+                name=ex_butler,
+                kind='EXCITE',
+                multiplicity=block_dim,
+                dim=dim_lookup_ex[irrep],
+            ))
+
+            # HAMILTONIAN block
+            if is_half_ex:
+                ham_adds = _make_oh_op_adds_half(irrep, 'ex', ex_j_order, 'HAMILTONIAN', half_basis,
+                                                 ex_ham_idx, ex_cf_idx)
+            else:
+                ham_adds = _make_oh_op_adds(irrep, ex_j_order, 'HAMILTONIAN', ex_ham_idx, ex_cf_idx)
+            blocks.append(RACBlockFull(
+                kind='GROUND',  # assembler uses 'GROUND' for config-1
+                bra_sym=ex_butler,
+                op_sym=butler_label('A1', '+'),
+                ket_sym=ex_butler,
+                geometry='HAMILTONIAN',
+                n_bra=block_dim,
+                n_ket=block_dim,
+                add_entries=ham_adds,
+            ))
+
+            # 10DQ block
+            cf_adds = (_make_oh_op_adds_half(irrep, 'ex', ex_j_order, '10DQ', half_basis, ex_ham_idx, ex_cf_idx)
+                       if is_half_ex
+                       else _make_oh_op_adds(irrep, ex_j_order, '10DQ', ex_ham_idx, ex_cf_idx))
+            blocks.append(RACBlockFull(
+                kind='GROUND',  # assembler uses 'GROUND' for config-1
+                bra_sym=ex_butler,
+                op_sym=butler_label('A1', '+'),
+                ket_sym=ex_butler,
+                geometry='10DQ',
+                n_bra=block_dim,
+                n_ket=block_dim,
+                add_entries=cf_adds,
+            ))
+
+    def _emission_plan():
+        """WP-B5-5: one loop over the plan's operators, per manifold."""
+        plan = plan_for_sym(sym)
+
+        if sym == 'd4h':
+            def _adds(payload, geometry, half, ham_idx, cf_idx, cf_idx2, label):
+                d4h_irrep, entries = payload
+                op_name = _D4H_EMITTER_NAME.get(geometry, geometry)
+                if half:
+                    return _make_d4h_op_adds_half(
+                        d4h_irrep, label, entries, op_name, half_basis,
+                        ham_idx_map=ham_idx, cf_idx_map=cf_idx,
+                        cf_idx_map_rank2=cf_idx2,
+                    )
+                return _make_d4h_op_adds(
+                    d4h_irrep, entries, op_name, ham_idx_map=ham_idx,
+                    cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx2,
+                )
+
+            manifolds = (
+                ('GROUND', _d4h_manifold_irreps(gs_j_sizes, 'g', is_half_gs),
+                 lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx,
+                                       gs_cf_idx_rank2, 'gs')),
+                ('EXCITE', _d4h_manifold_irreps(ex_j_sizes, 'u', is_half_ex),
+                 lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx,
+                                       ex_cf_idx_rank2, 'ex')),
+            )
+            skip_empty = True
         else:
-            ham_adds = _make_oh_op_adds(irrep, gs_j_order, 'HAMILTONIAN', gs_ham_idx, gs_cf_idx)
-        blocks.append(RACBlockFull(
-            kind='GROUND',
-            bra_sym=gs_butler,
-            op_sym=butler_label('A1', '+'),
-            ket_sym=gs_butler,
-            geometry='HAMILTONIAN',
-            n_bra=block_dim,
-            n_ket=block_dim,
-            add_entries=ham_adds,
-        ))
+            def _adds(payload, geometry, half, ham_idx, cf_idx, label):
+                irrep, j_order = payload
+                if half:
+                    return _make_oh_op_adds_half(
+                        irrep, label, j_order, geometry, half_basis, ham_idx, cf_idx)
+                return _make_oh_op_adds(irrep, j_order, geometry, ham_idx, cf_idx)
 
-        # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
-        cf_adds = (_make_oh_op_adds_half(irrep, 'gs', gs_j_order, '10DQ', half_basis, gs_ham_idx, gs_cf_idx)
-                   if is_half_gs
-                   else _make_oh_op_adds(irrep, gs_j_order, '10DQ', gs_ham_idx, gs_cf_idx))
-        blocks.append(RACBlockFull(
-            kind='GROUND',
-            bra_sym=gs_butler,
-            op_sym=butler_label('A1', '+'),
-            ket_sym=gs_butler,
-            geometry='10DQ',
-            n_bra=block_dim,
-            n_ket=block_dim,
-            add_entries=cf_adds,
-        ))
+            manifolds = (
+                ('GROUND', _oh_manifold_irreps(gs_j_sizes, '+', oh_irreps_gs,
+                                               dim_lookup_gs, irrep_j_ordering),
+                 lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx, 'gs')),
+                ('EXCITE', _oh_manifold_irreps(ex_j_sizes, '-', oh_irreps_ex,
+                                               dim_lookup_ex, irrep_j_ordering),
+                 lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx, 'ex')),
+            )
+            # the Oh path emits an operator block even with no ADD entries;
+            # residual 44
+            skip_empty = False
 
-    # --- EXCITE blocks (ungerade, p^5 d^(n+1)) [Oh path] ---
-    legacy_ex_irreps = oh_irreps_ex if sym == 'oh' else []
-    for irrep in legacy_ex_irreps:
-        ex_butler = butler_label(irrep, '-')
-        ex_j_order = irrep_j_ordering(ex_j_sizes, irrep)
-        if not ex_j_order:
-            continue
-        block_dim = sum(n_st for _, _, n_st in ex_j_order)
+        for kind, manifold_irreps, make_adds in manifolds:
+            _emit_operator_blocks(
+                blocks, irrep_infos, plan.operator_order, manifold_irreps,
+                make_adds, kind, skip_empty,
+            )
 
-        irrep_infos.append(IrrepInfo(
-            name=ex_butler,
-            kind='EXCITE',
-            multiplicity=block_dim,
-            dim=dim_lookup_ex[irrep],
-        ))
-
-        # HAMILTONIAN block
-        if is_half_ex:
-            ham_adds = _make_oh_op_adds_half(irrep, 'ex', ex_j_order, 'HAMILTONIAN', half_basis,
-                                             ex_ham_idx, ex_cf_idx)
-        else:
-            ham_adds = _make_oh_op_adds(irrep, ex_j_order, 'HAMILTONIAN', ex_ham_idx, ex_cf_idx)
-        blocks.append(RACBlockFull(
-            kind='GROUND',  # assembler uses 'GROUND' for config-1
-            bra_sym=ex_butler,
-            op_sym=butler_label('A1', '+'),
-            ket_sym=ex_butler,
-            geometry='HAMILTONIAN',
-            n_bra=block_dim,
-            n_ket=block_dim,
-            add_entries=ham_adds,
-        ))
-
-        # 10DQ block
-        cf_adds = (_make_oh_op_adds_half(irrep, 'ex', ex_j_order, '10DQ', half_basis, ex_ham_idx, ex_cf_idx)
-                   if is_half_ex
-                   else _make_oh_op_adds(irrep, ex_j_order, '10DQ', ex_ham_idx, ex_cf_idx))
-        blocks.append(RACBlockFull(
-            kind='GROUND',  # assembler uses 'GROUND' for config-1
-            bra_sym=ex_butler,
-            op_sym=butler_label('A1', '+'),
-            ket_sym=ex_butler,
-            geometry='10DQ',
-            n_bra=block_dim,
-            n_ket=block_dim,
-            add_entries=cf_adds,
-        ))
+    (_emission_legacy if emission == 'legacy' else _emission_plan)()
 
     # ── Assemble COWAN store ──
     cowan_store = [
