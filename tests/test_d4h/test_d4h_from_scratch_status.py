@@ -1,10 +1,21 @@
-"""Status sentinel for the D4h from-scratch port (plan Phase 1).
+"""Contract tests for the D4h from-scratch path.
 
-Each test in this file documents one aspect of the port. They are
-xfail-marked until the corresponding piece of the port lands; once it
-does, drop the xfail and the test becomes the contract for that piece.
+**No longer a status sentinel**, despite the file name. The header used to say
+every test here was xfail-marked until the port landed; the port landed, the
+xfails were dropped, and nothing in this file has been xfail-marked for a long
+time. These 31 tests are the contract for the D4h dispatcher: Butler
+coefficients against pyctm, branching, partner bases and canonical signs,
+``nid8``/``nid8ct`` block and irrep sets, TRANSI singular values, the Oh limit
+at dt = ds = 0, and the half-integer path.
 
-See `~/.claude/plans/lexical-toasting-kahan.md` for the phased plan.
+Worth knowing while reading it: the four ``test_d4h_cf_operator_recipe_*``
+tests cover ``symmetry.d4h_cf_operator_recipe``, which has **no production call
+sites** -- WP-B3 replaced that layer, and this file is the only caller left.
+They pin dead code rather than behaviour (plan residual 41).
+
+The phased-plan file this used to cite, ``~/.claude/plans/lexical-toasting-
+kahan.md``, no longer exists; the current plan is
+``docs/DEVELOPMENT_PLAN_2026-09.md``.
 """
 from __future__ import annotations
 
