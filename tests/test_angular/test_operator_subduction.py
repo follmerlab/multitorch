@@ -158,18 +158,68 @@ def test_each_component_transforms_within_itself(group):
 # Oracle 3: polarisation, read off rather than assumed
 # ─────────────────────────────────────────────────────────────
 
-@pytest.mark.parametrize("group", UNIAXIAL)
-def test_a_uniaxial_group_separates_z_from_in_plane_polarisation(group):
-    """Exactly one z channel, and every other channel purely in-plane.
+@pytest.mark.parametrize("group", UNIAXIAL + ["D3d[z]", "D3[z]", "C3v[z]"])
+def test_a_uniaxial_group_separates_axial_from_in_plane_polarisation(group):
+    """Exactly one axial channel, and every other channel purely in-plane.
 
     This is the physics behind the PARA/PERP names: the one-dimensional
-    component of a uniaxial group comes out on ``q = 0`` alone, forced by the
-    symmetry. Measured ``|v|`` on ``q = 0`` is exactly ``[0, 1, 0]`` for D4h.
+    component of a uniaxial group is polarised along the principal axis, forced
+    by the symmetry. Measured ``|v|`` on ``q = 0`` is exactly ``[0, 1, 0]`` for
+    D4h.
+
+    **Referred to the group's own axis, not to z** (WP-B5-8). The trigonal
+    groups are now registered with their C3 along [111], and ``q = 0`` names
+    the z direction specifically, so asking the old z-only question of them
+    returned ``None`` for a channel that is perfectly axial. Both settings of
+    each trigonal group are in the list, and both must give the same answer —
+    which is the real statement, since a group's polarisation structure cannot
+    depend on how it is oriented.
     """
-    axes = [polarization_axis(c) for c in operator_components(group, *DIPOLE)]
+    from multitorch.angular.finite_group import point_group
+
+    axis = point_group(group).principal_axis
+    axes = [polarization_axis(c, axis) for c in operator_components(group, *DIPOLE)]
     assert axes.count("z") == 1, (group, axes)
     assert all(a == "xy" for a in axes if a != "z"), (group, axes)
     assert None not in axes, (group, axes)
+
+
+@pytest.mark.parametrize("pair", [("D3d", "D3d[z]"), ("D3", "D3[z]"), ("C3v", "C3v[z]")])
+def test_the_polarisation_structure_does_not_depend_on_the_setting(pair):
+    """The same group in two orientations must have the same channel structure.
+
+    This is what makes :func:`polarization_axis`'s ``axis`` argument a fix
+    rather than a fudge. It also pins the bug the first attempt at that fix
+    had: a hand-written spherical-to-Cartesian conversion that looked right on
+    every z-axis group — because there x and y never enter — and placed D3d's
+    axial channel along (1, -1, -1) instead of (1, 1, 1). The rotation is now
+    done with the package's own ``wigner_from_quaternion``.
+    """
+    from multitorch.angular.finite_group import point_group
+
+    structures = []
+    for name in pair:
+        axis = point_group(name).principal_axis
+        structures.append(sorted(
+            polarization_axis(c, axis) for c in operator_components(name, *DIPOLE)))
+    assert structures[0] == structures[1], (pair, structures)
+
+
+def test_a_rotated_axial_channel_is_not_on_q_zero_in_the_lab_frame():
+    """Why the ``axis`` argument is needed at all, stated as a measurement.
+
+    D3d's axial channel is along [111]. Asked the z-only question — the one
+    this function used before WP-B5-8 — it spreads over all three ``q`` and
+    comes back ``None``, which is a true statement about the lab frame and a
+    false one about the group.
+    """
+    from multitorch.angular.finite_group import point_group
+
+    components = operator_components("D3d", *DIPOLE)
+    lab = [polarization_axis(c) for c in components]                       # default z
+    own = [polarization_axis(c, point_group("D3d").principal_axis) for c in components]
+    assert lab == [None, None], lab
+    assert sorted(own) == ["xy", "z"], own
 
 
 @pytest.mark.parametrize("group", ["Oh", "O", "Td", "T"])

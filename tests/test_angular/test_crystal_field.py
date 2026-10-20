@@ -355,14 +355,22 @@ FAMILIES = [
     ("cubic", ["Oh", "O", "Td", "T"]),
     ("tetragonal", ["D4h", "D4", "C4v", "D2d"]),
     ("trigonal", ["D3d", "D3", "C3v"]),
+    ("trigonal[z]", ["D3d[z]", "D3[z]", "C3v[z]"]),
     ("orthorhombic", ["D2h", "D2", "C2v"]),
 ]
 
 #: Registered groups that are genuinely subgroups of the standard Oh, so the
-#: cubic field is one of their invariants. The trigonal groups are absent on
-#: purpose — see
-#: :func:`test_the_trigonal_groups_are_registered_in_the_z_axis_setting`.
+#: cubic field is one of their invariants. **The trigonal groups joined this
+#: list in WP-B5-8** — they were absent while they were registered in the z
+#: setting, which is the whole of residual 40. Widening the list is the point of
+#: that increment, not an incidental edit: the property is what makes "10Dq plus
+#: a distortion" meaningful, and a property asserted only over the groups that
+#: already satisfied it is not asserted (the handoff's lesson 4, which is how
+#: WP-B3 found `test_first_irrep_is_totally_symmetric` false for T).
+#: The ``[z]`` variants are excluded by construction — see
+#: :func:`test_the_z_setting_trigonal_groups_are_not_octahedral_subgroups`.
 OCTAHEDRAL_SUBGROUPS = ["Oh", "O", "Td", "T", "D4h", "D4", "C4v", "D2d",
+                        "D3d", "D3", "C3v",
                         "D2h", "D2", "C2v"]
 
 
@@ -395,49 +403,105 @@ def test_the_cubic_invariant_lies_inside_every_octahedral_subgroups_invariants(g
 
 
 @pytest.mark.parametrize("group", ["D3d", "D3", "C3v"])
-def test_the_trigonal_groups_are_registered_in_the_z_axis_setting(group):
-    """Pins a real limitation rather than papering over it (plan residual 40).
+def test_the_trigonal_groups_are_registered_in_the_octahedral_setting(group):
+    """WP-B5-8 settled residual 40: C3 along [111], not along z.
 
-    ``GENERATORS`` puts every principal axis along z, which is the
-    crystallographic standard, but the trigonal subgroup of an octahedron has
-    its C3 along a body diagonal. In the z setting these groups are **not**
-    subgroups of the standard Oh — 8 of D3d's 12 elements and 4 of C3v's 6 lie
-    outside it — so the cubic invariant is not one of their invariants
-    (residual 0.6455, identical for all three since they share the axis) and
-    "10Dq plus a trigonal distortion" cannot be expressed. Rebuilt with C3
-    along [111] and a C2 along (1, -1, 0), D3d *is* a subgroup of Oh and the
-    residual drops to 9.4e-16.
+    Every trigonal group in this package is reached by distorting an
+    octahedron, and the trigonal subgroup of an octahedron has its C3 along a
+    body diagonal. Registered that way each is a genuine subgroup of the
+    standard Oh — **0 elements outside** — and the cubic invariant is one of
+    its invariants, which is what makes "10Dq plus a trigonal distortion" a
+    meaningful parameterisation at all.
 
-    Asking for the cubic pattern in this setting therefore raises, which is the
-    behaviour to keep: a wrong number would be far worse than a refusal. The
-    setting itself is a WP-B4/B5 decision, since that is where operator
-    subduction and the symmetry plan choose orientations.
+    The crystallographic z setting is still reachable as ``D3d[z]`` etc. and is
+    checked by :func:`test_the_z_setting_trigonal_groups_are_not_octahedral_subgroups`,
+    which keeps residual 40's own measurement as the contrast.
     """
-    from multitorch.angular.finite_group import (INVERSION, PointGroup, _rot,
-                                                 point_group)
+    from multitorch.angular.finite_group import point_group
 
     oh_mats = np.array([e.matrix for e in point_group("Oh").elements])
+    g = point_group(group)
+    outside = sum(
+        np.min(np.abs(oh_mats - e.matrix).reshape(len(oh_mats), -1).max(axis=1)) > 1e-9
+        for e in g.elements)
+    assert outside == 0, f"{group} must be an Oh subgroup in the octahedral setting"
 
-    def outside_oh(g):
-        return sum(np.min(np.abs(oh_mats - e.matrix).reshape(len(oh_mats), -1).max(axis=1)) > 1e-9
-                   for e in g.elements)
+    cubic = cf_invariant_vectors("Oh", 4)[:, 0]
+    V = cf_invariant_vectors(group, 4)
+    P = V @ V.conj().T
+    assert np.linalg.norm(cubic - P @ cubic) < 1e-12
 
-    assert outside_oh(point_group(group)) > 0, f"{group} is unexpectedly an Oh subgroup now"
+
+@pytest.mark.parametrize("group,outside,order", [
+    ("D3d[z]", 8, 12), ("D3[z]", 4, 6), ("C3v[z]", 4, 6),
+])
+def test_the_z_setting_trigonal_groups_are_not_octahedral_subgroups(group, outside, order):
+    """Residual 40's measurement, kept as the contrast that justifies B5-8.
+
+    These are the crystallographic standard setting and correct for a genuinely
+    trigonal site. They are *not* octahedral subgroups, and the cubic invariant
+    is correspondingly not one of their invariants — residual 0.6455, the same
+    for all three because they share the axis. Keeping them reachable means the
+    z setting is a choice a user can make rather than a thing the package lost,
+    and keeping this test means the 0.6455 cannot quietly become something else.
+    """
+    from multitorch.angular.finite_group import point_group
+
+    oh_mats = np.array([e.matrix for e in point_group("Oh").elements])
+    g = point_group(group)
+    assert len(g.elements) == order
+    n_outside = sum(
+        np.min(np.abs(oh_mats - e.matrix).reshape(len(oh_mats), -1).max(axis=1)) > 1e-9
+        for e in g.elements)
+    assert n_outside == outside
 
     cubic = cf_invariant_vectors("Oh", 4)[:, 0]
     V = cf_invariant_vectors(group, 4)
     P = V @ V.conj().T
     assert np.linalg.norm(cubic - P @ cubic) == pytest.approx(0.6455, abs=1e-3)
 
-    # and the octahedral setting is what fixes it
-    trigonal_111 = PointGroup(
-        f"{group}[111]", (_rot((1.0, 1.0, 1.0), 3), _rot((1.0, -1.0, 0.0), 2), INVERSION))
-    assert outside_oh(trigonal_111) == 0
-    S, labels = trigonal_111.subduction(4, +1)
-    cols = [i for i, (irrep, _c, _p) in enumerate(labels) if irrep == trigonal_111.irrep_labels[0]]
-    V111 = S[:, cols]
-    P111 = V111 @ V111.conj().T
-    assert np.linalg.norm(cubic - P111 @ cubic) < 1e-12
+
+@pytest.mark.parametrize("pair", [("D3d", "D3d[z]"), ("D3", "D3[z]"), ("C3v", "C3v[z]")])
+def test_the_two_settings_are_the_same_abstract_group(pair):
+    """Re-orienting a group changes where it sits, not what it is.
+
+    Same order, same character table up to class order, same irrep labels, and
+    conventional labels in both — so B5-8 cost nothing in labelling, which is
+    why ``PRINCIPAL_AXIS`` had to be filled in alongside the generators rather
+    than instead of them. The free parameter count is orientation-independent
+    too, which residual 40 already noted and this now asserts.
+    """
+    from multitorch.angular.crystal_field import cf_parameter_count
+    from multitorch.angular.finite_group import point_group
+
+    oct_g, z_g = point_group(pair[0]), point_group(pair[1])
+    assert len(oct_g.elements) == len(z_g.elements)
+    assert oct_g.irrep_labels == z_g.irrep_labels
+    assert oct_g.labels_are_conventional and z_g.labels_are_conventional
+    assert cf_parameter_count(pair[0]) == cf_parameter_count(pair[1])
+
+
+def test_principal_axis_alone_does_not_reorient_a_group():
+    """The correction to residual 40's framing, as a test.
+
+    Residual 40 read as though filling ``PRINCIPAL_AXIS`` were the fix. It is
+    half of it: the map only tells the Mulliken rules where the axis is, while
+    the **generators** carry the orientation. A z-setting group declared to have
+    a [111] principal axis is still not an Oh subgroup.
+    """
+    from multitorch.angular.finite_group import (INVERSION, PointGroup, _rot,
+                                                 _X, _Z, point_group)
+
+    oh_mats = np.array([e.matrix for e in point_group("Oh").elements])
+    mislabelled = PointGroup(
+        "D3d[z, claiming 111]",
+        (_rot(_Z, 3), _rot(_X, 2), INVERSION),
+        principal_axis=(1.0, 1.0, 1.0),
+    )
+    outside = sum(
+        np.min(np.abs(oh_mats - e.matrix).reshape(len(oh_mats), -1).max(axis=1)) > 1e-9
+        for e in mislabelled.elements)
+    assert outside == 8, "declaring the axis cannot move the elements"
 
 
 def test_the_cached_invariant_basis_cannot_be_mutated():

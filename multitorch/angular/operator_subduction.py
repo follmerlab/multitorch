@@ -150,20 +150,61 @@ def operator_components(group: str, k: int, parity: int) -> Tuple[OperatorCompon
     return tuple(out)
 
 
-def polarization_axis(component: OperatorComponent) -> Optional[str]:
+def _rotation_to_z(axis) -> np.ndarray:
+    """Wigner ``D^(1)`` of a rotation carrying *axis* onto z.
+
+    Which rotation is immaterial — only the axis ends up fixed, and the
+    ``q = 0`` / ``q = +-1`` split is invariant under the residual rotation
+    about z. Built from the package's own ``wigner_from_quaternion`` rather
+        than from a hand-written Cartesian convention: the first attempt at
+    this did write one, and it was wrong in a way the z-axis groups could not
+    reveal (see :func:`polarization_axis`).
+    """
+    from multitorch.angular.finite_group import quaternion, wigner_from_quaternion
+
+    n = np.asarray(axis, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    z = np.array([0.0, 0.0, 1.0])
+    cross = np.cross(n, z)
+    s = float(np.linalg.norm(cross))
+    if s < 1e-12:                      # already along +-z
+        if n[2] > 0:
+            return np.eye(3, dtype=complex)
+        cross, s = np.array([1.0, 0.0, 0.0]), 0.0
+        return wigner_from_quaternion(1.0, np.asarray(quaternion(cross, np.pi), dtype=float))
+    angle = float(np.arctan2(s, float(n @ z)))
+    return wigner_from_quaternion(1.0, np.asarray(quaternion(cross / s, angle), dtype=float))
+
+
+def polarization_axis(component: OperatorComponent, axis=(0.0, 0.0, 1.0)) -> Optional[str]:
     """``'z'``, ``'xy'`` or ``None`` for a dipole component, read off its vectors.
 
-    ``'z'`` when the component lives entirely on ``q = 0`` and ``'xy'`` when it
-    lives entirely on ``q = +-1``; ``None`` when it mixes them, which is the
-    honest answer for a group in which no axis is special — Oh's single ``T1u``
-    is exactly that case. This is measured, not assumed: it is what justifies
-    calling the one-dimensional component of a uniaxial group the
-    z-polarised (PARA) channel.
+    ``'z'`` when the component is polarised **along** *axis*, ``'xy'`` when it
+    lies entirely **perpendicular** to it, and ``None`` when it mixes the two —
+    the honest answer for a group in which no axis is special, which is exactly
+    Oh's single ``T1u``. Measured, not assumed: it is what justifies calling
+    the one-dimensional component of a uniaxial group the z-polarised (PARA)
+    channel.
+
+    *axis* is the group's principal axis and defaults to z, the setting every
+    uniaxial group here used before WP-B5-8. It became a parameter because the
+    trigonal groups are now registered with their C3 along **[111]** (residual
+    40): ``q = 0`` names the z direction specifically, so a channel that is
+    perfectly axial about [111] spreads over all three ``q`` and the old test
+    called it ``None``. The component's vectors are therefore rotated so that
+    *axis* lies along z before the ``q`` test, which makes the answer
+    independent of how the group happens to be oriented — a group's
+    polarisation structure cannot depend on its setting.
+
+    The names ``'z'`` and ``'xy'`` are kept: they are the physics behind
+    ttrac's PARA/PERP, and for every group with a recorded ttrac convention the
+    principal axis *is* z.
     """
     if component.vectors.shape[0] != 3:
         raise ValueError("polarization_axis is defined for the rank-1 (dipole) operator")
-    q0 = float(np.max(np.abs(component.vectors[1, :])))
-    qpm = float(np.max(np.abs(component.vectors[[0, 2], :])))
+    vectors = _rotation_to_z(axis) @ component.vectors
+    q0 = float(np.max(np.abs(vectors[1, :])))
+    qpm = float(np.max(np.abs(vectors[[0, 2], :])))
     if qpm <= POLARIZATION_TOL:
         return "z"
     if q0 <= POLARIZATION_TOL:

@@ -820,6 +820,10 @@ def _improper(axis, n: int, k: int = 1) -> Element:
 #: rotation angle of 2pi, and anything reading the quaternion angle would miss it.
 INVERSION = Element((1.0, 0.0, 0.0, 0.0), -1)
 
+#: The C2 of a trigonal subgroup of an octahedron, perpendicular to the [111]
+#: C3 and lying along an octahedral edge direction (WP-B5-8).
+_C2_OCT = (1.0, -1.0, 0.0)
+
 
 #: Generators by Schoenflies name, in the standard setting (principal axis z).
 #: A mirror plane with normal ``a`` is inversion times C2(a), so ``sigma_h`` is
@@ -839,10 +843,27 @@ GENERATORS: Dict[str, Tuple[Element, ...]] = {
     "C4h": (_rot(_Z, 4), INVERSION),
     "C4":  (_rot(_Z, 4),),
     "D2d": (_rot(_Z, 2), _rot(_X, 2), _improper(_Z, 4)),
-    # trigonal
-    "D3":  (_rot(_Z, 3), _rot(_X, 2)),
-    "D3d": (_rot(_Z, 3), _rot(_X, 2), INVERSION),
-    "C3v": (_rot(_Z, 3), _improper(_X, 2)),
+    # trigonal -- registered in the OCTAHEDRAL setting, C3 along [111]
+    # (WP-B5-8, residual 40). Every trigonal group in this package is reached
+    # by distorting an octahedron, and the trigonal subgroup of an octahedron
+    # has its C3 along a body diagonal, not along z. In the z setting these are
+    # not subgroups of the standard Oh at all -- 8 of D3d's 12 elements and 4
+    # of D3's and C3v's 6 lie outside it -- so the cubic invariant is not one
+    # of their invariants (residual 0.6455 for all three) and "10Dq plus a
+    # trigonal distortion" cannot be expressed. Here they are genuine Oh
+    # subgroups: 0 elements outside, cubic residual 9.4e-16 (D3d) and 6.0e-16
+    # (D3, C3v). The irrep labels are the same in both settings and
+    # conventional in both, so the orientation costs nothing in labelling.
+    #
+    # The crystallographic standard setting is still reachable as "D3d[z]",
+    # "D3[z]", "C3v[z]" -- correct for a genuinely trigonal site, and what to
+    # compare against a published table.
+    "D3":  (_rot(_DIAG, 3), _rot(_C2_OCT, 2)),
+    "D3d": (_rot(_DIAG, 3), _rot(_C2_OCT, 2), INVERSION),
+    "C3v": (_rot(_DIAG, 3), _improper(_C2_OCT, 2)),
+    "D3[z]":  (_rot(_Z, 3), _rot(_X, 2)),
+    "D3d[z]": (_rot(_Z, 3), _rot(_X, 2), INVERSION),
+    "C3v[z]": (_rot(_Z, 3), _improper(_X, 2)),
     "C3":  (_rot(_Z, 3),),
     # orthorhombic and lower
     "D2":  (_rot(_Z, 2), _rot(_X, 2)),
@@ -854,9 +875,14 @@ GENERATORS: Dict[str, Tuple[Element, ...]] = {
     "C1":  (),
 }
 
-#: Groups whose principal axis is not z (none at present, kept explicit so a
-#: future non-standard setting cannot be introduced silently).
-PRINCIPAL_AXIS: Dict[str, Tuple[float, float, float]] = {}
+#: Groups whose principal axis is not z, so that the Mulliken A/B subscripts
+#: are referred to the right class. **This map alone does not re-orient a
+#: group** -- it only tells the labelling where the axis is; the generators
+#: carry the orientation. Residual 40 read as though filling this in were the
+#: fix for the trigonal setting, and it is half of it (WP-B5-8).
+PRINCIPAL_AXIS: Dict[str, Tuple[float, float, float]] = {
+    "D3": _DIAG, "D3d": _DIAG, "C3v": _DIAG,
+}
 
 
 @lru_cache(maxsize=None)
