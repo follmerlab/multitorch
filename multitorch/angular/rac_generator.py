@@ -1798,6 +1798,87 @@ def ledge_reference_ev(
 _D4H_EMITTER_NAME = {'10DQ': 'TENDQ'}
 
 
+# ─────────────────────────────────────────────────────────────
+# WP-B5-6: one plan-driven TRANSI emission
+#
+# Same shape as B5-5's: a group contributes the ordered irreps of a manifold
+# (with the state count the dipole blocks report) and a channel maker, and the
+# dipole components come from the plan's ``dipole_blocks`` -- one for Oh
+# (T1u/MULTIPOLE), two for D4h (Eu/PERP, A2u/PARA), three for the groups WP-B
+# targets next.
+#
+# **Two branches the old pair of loops carried turned out to be unnecessary,
+# and both were checked before removal rather than assumed:**
+#
+#   * ``op_sym``. The Oh loop wrote the literal ``'1-'`` and the D4h loop
+#     looked up ``D4H_TO_BUTLER[irrep]``. They agree:
+#     ``butler_label('T1', '-') == '1-'`` exactly, so the operator's Butler
+#     label in its own group serves both and the literal is gone.
+#   * the half-integer test. The Oh loop asked ``is_half_gs or is_half_ex`` and
+#     the D4h loop asked ``is_half_gs``. These are the same question for every
+#     reachable case, and not by luck: the excited configuration is
+#     2p^5 3d^(n+1), so it carries n + 6 electrons and has the same parity as
+#     the ground one. Measured over d1..d9 -- equal at all nine -- and the
+#     generator now asks once.
+# ─────────────────────────────────────────────────────────────
+
+
+def _oh_transi_irreps(j_sizes, parity, oh_irreps, j_ordering):
+    """``(butler, n_states, payload)`` per Oh irrep, in the legacy order."""
+    out = []
+    for irrep in oh_irreps:
+        j_order = j_ordering(j_sizes, irrep)
+        if not j_order:
+            continue
+        out.append((butler_label(irrep, parity),
+                    sum(n_st for _, _, n_st in j_order), (irrep, j_order)))
+    return out
+
+
+def _d4h_transi_irreps(j_sizes, parity, is_half):
+    """``(butler, n_states, payload)`` per D4h irrep, partner-0 entries only.
+
+    The dipole blocks report the partner-0 state count, *not* the block
+    dimension the operator blocks use -- it is not divided by the irrep
+    dimension. That asymmetry is ttrac's and is why this is a second adapter
+    rather than a reuse of :func:`_d4h_manifold_irreps`.
+    """
+    layout = (double_group.d4h_double_layout(j_sizes, parity=parity) if is_half
+              else d4h_basis_layout(j_sizes, parity=parity))
+    butler = D4H_DOUBLE_TO_BUTLER if is_half else D4H_TO_BUTLER
+    out = []
+    for d4h_irrep, raw in sorted(layout.items()):
+        entries = [e for e in raw if e[3] == 0]
+        if not entries:
+            continue
+        out.append((butler[d4h_irrep], sum(e[4] for e in entries),
+                    (d4h_irrep, entries)))
+    return out
+
+
+def _emit_transi_blocks(blocks, dipole_blocks, transi_gs, transi_ex,
+                        make_channels, op_label):
+    """Emit the dipole blocks: one per (gs irrep, ex irrep, component, channel).
+
+    A triad with more than one invariant yields more than one block -- that is
+    the PRMULT pair, Gamma8 x T1u x Gamma8, which ttrac also writes twice and
+    the ``.ban`` lists once per channel so the assembler builds both copies.
+    """
+    for gs_butler, n_bra, gs_payload in transi_gs:
+        for ex_butler, n_ket, ex_payload in transi_ex:
+            for op_irrep, geometry, factor in dipole_blocks:
+                for adds in make_channels(gs_payload, ex_payload, op_irrep, factor):
+                    blocks.append(RACBlockFull(
+                        kind='TRANSI',
+                        bra_sym=gs_butler,
+                        op_sym=op_label(op_irrep),
+                        ket_sym=ex_butler,
+                        geometry=geometry,
+                        n_bra=n_bra, n_ket=n_ket,
+                        add_entries=adds,
+                    ))
+
+
 def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering):
     """``(butler, dim, block_dim, payload)`` per Oh irrep, in the legacy order.
 
@@ -2172,80 +2253,103 @@ def _generate_ledge_template_impl(
     # Per-D4h-irrep TRANSI emission via _make_d4h_dipole_adds.
     # Operates on the D4h-Butler labels emitted by the per-D4h-irrep
     # GROUND/EXCITE block above.
-    if sym == 'd4h':
-        layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
-                     else d4h_basis_layout(gs_j_sizes, parity='g'))
-        layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
-                     else d4h_basis_layout(ex_j_sizes, parity='u'))
-        butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
-        for d4h_gs, gs_raw in sorted(layout_gs.items()):
-            gs_filtered = [e for e in gs_raw if e[3] == 0]
-            if not gs_filtered:
-                continue
-            n_bra = sum(e[4] for e in gs_filtered)
-            gs_butler = butler[d4h_gs]
-            for d4h_ex, ex_raw in sorted(layout_ex.items()):
-                ex_filtered = [e for e in ex_raw if e[3] == 0]
-                if not ex_filtered:
+    # --- TRANSI (dipole) blocks ---
+    # Two emissions, selected by `emission`, as for GROUND/EXCITE above; see
+    # this module's WP-B5-6 note. The legacy pair of loops is kept verbatim as
+    # the harness's reference, and both run at this same point in the body so
+    # block order holds by construction.
+
+    def _transi_legacy():
+        """The pre-B5-6 emission: a D4h loop and an Oh loop, side by side."""
+        if sym == 'd4h':
+            layout_gs = (double_group.d4h_double_layout(gs_j_sizes, parity='g') if is_half_gs
+                         else d4h_basis_layout(gs_j_sizes, parity='g'))
+            layout_ex = (double_group.d4h_double_layout(ex_j_sizes, parity='u') if is_half_ex
+                         else d4h_basis_layout(ex_j_sizes, parity='u'))
+            butler = D4H_DOUBLE_TO_BUTLER if is_half_gs else D4H_TO_BUTLER
+            for d4h_gs, gs_raw in sorted(layout_gs.items()):
+                gs_filtered = [e for e in gs_raw if e[3] == 0]
+                if not gs_filtered:
                     continue
-                n_ket = sum(e[4] for e in ex_filtered)
-                ex_butler = butler[d4h_ex]
-                for op_d4h_target, geometry, factor in dipole_geometries('D4h'):
-                    op_butler = D4H_TO_BUTLER[op_d4h_target]
-                    if is_half_gs:
-                        # one block per invariant of (Γ_gs, Γ_op, Γ_ex); the
-                        # PERP/PARA factor is already inside the projection
-                        channels = _make_d4h_dipole_adds_half(
-                            d4h_gs=d4h_gs, gs_entries=gs_filtered,
-                            d4h_ex=d4h_ex, ex_entries=ex_filtered,
-                            op_d4h_target=op_d4h_target,
-                            multipole_idx=multipole_idx, basis=half_basis,
-                        )
-                    else:
-                        adds = _make_d4h_dipole_adds(
-                            d4h_gs=d4h_gs, gs_entries=gs_filtered,
-                            d4h_ex=d4h_ex, ex_entries=ex_filtered,
-                            op_d4h_target=op_d4h_target,
-                            multipole_idx=multipole_idx,
-                            factor=factor,
-                        )
-                        channels = [adds] if adds else []
-                    for transi_adds in channels:
+                n_bra = sum(e[4] for e in gs_filtered)
+                gs_butler = butler[d4h_gs]
+                for d4h_ex, ex_raw in sorted(layout_ex.items()):
+                    ex_filtered = [e for e in ex_raw if e[3] == 0]
+                    if not ex_filtered:
+                        continue
+                    n_ket = sum(e[4] for e in ex_filtered)
+                    ex_butler = butler[d4h_ex]
+                    for op_d4h_target, geometry, factor in dipole_geometries('D4h'):
+                        op_butler = D4H_TO_BUTLER[op_d4h_target]
+                        if is_half_gs:
+                            # one block per invariant of (Γ_gs, Γ_op, Γ_ex); the
+                            # PERP/PARA factor is already inside the projection
+                            channels = _make_d4h_dipole_adds_half(
+                                d4h_gs=d4h_gs, gs_entries=gs_filtered,
+                                d4h_ex=d4h_ex, ex_entries=ex_filtered,
+                                op_d4h_target=op_d4h_target,
+                                multipole_idx=multipole_idx, basis=half_basis,
+                            )
+                        else:
+                            adds = _make_d4h_dipole_adds(
+                                d4h_gs=d4h_gs, gs_entries=gs_filtered,
+                                d4h_ex=d4h_ex, ex_entries=ex_filtered,
+                                op_d4h_target=op_d4h_target,
+                                multipole_idx=multipole_idx,
+                                factor=factor,
+                            )
+                            channels = [adds] if adds else []
+                        for transi_adds in channels:
+                            blocks.append(RACBlockFull(
+                                kind='TRANSI',
+                                bra_sym=gs_butler,
+                                op_sym=op_butler,
+                                ket_sym=ex_butler,
+                                geometry=geometry,
+                                n_bra=n_bra, n_ket=n_ket,
+                                add_entries=transi_adds,
+                            ))
+
+        # Per-Oh-irrep TRANSI loop (sym='oh' only; the d4h dispatcher above
+        # emits TRANSI blocks for sym='d4h').
+        legacy_transi_gs_irreps = oh_irreps_gs if sym == 'oh' else []
+        for gs_irrep in legacy_transi_gs_irreps:
+            gs_butler = butler_label(gs_irrep, '+')
+            gs_j_order = irrep_j_ordering(gs_j_sizes, gs_irrep)
+            if not gs_j_order:
+                continue
+            gs_block_dim = sum(n_st for _, _, n_st in gs_j_order)
+
+            for ex_irrep in oh_irreps_ex:
+                ex_butler = butler_label(ex_irrep, '-')
+                ex_j_order = irrep_j_ordering(ex_j_sizes, ex_irrep)
+                if not ex_j_order:
+                    continue
+                ex_block_dim = sum(n_st for _, _, n_st in ex_j_order)
+
+                if is_half_gs or is_half_ex:
+                    # Half-integer J (odd-electron ions): one MULTIPOLE block per
+                    # invariant of the triad (WP-B2a-3). Γ8 ⊗ T1u ⊗ Γ8 has two, so
+                    # that triad gets two blocks, which the .ban lists twice and the
+                    # assembler reads as PRMULT copies 0 and 1.
+                    for transi_adds in _make_oh_dipole_adds_half(
+                        gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx, half_basis,
+                    ):
                         blocks.append(RACBlockFull(
                             kind='TRANSI',
                             bra_sym=gs_butler,
-                            op_sym=op_butler,
+                            op_sym='1-',
                             ket_sym=ex_butler,
-                            geometry=geometry,
-                            n_bra=n_bra, n_ket=n_ket,
+                            geometry='MULTIPOLE',
+                            n_bra=gs_block_dim,
+                            n_ket=ex_block_dim,
                             add_entries=transi_adds,
                         ))
-
-    # Per-Oh-irrep TRANSI loop (sym='oh' only; the d4h dispatcher above
-    # emits TRANSI blocks for sym='d4h').
-    legacy_transi_gs_irreps = oh_irreps_gs if sym == 'oh' else []
-    for gs_irrep in legacy_transi_gs_irreps:
-        gs_butler = butler_label(gs_irrep, '+')
-        gs_j_order = irrep_j_ordering(gs_j_sizes, gs_irrep)
-        if not gs_j_order:
-            continue
-        gs_block_dim = sum(n_st for _, _, n_st in gs_j_order)
-
-        for ex_irrep in oh_irreps_ex:
-            ex_butler = butler_label(ex_irrep, '-')
-            ex_j_order = irrep_j_ordering(ex_j_sizes, ex_irrep)
-            if not ex_j_order:
-                continue
-            ex_block_dim = sum(n_st for _, _, n_st in ex_j_order)
-
-            if is_half_gs or is_half_ex:
-                # Half-integer J (odd-electron ions): one MULTIPOLE block per
-                # invariant of the triad (WP-B2a-3). Γ8 ⊗ T1u ⊗ Γ8 has two, so
-                # that triad gets two blocks, which the .ban lists twice and the
-                # assembler reads as PRMULT copies 0 and 1.
-                for transi_adds in _make_oh_dipole_adds_half(
-                    gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx, half_basis,
-                ):
+                    continue
+                transi_adds = _make_oh_dipole_adds(
+                    gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx,
+                )
+                if transi_adds:
                     blocks.append(RACBlockFull(
                         kind='TRANSI',
                         bra_sym=gs_butler,
@@ -2256,21 +2360,61 @@ def _generate_ledge_template_impl(
                         n_ket=ex_block_dim,
                         add_entries=transi_adds,
                     ))
-                continue
-            transi_adds = _make_oh_dipole_adds(
-                gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx,
-            )
-            if transi_adds:
-                blocks.append(RACBlockFull(
-                    kind='TRANSI',
-                    bra_sym=gs_butler,
-                    op_sym='1-',
-                    ket_sym=ex_butler,
-                    geometry='MULTIPOLE',
-                    n_bra=gs_block_dim,
-                    n_ket=ex_block_dim,
-                    add_entries=transi_adds,
-                ))
+
+    def _transi_plan():
+        """WP-B5-6: one loop over the plan's dipole components."""
+        plan = plan_for_sym(sym)
+        # the same question the two loops asked differently; see the module note
+        is_half = is_half_gs or is_half_ex
+
+        if sym == 'd4h':
+            def _channels(gs_payload, ex_payload, op_irrep, factor):
+                d4h_gs, gs_entries = gs_payload
+                d4h_ex, ex_entries = ex_payload
+                if is_half:
+                    # one block per invariant of (Gamma_gs, Gamma_op, Gamma_ex);
+                    # the PERP/PARA factor is already inside the projection
+                    return _make_d4h_dipole_adds_half(
+                        d4h_gs=d4h_gs, gs_entries=gs_entries,
+                        d4h_ex=d4h_ex, ex_entries=ex_entries,
+                        op_d4h_target=op_irrep,
+                        multipole_idx=multipole_idx, basis=half_basis,
+                    )
+                adds = _make_d4h_dipole_adds(
+                    d4h_gs=d4h_gs, gs_entries=gs_entries,
+                    d4h_ex=d4h_ex, ex_entries=ex_entries,
+                    op_d4h_target=op_irrep,
+                    multipole_idx=multipole_idx, factor=factor,
+                )
+                return [adds] if adds else []
+
+            transi_gs = _d4h_transi_irreps(gs_j_sizes, 'g', is_half_gs)
+            transi_ex = _d4h_transi_irreps(ex_j_sizes, 'u', is_half_ex)
+            op_label = D4H_TO_BUTLER.__getitem__
+        else:
+            def _channels(gs_payload, ex_payload, _op_irrep, _factor):
+                gs_irrep, gs_j_order = gs_payload
+                ex_irrep, ex_j_order = ex_payload
+                if is_half:
+                    return _make_oh_dipole_adds_half(
+                        gs_irrep, gs_j_order, ex_irrep, ex_j_order,
+                        multipole_idx, half_basis,
+                    )
+                adds = _make_oh_dipole_adds(
+                    gs_irrep, gs_j_order, ex_irrep, ex_j_order, multipole_idx,
+                )
+                return [adds] if adds else []
+
+            transi_gs = _oh_transi_irreps(gs_j_sizes, '+', oh_irreps_gs, irrep_j_ordering)
+            transi_ex = _oh_transi_irreps(ex_j_sizes, '-', oh_irreps_ex, irrep_j_ordering)
+            # the dipole's Butler label in its own group: '1-' for Oh's T1u,
+            # which is the literal the legacy loop wrote out
+            op_label = lambda irrep: butler_label(irrep[:-1], '-')
+
+        _emit_transi_blocks(blocks, plan.dipole_blocks, transi_gs, transi_ex,
+                            _channels, op_label)
+
+    (_transi_legacy if emission == 'legacy' else _transi_plan)()
 
     # --- D4h dispatcher — per-D4h-irrep GROUND + EXCITE emission ---
     # See `docs/D4H_DISPATCHER_PLAN_V2.md` §4. The per-Oh-irrep

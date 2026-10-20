@@ -273,7 +273,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
 
   **Correction to this entry's stated target, and the oracle to use (surveyed 2026-10-19, before starting).** The entry says B3 "removes the per-operator recipe table `d4h_cf_operator_recipe`". That function has **no production call sites** — `grep` finds it only in `tests/test_d4h/test_d4h_from_scratch_status.py`, which calls it four times — so removing it is deleting dead code and is *not* the work, nor the benefit. This is the second time an entry in this plan has named a dead function (see residual 38 and its lesson). **The real target is `rac_generator._d4h_operator_vector_complex(operator, rank, target_d4h_irrep)`**, which is squarely on the Fortran-validated path: it is called from `double_group.py` in four places (`_d4h_cf_operators`, the rank-4 cubic marker, and the CF operator-vector lookup) and from `rac_generator` itself. It builds each CF operator's m-basis vector by summing Butler-weighted Oh-route contributions, where the Butler weights are the hand-tabulated `symmetry.D4H_BRANCHES_BY_OPERATOR` — four coefficients (`TENDQ`: one rank-4 A1 route; `DT`: rank-4 A1 **and** E routes; `DS`: one rank-2 E route) — and it carries **two hand-placed gauge pins** that B3 must either reproduce or make unnecessary: (i) a per-route sign fix requiring each route's m = 0 real-harmonic component to be positive, which is residual 21 (without it a flipped LAPACK eigenvector sign mixed the cubic field into Dt by up to 1.6 eV), and (ii) an overall sign pinned to the Ballhausen convention by requiring the one-electron z² matrix element to be positive for 10Dq and negative for Dt and Ds. B3's invariant space comes straight from B2: the totally-symmetric rows of `PointGroup.subduction(k, parity=+1)` for k = 2, 4 *are* the allowed CF operator vectors, with no Butler table and no route gauge. **Two oracles, and neither is code-vs-code.** (1) *Analytic*: the Ballhausen one-electron energies E(z²) = 6Dq − 2Ds − 6Dt, E(x²−y²) = 6Dq + 2Ds − Dt, E(xy) = −4Dq + 2Ds − Dt, E(xz, yz) = −4Dq − Ds + 4Dt, which fix the named-parameter adapter completely and independently of this package. (2) *Fortran, through the existing path*: the derived vectors must reproduce `_d4h_operator_vector_complex`'s output for TENDQ/DT/DS, and that function's numbers are what make the D4h store match the `nid8ct` fixture. Check the call sites above are still the live ones before starting — that is the residual-38 lesson applied.
 - **B4. General dipole/quadrupole operator subduction.** Rank-1 (and rank-2 for K pre-edge) operator components → G irreps and partners, giving linear and circular polarization selection for any G (generalizes PERP/PARA).
-- **B5. Symmetry Plan + generator rewrite — IN PROGRESS (B5-1 … B5-5 landed 2026-10-19; TRANSI emission, B5-6, is next).**
+- **B5. Symmetry Plan + generator rewrite — IN PROGRESS (B5-1 … B5-6 landed 2026-10-19; B5-5b, B5-7, B5-8, B5-9 remain).**
 
   **Landed.** (1) `angular/symmetry_plan.py`: a `SymmetryPlan` per group, derived where it can be and named where it cannot — the crystal-field operator count and ranks from WP-B3, the hybridisation channels from `branching(2, +1)` (the d-orbital irreps: Oh gives Eg + T2g = `eg`/`t2g`, D4h gives A1g + B1g + B2g + Eg = `b1`/`a1`/`b2`/`e`), the dipole blocks from WP-B4; only the store's strings and the list *orders* are looked up, because the order is the order of blocks in the RAC file. It reproduces all four of today's hard-coded lists exactly: `OPERATOR_ORDER_OH`, `OPERATOR_ORDER_D4H`, `HYBR_ORDER_OH`, `HYBR_ORDER_D4H`. (2) `io/rac_text.py`: the **byte-equal RAC oracle this entry names, which did not previously exist** — `write_inputs.write_rac` writes a ttmult *input* file, not the `RACFileFull` the generator returns. `rac_fingerprint` renders every block field and every ADD entry at `%.17g`, order-preserving, and is tested to notice a coefficient perturbed in its last bits, every block field, every ADD field, and either reordering. (3) `BanData` gained an optional `symmetry`; the two from-scratch builders set it, and `assemble`, `build_ban` and `calc.fixture_defaults` use it in preference to guessing. `fixture_defaults` stopped guessing altogether, since `sym` was already one of its arguments. (4) The dead `_make_operator_adds` and `_make_cf_adds` are deleted (67 lines).
 
@@ -289,7 +289,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   | ~~**B5-4**~~ **DONE 2026-10-19** | `RACFileFull` carries its group; `SymmetryPlan.xham_values` / `hybr_values` are the only copy of the operator and channel lists. **Found and fixed residual 43 on the way.** | harness + suite |
   | ~~**B5-5**~~ **DONE 2026-10-19** | One plan-driven loop replaces the D4h GROUND/EXCITE blocks and the two legacy Oh loops (188 lines -> one `_emit_operator_blocks` call per manifold). **The identity-subduction merge is deferred — see the close-out.** Found residuals 44 and 45. | harness, all 18 |
   | **B5-5b** | Retire the Oh ADD makers: route Oh through the D4h dispatcher with **Oh as its own target group**, so its subduction step is the identity. **Split out of B5-5** because it changes which code computes the coefficients, so byte equality is the claim and not the check | Ballhausen one-electron energies (`test_cf_one_electron.py`), both groups |
-  | **B5-6** | Unify **TRANSI** emission (D4h at 2012/2115, legacy Oh at 2063) | fingerprint, all 18 |
+  | ~~**B5-6**~~ **DONE 2026-10-19** | One plan-driven loop over the plan's `dipole_blocks` replaces the D4h and Oh TRANSI loops (100 lines). **Two branches removed as unnecessary, each checked first** — see the close-out. | harness, all 18 |
   | **B5-7** | Retire the Butler-string geometry match in `assemble.py:625` (`('PARA','MULTIPOLE')` vs `('PERP','MULTIPOLE')`, residual 35); the plan supplies the geometry per triad | fingerprint + suite |
   | **B5-8** | **Residual 40: decide the trigonal setting.** B5 is where orientation belongs, and D3d/D3/C3v are three of the WP-B targets, so this blocks B5-9 for them | new tests |
   | **B5-9** | **Add Td end-to-end** — the cheapest third group (one cubic CF parameter and one dipole irrep, exactly like Oh), as the proof the loop is general. This is the increment that first makes a new group reachable from `calcXAS` | dipole sum rule + Oh comparison |
@@ -392,6 +392,37 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   B5-8 (which is already an orientation/convention increment) or on its own
   with the Ballhausen one-electron energies as the oracle, which is what
   `test_cf_one_electron.py` already provides for both groups.
+
+  **B5-6 close-out (2026-10-19).** Same shape as B5-5: a group contributes the
+  ordered irreps of a manifold and a channel maker, and the dipole components
+  come from the plan's `dipole_blocks` — one for Oh, two for D4h, three for the
+  groups WP-B targets next. **Two branches the old pair of loops carried turned
+  out to be unnecessary, and both were checked before removal rather than
+  assumed:**
+
+  * *`op_sym`.* The Oh loop wrote the literal `'1-'`; the D4h loop looked up
+    `D4H_TO_BUTLER[irrep]`. They agree — `butler_label('T1', '-') == '1-'`
+    exactly — so the operator's Butler label in its own group serves both and
+    the literal is gone.
+  * *the half-integer test.* The Oh loop asked `is_half_gs or is_half_ex`, the
+    D4h loop asked `is_half_gs`. Same question for every reachable case, and
+    not by luck: the excited configuration is 2p⁵3d^(n+1), so it carries
+    n + 6 electrons and has the ground configuration's parity. Measured equal
+    at all nine electron counts; the generator asks once now.
+
+  One asymmetry is *kept* and is ttrac's, not ours: the dipole blocks report
+  the **partner-0 state count**, not the block dimension divided by the irrep
+  dimension that the operator blocks use. That is why `_d4h_transi_irreps` is a
+  second adapter rather than a reuse of `_d4h_manifold_irreps`, and the
+  docstring says so where someone would otherwise try to merge them.
+
+  **The gate-for-the-gate now covers every plan-side emitter**, and a second
+  test states the property directly: each must run on the plan path and *not* on
+  the legacy one. Collapsing the TRANSI sides was injected and the 18
+  byte-equality cases stayed **green** while only the two guards failed — the
+  third independent confirmation that the guards are what catch residual 45 and
+  that byte equality cannot. Any future plan-side emitter needs a line there;
+  one added without it is the same mistake under a new name.
 
   **B5-9 is the one that delivers the headline goal.** B5-1 through B5-7 remove ambiguity and restructure; none of them lets a user call a new group, because `calcXAS` still takes only `sym='oh'|'d4h'`.
 

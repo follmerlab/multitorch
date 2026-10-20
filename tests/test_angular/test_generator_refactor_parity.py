@@ -144,31 +144,69 @@ def test_the_two_sides_of_the_gate_are_different_code():
     the Oh and D4h emission passing byte equality on the first try with no
     iteration is what gave it away, not the suite.
 
-    So the gate needs a gate. ``_emit_operator_blocks`` is reached only by the
-    plan emission; perturbing it must make the comparison **fail**. If someone
-    again collapses the two sides into one body, the legacy path starts going
-    through it too, both sides move together, the comparison goes quiet -- and
-    this test fails instead.
+    So the gate needs a gate. ``_emit_operator_blocks`` (B5-5) and
+    ``_emit_transi_blocks`` (B5-6) are reached only by the plan emission;
+    perturbing either must make the comparison **fail**. If someone again
+    collapses the two sides into one body, the legacy path starts going through
+    them too, both sides move together, the comparison goes quiet -- and this
+    test fails instead.
+
+    Every plan-side emitter needs a line here. An emitter the legacy path also
+    reaches is one whose increment was never really gated, so a new emitter
+    added without an entry below is the same mistake wearing a different name.
     """
     import multitorch.angular.rac_generator as rg
 
-    real = rg._emit_operator_blocks
+    for emitter in ("_emit_operator_blocks", "_emit_transi_blocks"):
+        real = getattr(rg, emitter)
 
-    def drops_the_last_block(blocks, *args, **kwargs):
-        real(blocks, *args, **kwargs)
-        if blocks:
-            blocks.pop()
+        def drops_the_last_block(blocks, *args, _real=real, **kwargs):
+            _real(blocks, *args, **kwargs)
+            if blocks:
+                blocks.pop()
 
-    rg._emit_operator_blocks = drops_the_last_block
-    try:
-        with pytest.raises(AssertionError):
-            _run_gate("oh", 8, generate_ledge_template)
-        with pytest.raises(AssertionError):
-            _run_gate("d4h", 8, generate_ledge_template)
-    finally:
-        rg._emit_operator_blocks = real
+        setattr(rg, emitter, drops_the_last_block)
+        try:
+            for sym in ("oh", "d4h"):
+                with pytest.raises(AssertionError):
+                    _run_gate(sym, 8, generate_ledge_template)
+        finally:
+            setattr(rg, emitter, real)
 
     _run_gate("oh", 8, generate_ledge_template)      # and clean again afterwards
+    _run_gate("d4h", 8, generate_ledge_template)
+
+
+def test_every_plan_side_emitter_is_live_and_the_legacy_path_avoids_it():
+    """Each plan emitter must run on the plan path and *not* on the legacy one.
+
+    The perturbation test above shows a difference exists; this shows where it
+    is, and in the direction that matters -- a plan emitter the legacy path also
+    called would make its increment's gate vacuous without any test going red.
+    """
+    import multitorch.angular.rac_generator as rg
+
+    for emitter in ("_emit_operator_blocks", "_emit_transi_blocks"):
+        real = getattr(rg, emitter)
+        seen = {"plan": 0, "legacy": 0}
+        which = {"side": None}
+
+        def counting(*args, _real=real, **kwargs):
+            seen[which["side"]] += 1
+            return _real(*args, **kwargs)
+
+        setattr(rg, emitter, counting)
+        try:
+            for sym in ("oh", "d4h"):
+                which["side"] = "plan"
+                _build(sym, 8, generate_ledge_template)
+                which["side"] = "legacy"
+                _build(sym, 8, _generate_ledge_template_legacy)
+        finally:
+            setattr(rg, emitter, real)
+
+        assert seen["plan"] > 0, f"{emitter} is never reached by the plan emission"
+        assert seen["legacy"] == 0, f"{emitter} is reached by the legacy emission too"
 
 
 def test_the_legacy_emission_is_retained_and_selectable():
