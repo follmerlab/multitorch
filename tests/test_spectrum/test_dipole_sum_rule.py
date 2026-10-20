@@ -125,6 +125,15 @@ SCRATCH = [
     # half-integer D4h + CT has no Fortran reference at all (residual 32)
     ("Fe", "iii", "d4h", True, {"cf": {"tendq": 1.5, "dt": -0.1, "ds": 0.25}, "delta": 3.0, "u": 1.0,
                                 "lmct": {"b1": 2.0, "a1": 1.6, "b2": 1.0, "e": 0.8}}),
+    # Td (WP-B5-9), integer and half-integer. Td has no Fortran reference and
+    # never will have one short of WP-B6, so the sum rule is one of its two
+    # oracles; the other is exact equality with Oh (residual 48). A negative
+    # tendq is used for one of them because that is what a physical tetrahedron
+    # needs -- `tendq` is the coefficient of the cubic invariant in every group,
+    # so the sign is the user's to choose, and the sum rule must hold either way.
+    ("Ni", "ii", "td", False, {"cf": {"tendq": 1.0}}),
+    ("Ni", "ii", "td", False, {"cf": {"tendq": -0.45}}),
+    ("Co", "ii", "td", False, {"cf": {"tendq": -0.45}}),
 ]
 
 

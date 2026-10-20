@@ -213,7 +213,35 @@ def test_the_plan_distinguishes_groups_the_counts_cannot():
 def test_plan_for_sym_maps_the_public_api_strings():
     assert plan_for_sym("oh").group == "Oh"
     assert plan_for_sym("d4h").group == "D4h"
-    assert set(SYM_TO_GROUP) == {"oh", "d4h"}
+    assert plan_for_sym("td").group == "Td"          # WP-B5-9
+    assert set(SYM_TO_GROUP) == {"oh", "d4h", "td"}
+
+
+def test_td_introduces_no_per_group_parameter_convention():
+    """The sign decision of WP-B5-9, asserted as the absence of a special case.
+
+    ``tendq`` is the coefficient of the rank-4 cubic invariant in **every**
+    group, so Td's entry must be Oh's entry: the same store name, rank, public
+    key and default. The rejected alternative — flipping the sign internally so
+    that a positive ``tendq`` meant "physically tetrahedral" — would show up
+    here as a differing default or an extra factor, and nowhere else, because
+    ``xham_values`` is group-generic by construction and has no per-group hook
+    to put a sign in.
+
+    A physical tetrahedron therefore needs a negative ``tendq``, which
+    ``tests/test_integration/test_td_from_scratch.py`` states at the API level.
+    """
+    oh = symmetry_plan("Oh")
+    td = symmetry_plan("Td")
+    assert td.cf_operators == oh.cf_operators == (("10DQ", 4, "tendq", 1.0),)
+    assert td.operator_order == oh.operator_order
+    assert td.xham_values({"tendq": -0.45}) == oh.xham_values({"tendq": -0.45})
+    assert td.xham_values({}) == oh.xham_values({}) == [1.0, 1.0]
+    # what differs is the dipole actor's label and the channel names, not the
+    # crystal field: Oh's T1u is Butler '1-', Td's T2 is '^1-'
+    assert td.dipole_butler == ("^1-",) and oh.dipole_butler == ("1-",)
+    assert td.hybr_parameter_names == ("e", "t2")
+    assert oh.hybr_parameter_names == ("eg", "t2g")
 
 
 def test_an_unconventional_group_is_refused_with_a_route_to_the_derived_parts():

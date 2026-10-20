@@ -94,6 +94,21 @@ CONVENTIONS: Dict[str, GroupConventions] = {
         hybr=(("Eg", "EGHYBR", "eg"), ("T2g", "T2GHYBR", "t2g")),
         dipole_butler=("1-",),                      # T1u
     ),
+    # Td. No Fortran reference, and no invented convention either: one cubic
+    # crystal-field parameter and one dipole component, exactly as Oh (residual
+    # 48 measures the correspondence). **`tendq` is the coefficient of the
+    # rank-4 cubic invariant, identically to Oh** (user decision, 2026-10-20) --
+    # so `sym='td', tendq=+1.0` reproduces Oh's level ordering, and a physical
+    # tetrahedron needs a *negative* value, around -4/9 of the octahedral one
+    # for the same ligands. The alternative, flipping the sign internally so
+    # positive means "physically tetrahedral", would have been a per-group
+    # convention asserted without an oracle, which is residual 39's trap.
+    # The channel names follow the irreps the d orbitals span here, E + T2.
+    "Td": GroupConventions(
+        cf_operators=(("10DQ", 4, "tendq", 1.0),),
+        hybr=(("E", "EHYBR", "e"), ("T2", "T2HYBR", "t2")),
+        dipole_butler=("^1-",),                     # T2, Butler '^1'
+    ),
     "D4h": GroupConventions(
         cf_operators=(("10DQ", 4, "tendq", 1.0), ("DT", 4, "dt", 0.0),
                       ("DS", 2, "ds", 0.0)),
@@ -290,7 +305,7 @@ def symmetry_plan(group: str) -> SymmetryPlan:
 #: Mapping from the lowercase ``sym`` strings the public API uses to the
 #: Schoenflies names :mod:`finite_group` registers. ``calcXAS(sym=...)`` takes
 #: the former; everything derived here is keyed by the latter.
-SYM_TO_GROUP: Dict[str, str] = {"oh": "Oh", "d4h": "D4h"}
+SYM_TO_GROUP: Dict[str, str] = {"oh": "Oh", "d4h": "D4h", "td": "Td"}
 
 
 def plan_for_sym(sym: str) -> SymmetryPlan:

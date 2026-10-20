@@ -1797,6 +1797,42 @@ def ledge_reference_ev(
 #: D4h ADD-maker names for the plan's store names, where the two differ.
 _D4H_EMITTER_NAME = {'10DQ': 'TENDQ'}
 
+#: Oh single-group irrep -> Td irrep for an **ungerade** manifold (WP-B5-9).
+#: Td is a subgroup of Oh with no inversion centre, so parity is absorbed into
+#: the label: the gerade irreps map across unchanged (``Xg -> X``) while the
+#: ungerade ones pick up the A1<->A2, T1<->T2 swap. Measured as a complete
+#: bijection -- identical branching multiplicities at every J and identical
+#: triad invariant counts in all 25 dipole and 5 scalar triads (residual 48),
+#: which is why Td needs **no new angular machinery at all**: the subduction
+#: basis, the ADD coefficients and the block dimensions are Oh's, and only the
+#: labels differ.
+_OH_U_TO_TD = {
+    'A1': 'A2', 'A2': 'A1', 'E': 'E', 'T1': 'T2', 'T2': 'T1',
+    # the double group swaps the same way: E1/2 <-> E5/2, G3/2 fixed, which is
+    # the half-integer analogue of A1 <-> A2, T1 <-> T2, E fixed. Measured over
+    # J = 1/2 .. 9/2, both parities, multiplicities identical throughout.
+    'E1/2': 'E5/2', 'E5/2': 'E1/2', 'G3/2': 'G3/2',
+}
+
+
+def _manifold_label(group: str, irrep: str, parity: str) -> str:
+    """Butler label of an Oh-subduced irrep in *group*'s own naming.
+
+    The ADD makers work in Oh throughout -- that is what residual 48 licenses
+    -- so the generator carries Oh irrep names internally and converts to the
+    target group's label here, at the one point where the name is written into
+    the RAC. For Oh this is :func:`butler_label` unchanged; for Td an ungerade
+    irrep is renamed first.
+
+    The ``+``/``-`` suffix tags the **manifold**, ground or excited, which in
+    Oh coincides with the parity. Td has no parity to report, and the suffix is
+    kept because the assembler keys ``irrep_dim`` by label alone and the two
+    manifolds' Td labels would otherwise collide.
+    """
+    if group == 'Td' and parity == '-':
+        irrep = _OH_U_TO_TD[irrep]
+    return butler_label(irrep, parity)
+
 
 # ─────────────────────────────────────────────────────────────
 # WP-B5-6: one plan-driven TRANSI emission
@@ -1823,14 +1859,14 @@ _D4H_EMITTER_NAME = {'10DQ': 'TENDQ'}
 # ─────────────────────────────────────────────────────────────
 
 
-def _oh_transi_irreps(j_sizes, parity, oh_irreps, j_ordering):
+def _oh_transi_irreps(j_sizes, parity, oh_irreps, j_ordering, group='Oh'):
     """``(butler, n_states, payload)`` per Oh irrep, in the legacy order."""
     out = []
     for irrep in oh_irreps:
         j_order = j_ordering(j_sizes, irrep)
         if not j_order:
             continue
-        out.append((butler_label(irrep, parity),
+        out.append((_manifold_label(group, irrep, parity),
                     sum(n_st for _, _, n_st in j_order), (irrep, j_order)))
     return out
 
@@ -1879,7 +1915,8 @@ def _emit_transi_blocks(blocks, dipole_emission, transi_gs, transi_ex,
                     ))
 
 
-def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering):
+def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering,
+                        group='Oh'):
     """``(butler, dim, block_dim, payload)`` per Oh irrep, in the legacy order.
 
     The order is ``oh_irreps``' own — A1, A2, E, T1, T2 for integer J, and
@@ -1891,7 +1928,7 @@ def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering):
         j_order = j_ordering(j_sizes, irrep)
         if not j_order:
             continue
-        out.append((butler_label(irrep, parity), dim_lookup[irrep],
+        out.append((_manifold_label(group, irrep, parity), dim_lookup[irrep],
                     sum(n_st for _, _, n_st in j_order), (irrep, j_order)))
     return out
 
@@ -2072,10 +2109,11 @@ def _generate_ledge_template_impl(
     from multitorch.angular.symmetry_plan import plan_for_sym
     from multitorch.hamiltonian.parametric import HamiltonianDecomposition, zero_anchor_config
 
-    if sym not in ('oh', 'd4h'):
+    if sym not in ('oh', 'd4h', 'td'):
         raise ValueError(
-            f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h'. "
-            f"For trigonal symmetries see plan Phase 5."
+            f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td'. "
+            f"Other groups are reachable through crystal_field and "
+            f"operator_subduction but have no store convention (WP-B5/B6)."
         )
     # D4h dispatch (Phase 1c V2): per-D4h-irrep emission via
     # `_make_d4h_op_adds` and `_make_d4h_dipole_adds`. Blocks carry
@@ -2404,8 +2442,10 @@ def _generate_ledge_template_impl(
                 )
                 return [adds] if adds else []
 
-            transi_gs = _oh_transi_irreps(gs_j_sizes, '+', oh_irreps_gs, irrep_j_ordering)
-            transi_ex = _oh_transi_irreps(ex_j_sizes, '-', oh_irreps_ex, irrep_j_ordering)
+            transi_gs = _oh_transi_irreps(gs_j_sizes, '+', oh_irreps_gs,
+                                          irrep_j_ordering, group=plan.group)
+            transi_ex = _oh_transi_irreps(ex_j_sizes, '-', oh_irreps_ex,
+                                          irrep_j_ordering, group=plan.group)
 
         # the operator's Butler label now comes from the plan too (B5-7), so
         # neither group derives it here
@@ -2651,10 +2691,12 @@ def _generate_ledge_template_impl(
 
             manifolds = (
                 ('GROUND', _oh_manifold_irreps(gs_j_sizes, '+', oh_irreps_gs,
-                                               dim_lookup_gs, irrep_j_ordering),
+                                               dim_lookup_gs, irrep_j_ordering,
+                                               group=plan.group),
                  lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx, 'gs')),
                 ('EXCITE', _oh_manifold_irreps(ex_j_sizes, '-', oh_irreps_ex,
-                                               dim_lookup_ex, irrep_j_ordering),
+                                               dim_lookup_ex, irrep_j_ordering,
+                                               group=plan.group),
                  lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx, 'ex')),
             )
             # the Oh path emits an operator block even with no ADD entries;

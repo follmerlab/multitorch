@@ -78,6 +78,13 @@ POLARIZATION_TOL = 1e-9
 GEOMETRY_NAMES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     "Oh": (("T1u", "MULTIPOLE"),),
     "D4h": (("Eu", "PERP"), ("A2u", "PARA")),
+    # Td has no Fortran reference (WP-B6), but it needs no *new* convention
+    # either: its dipole has exactly one component, as Oh's does, and ttrac's
+    # name for a single rank-1 actor is MULTIPOLE. The component is T2 rather
+    # than T1u because Td has no inversion centre and the parity is absorbed
+    # into the label -- which is a fact about the group, not a choice (WP-B5-9,
+    # residual 48).
+    "Td": (("T2", "MULTIPOLE"),),
 }
 
 

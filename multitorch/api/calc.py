@@ -1225,8 +1225,8 @@ def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
 
 def _validate_from_scratch(element: str, valence: str, n_d: int, sym: str) -> None:
     """Reject what the from-scratch L-edge generator cannot do, before the HFS run."""
-    if sym not in ("oh", "d4h"):
-        raise ValueError(f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h'")
+    if sym not in ("oh", "d4h", "td"):
+        raise ValueError(f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td'")
     if not 1 <= n_d <= 9:
         raise ValueError(f"{element} {valence} has {n_d} 3d electrons; the from-scratch L-edge generator needs "
                          f"an open 3d shell (1 to 9 electrons); d0 and d10 are not supported")

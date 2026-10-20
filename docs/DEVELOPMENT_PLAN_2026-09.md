@@ -286,7 +286,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
 
   **Correction to this entry's stated target, and the oracle to use (surveyed 2026-10-19, before starting).** The entry says B3 "removes the per-operator recipe table `d4h_cf_operator_recipe`". That function has **no production call sites** — `grep` finds it only in `tests/test_d4h/test_d4h_from_scratch_status.py`, which calls it four times — so removing it is deleting dead code and is *not* the work, nor the benefit. This is the second time an entry in this plan has named a dead function (see residual 38 and its lesson). **The real target is `rac_generator._d4h_operator_vector_complex(operator, rank, target_d4h_irrep)`**, which is squarely on the Fortran-validated path: it is called from `double_group.py` in four places (`_d4h_cf_operators`, the rank-4 cubic marker, and the CF operator-vector lookup) and from `rac_generator` itself. It builds each CF operator's m-basis vector by summing Butler-weighted Oh-route contributions, where the Butler weights are the hand-tabulated `symmetry.D4H_BRANCHES_BY_OPERATOR` — four coefficients (`TENDQ`: one rank-4 A1 route; `DT`: rank-4 A1 **and** E routes; `DS`: one rank-2 E route) — and it carries **two hand-placed gauge pins** that B3 must either reproduce or make unnecessary: (i) a per-route sign fix requiring each route's m = 0 real-harmonic component to be positive, which is residual 21 (without it a flipped LAPACK eigenvector sign mixed the cubic field into Dt by up to 1.6 eV), and (ii) an overall sign pinned to the Ballhausen convention by requiring the one-electron z² matrix element to be positive for 10Dq and negative for Dt and Ds. B3's invariant space comes straight from B2: the totally-symmetric rows of `PointGroup.subduction(k, parity=+1)` for k = 2, 4 *are* the allowed CF operator vectors, with no Butler table and no route gauge. **Two oracles, and neither is code-vs-code.** (1) *Analytic*: the Ballhausen one-electron energies E(z²) = 6Dq − 2Ds − 6Dt, E(x²−y²) = 6Dq + 2Ds − Dt, E(xy) = −4Dq + 2Ds − Dt, E(xz, yz) = −4Dq − Ds + 4Dt, which fix the named-parameter adapter completely and independently of this package. (2) *Fortran, through the existing path*: the derived vectors must reproduce `_d4h_operator_vector_complex`'s output for TENDQ/DT/DS, and that function's numbers are what make the D4h store match the `nid8ct` fixture. Check the call sites above are still the live ones before starting — that is the residual-38 lesson applied.
 - **B4. General dipole/quadrupole operator subduction.** Rank-1 (and rank-2 for K pre-edge) operator components → G irreps and partners, giving linear and circular polarization selection for any G (generalizes PERP/PARA).
-- **B5. Symmetry Plan + generator rewrite — IN PROGRESS (B5-1 … B5-8 landed 2026-10-19/20; B5-5b and B5-9 remain).**
+- **B5. Symmetry Plan + generator rewrite — B5-1 … B5-9 LANDED (2026-10-19/20). Only B5-5b remains, and it is optional.**
 
   **Landed.** (1) `angular/symmetry_plan.py`: a `SymmetryPlan` per group, derived where it can be and named where it cannot — the crystal-field operator count and ranks from WP-B3, the hybridisation channels from `branching(2, +1)` (the d-orbital irreps: Oh gives Eg + T2g = `eg`/`t2g`, D4h gives A1g + B1g + B2g + Eg = `b1`/`a1`/`b2`/`e`), the dipole blocks from WP-B4; only the store's strings and the list *orders* are looked up, because the order is the order of blocks in the RAC file. It reproduces all four of today's hard-coded lists exactly: `OPERATOR_ORDER_OH`, `OPERATOR_ORDER_D4H`, `HYBR_ORDER_OH`, `HYBR_ORDER_D4H`. (2) `io/rac_text.py`: the **byte-equal RAC oracle this entry names, which did not previously exist** — `write_inputs.write_rac` writes a ttmult *input* file, not the `RACFileFull` the generator returns. `rac_fingerprint` renders every block field and every ADD entry at `%.17g`, order-preserving, and is tested to notice a coefficient perturbed in its last bits, every block field, every ADD field, and either reordering. (3) `BanData` gained an optional `symmetry`; the two from-scratch builders set it, and `assemble`, `build_ban` and `calc.fixture_defaults` use it in preference to guessing. `fixture_defaults` stopped guessing altogether, since `sym` was already one of its arguments. (4) The dead `_make_operator_adds` and `_make_cf_adds` are deleted (67 lines).
 
@@ -305,7 +305,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   | ~~**B5-6**~~ **DONE 2026-10-19** | One plan-driven loop over the plan's `dipole_blocks` replaces the D4h and Oh TRANSI loops (100 lines). **Two branches removed as unnecessary, each checked first** — see the close-out. | harness, all 18 |
   | ~~**B5-7**~~ **DONE 2026-10-19** | The Butler-string geometry test is gone; `SymmetryPlan.actor_geometries` supplies the geometry per actor, and the geometry-blind fallback is **no longer tried** when the group is declared, which is what makes the entry load-bearing (**residual 46**). The named line 625 was stale again. | harness + suite + the injected wrong geometry |
   | ~~**B5-8**~~ **DONE 2026-10-20** | **Residual 40 closed**: the trigonal groups are registered in the octahedral setting (C3 ∥ [111]), 0 elements outside Oh; the z setting stays as `D3d[z]` etc. Found **residual 47** on the way. B5-9 is unblocked for D3d/D3/C3v. | 4 injected bugs + the widened octahedral-subgroup property |
-  | **B5-9** | **Add Td end-to-end** — the cheapest third group, and **cheaper than this row reads**: for the L-edge observable Td is Oh relabelled (residual 48, measured 2026-10-20), so the Oh comparison is **exact equality** rather than a tolerance. Unblocked for D3d/D3/C3v too since B5-8. **Carries one convention decision with no oracle: the sign of `tendq` in Td** | dipole sum rule + **exact** Oh equality |
+  | ~~**B5-9**~~ **DONE 2026-10-20** | **Td is reachable from `calcXAS`** — the third group, and the first new one. Bit-identical to Oh at the same `tendq` for all nine electron counts, integer and half-integer. **No new angular machinery**: the ADD coefficients, store indices and block dimensions are Oh's; only the labels differ. | **exact** Oh equality (d1–d9) + dipole sum rule + 4 injected bugs |
 
   **B5-3 close-out (2026-10-19), with two corrections to this entry's own sizing.**
 
@@ -468,7 +468,53 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   is actually handed and compares that with the plan. **The text of a call is
   not evidence that the call runs**, which is residual 45 one level down.
 
-  **B5-9 is the one that delivers the headline goal.** B5-1 through B5-7 remove ambiguity and restructure; none of them lets a user call a new group, because `calcXAS` still takes only `sym='oh'|'d4h'`.
+  **B5-9 close-out (2026-10-20): `sym='td'` works, and it cost one label map.**
+  `SYM_TO_GROUP` gained `td`, `CONVENTIONS` a Td entry, `GEOMETRY_NAMES` the
+  single `(T2, MULTIPOLE)` row, and the generator a five-line
+  `_manifold_label`. Nothing else. The ADD makers, the subduction basis and the
+  store are **Oh's**, which is what residual 48 licensed: Td's labels are Oh's
+  with the ungerade swap `A1 <-> A2`, `T1 <-> T2` (and `E1/2 <-> E5/2` in the
+  double group, measured over J = 1/2 … 9/2).
+
+  **Measured end to end: bit-identical to Oh at the same `tendq`, `torch.equal`,
+  for every electron count d1–d9** — both the integer and the double-group
+  paths. That is the strongest oracle available for a group with no Fortran
+  reference, and the group theory *forces* it, so it is not code-vs-code in the
+  bad sense. The sum rule is asserted independently, for positive and negative
+  `tendq`.
+
+  **What the equality oracle would miss, and so is tested separately:** that Td
+  is distinguishable from Oh at all. `sym='td'` must be a group, not an alias,
+  so the RAC's labels are checked — ground labels agree (`Xg -> X` is the
+  identity on Butler tags), excited labels are swapped, and the dipole actor is
+  `'^1-'` (T2) where Oh writes `'1-'` (T1u). Three of the four injected bugs
+  were caught by exactly that test: no relabelling, the swap applied to the
+  ground manifold too, and a swap missing `T1 <-> T2`.
+
+  **The sign convention, decided rather than derived** (user, 2026-10-20):
+  `tendq` is the coefficient of the rank-4 cubic invariant in *every* group, so
+  a physical tetrahedron needs a **negative** `tendq`, about −4/9 of the
+  octahedral value for the same ligands. The rejected alternative — flipping
+  the sign internally so positive meant "physically tetrahedral" — would have
+  been a per-group convention with no reference, which is residual 39's trap.
+  It is pinned as the **absence of a special case**
+  (`test_td_introduces_no_per_group_parameter_convention`: Td's `cf_operators`
+  must *equal* Oh's), because `xham_values` is group-generic and has no
+  per-group hook where a sign could hide. The first attempt at that test
+  injected a changed *default*, which `cf.get(key, default)` never reaches when
+  the key is passed — a weak injection, replaced.
+
+  **Still refused, deliberately:** Td charge transfer (CT beyond Oh/D4h is
+  carried-forward work) and the `dt`/`ds` keys, which Td has no operator for
+  (residual 43's rule, now applying to a group it was not written for).
+
+  **What B5-9 does not do.** It proves the loop is general without
+  demonstrating new physics, because Td *is* Oh for this observable. The first
+  group that will exercise genuinely new structure is D3d/D3/C3v — three
+  crystal-field parameters, two dipole geometries, unblocked by B5-8 but
+  needing the `(10Dq, Dsigma, Dtau)` naming that B3 declined to invent — or
+  D2h/C2v, whose dipole needs three geometries. Both are WP-B6 reference-data
+  items first. B5-1 through B5-7 remove ambiguity and restructure; none of them lets a user call a new group, because `calcXAS` still takes only `sym='oh'|'d4h'`.
 
   **This entry's own code references had decayed** — see residual 41.
 
