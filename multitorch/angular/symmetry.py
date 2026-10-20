@@ -224,6 +224,56 @@ def _is_d4z_rotation(R) -> bool:
     return abs(abs(z_image[2]) - 1.0) < 0.05 and abs(z_image[0]) < 0.05 and abs(z_image[1]) < 0.05
 
 
+#: Target groups the GROUND/EXCITE operator emitter can subduce Oh onto.
+#: ``'Oh'`` and ``'Td'`` are the identity -- Oh trivially, and Td because it is
+#: Oh relabelled for this observable (residual 48), so its emitter works in Oh
+#: irreps and the labels are applied by ``_manifold_label``.
+SUBDUCTION_TARGETS: Tuple[str, ...] = ("Oh", "Td", "D4h")
+
+
+def target_irrep_dim(target_irrep: str, target_group: str) -> int:
+    """Dimension of a target-group irrep, by the table that group uses."""
+    from multitorch.angular.point_group import OH_IRREP_DIM
+
+    if target_group == "D4h":
+        return D4H_IRREP_DIM[target_irrep]
+    if target_group in ("Oh", "Td"):
+        return OH_IRREP_DIM[target_irrep[:-1] if target_irrep[-1] in "gu"
+                            else target_irrep]
+    raise ValueError(f"unknown subduction target {target_group!r}; "
+                     f"expected one of {list(SUBDUCTION_TARGETS)}")
+
+
+def oh_to_target_subduction_matrix(oh_irrep: str, target_group: str
+                                   ) -> Dict[str, "np.ndarray"]:
+    """Subduction of an Oh single-group irrep onto *target_group*.
+
+    The general form of :func:`oh_to_d4h_subduction_matrix`, which is what
+    lets one GROUND/EXCITE operator emitter serve Oh as well as D4h (WP-B5-5b):
+    with Oh as its own target the subduction step is the **identity** and the
+    partner-0 vector the emitter projects onto is exactly the one the retired
+    per-Oh-irrep emitter built by hand. Measured bit-identical over 80
+    (electron count, manifold, irrep, operator) cases and 608 ADD entries, max
+    difference 0.0 -- which is why routing Oh through the dispatcher is a
+    relabelling rather than a recomputation, and so has an exact-equality
+    oracle rather than only a plausibility claim.
+
+    Returns ``{target irrep: (dim_Oh, mult x dim_target)}`` in the Oh irrep's
+    own basis, as the D4h function does.
+    """
+    from multitorch.angular.point_group import OH_IRREP_DIM
+    import numpy as _np
+
+    if target_group == "D4h":
+        return oh_to_d4h_subduction_matrix(oh_irrep)
+    if target_group in ("Oh", "Td"):
+        if oh_irrep[-1] not in "gu":
+            raise ValueError(f"oh_irrep must include g/u suffix; got {oh_irrep!r}")
+        return {oh_irrep: _np.eye(OH_IRREP_DIM[oh_irrep[:-1]])}
+    raise ValueError(f"unknown subduction target {target_group!r}; "
+                     f"expected one of {list(SUBDUCTION_TARGETS)}")
+
+
 def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
     """Return D4h subduction of an Oh single-group irrep.
 

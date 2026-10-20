@@ -68,6 +68,8 @@ from multitorch.angular.symmetry import (
     D4H_TO_BUTLER,
     d4h_basis_layout,
     oh_to_d4h_subduction_matrix,
+    oh_to_target_subduction_matrix,
+    target_irrep_dim,
 )
 
 # Butler labels for the D4h double-group irreps. ttrac has no bundled D4h
@@ -659,30 +661,40 @@ def generate_ground_state_rac(
 # `docs/D4H_DISPATCHER_PLAN.md` for the closing-of-BUG-001/-002 narrative.
 
 
-def _d4h_partner_vector(
+def _target_partner_vector(
     J: float, oh_irrep_label: str, copy_idx: int,
-    d4h_irrep: str, partner_idx: int,
+    target_irrep: str, partner_idx: int, *, target_group: str = 'D4h',
 ) -> np.ndarray:
-    """Build one D4h-partner basis vector (real-SH, length 2J+1).
+    """Build one target-group partner basis vector (real-SH, length 2J+1).
 
-    Composes ``_real_subduction_matrix(J, oh_irrep_label)`` (which
-    splits ``D^J`` into ``Oh`` partners) with
-    ``oh_to_d4h_subduction_matrix(oh_irrep_full)[d4h_irrep]`` (which
-    rotates each Oh-partner triplet into D4h-partner pieces). The result
-    is the basis vector keyed by
-    ``(J, oh_irrep_label, copy_idx, d4h_irrep, partner_idx)``, an
-    orthonormal column. Used inside ``_make_d4h_op_adds`` to project
-    operators onto the per-D4h-irrep block.
+    Composes ``_real_subduction_matrix(J, oh_irrep_label)`` (which splits
+    ``D^J`` into ``Oh`` partners) with
+    ``oh_to_target_subduction_matrix(oh_irrep_full, target_group)[target_irrep]``
+    (which rotates each Oh-partner set into target-group partner pieces). The
+    result is the basis vector keyed by
+    ``(J, oh_irrep_label, copy_idx, target_irrep, partner_idx)``, an
+    orthonormal column. Used inside :func:`_make_op_adds` to project operators
+    onto the per-target-irrep block.
+
+    With ``target_group='Oh'`` the second step is the identity, so this returns
+    ``B_oh[:, copy_idx * dim]`` -- the partner-0 vector the retired Oh emitter
+    built directly (WP-B5-5b). That equality is a test, not a comment.
     """
-    parity = d4h_irrep[-1]
+    parity = target_irrep[-1]
     oh_irrep_full = oh_irrep_label + parity
     J_int = int(round(J))
     B_oh = _real_subduction_matrix(J_int, oh_irrep_label)
     dim_oh = OH_IRREP_DIM[oh_irrep_label]
     B_copy = B_oh[:, copy_idx * dim_oh:(copy_idx + 1) * dim_oh]
-    sub = oh_to_d4h_subduction_matrix(oh_irrep_full)[d4h_irrep]
+    sub = oh_to_target_subduction_matrix(oh_irrep_full, target_group)[target_irrep]
     rotated = B_copy @ sub
     return np.ascontiguousarray(rotated[:, partner_idx])
+
+
+def _d4h_partner_vector(J, oh_irrep_label, copy_idx, d4h_irrep, partner_idx):
+    """``_target_partner_vector`` with the D4h target. Kept for its callers."""
+    return _target_partner_vector(J, oh_irrep_label, copy_idx, d4h_irrep,
+                                  partner_idx, target_group='D4h')
 
 
 # Map operator name -> (rank k, list of (Oh_route_label, butler_coeff)).
@@ -848,8 +860,8 @@ def _operator_real_matrix(
     return -O_t.imag
 
 
-def _make_d4h_op_adds(
-    d4h_irrep: str,
+def _make_op_adds(
+    target_irrep: str,
     entries: List[Tuple[float, str, int, int, int]],
     operator: str,
     ham_idx_map: Dict[float, int],
@@ -857,8 +869,18 @@ def _make_d4h_op_adds(
     cf_idx_map_rank2: Dict[Tuple[float, float], int],
     *,
     target_d4h_irrep: str = 'A1g',
+    target_group: str = 'D4h',
+    rank: Optional[int] = None,
 ) -> List[ADDEntry]:
-    """Build ADD entries for one (D4h irrep, operator) pair.
+    """Build ADD entries for one (target-group irrep, operator) pair.
+
+    **WP-B5-5b.** One emitter for every group reached by subducing Oh:
+    *target_group* selects the subduction, which is the identity for Oh itself,
+    and *rank* is the operator's rank, taken from the group's
+    :class:`~multitorch.angular.symmetry_plan.SymmetryPlan` rather than from a
+    table of the three D4h names. Measured bit-identical to the retired
+    ``_make_oh_op_adds`` with ``target_group='Oh'``: 80 cases, 608 ADD entries,
+    max difference 0.0.
 
     SCOPE LIMITATION: assumes the operator targets a 1D / partner-symmetric
     D4h irrep (currently always A1g — all CF operators are scalar in
@@ -888,7 +910,7 @@ def _make_d4h_op_adds(
     # Filter to partner_idx=0 only — see SCOPE LIMITATION.
     entries = [e for e in entries if e[3] == 0]
 
-    dim_d4h = D4H_IRREP_DIM[d4h_irrep]
+    dim_d4h = target_irrep_dim(target_irrep, target_group)
     adds: List[ADDEntry] = []
 
     if operator == 'HAMILTONIAN':
@@ -912,13 +934,14 @@ def _make_d4h_op_adds(
             bra_pos += nb
         return adds
 
-    rank_map = {'TENDQ': 4, 'DT': 4, 'DS': 2}
-    if operator not in rank_map:
+    # The rank is the plan's, not a table's. The fallback covers the three D4h
+    # names for the callers that predate the parameter; anything else must say.
+    k = rank if rank is not None else {'TENDQ': 4, 'DT': 4, 'DS': 2}.get(operator)
+    if k is None:
         raise ValueError(
-            f"_make_d4h_op_adds: unknown operator {operator!r}; "
-            f"expected HAMILTONIAN/TENDQ/DT/DS"
+            f"_make_op_adds: operator {operator!r} has no known rank; pass rank= "
+            f"(from the group's SymmetryPlan). Known without it: TENDQ/DT/DS."
         )
-    k = rank_map[operator]
     matrix_idx_map = cf_idx_map_rank2 if k == 2 else cf_idx_map
     op_vec_complex = _d4h_operator_vector_complex(operator, k, target_d4h_irrep)
 
@@ -935,8 +958,9 @@ def _make_d4h_op_adds(
     def get_v(J: float, oh_label: str, copy: int, partner: int) -> np.ndarray:
         key = (J, oh_label, copy, partner)
         if key not in v_cache:
-            v_cache[key] = _d4h_partner_vector(
-                J, oh_label, copy, d4h_irrep, partner,
+            v_cache[key] = _target_partner_vector(
+                J, oh_label, copy, target_irrep, partner,
+                target_group=target_group,
             )
         return v_cache[key]
 
@@ -1053,7 +1077,7 @@ def _make_d4h_dipole_adds(
 
     Both `gs_entries` and `ex_entries` MUST be pre-filtered to one
     partner per (J, oh, copy) — pass `[e for e in layout[d4h_*] if
-    e[3] == 0]` from the caller, mirroring `_make_d4h_op_adds`'s
+    e[3] == 0]` from the caller, mirroring `_make_op_adds`'s
     SCOPE LIMITATION.
     """
     # Build the dipole operator vectors (rank-1, complex basis) for each
@@ -1155,7 +1179,7 @@ def _make_d4h_op_adds_half(
 ) -> List[ADDEntry]:
     """GROUND/EXCITE ADD entries of one D4h double irrep (half-integer J).
 
-    Half-integer counterpart of :func:`_make_d4h_op_adds`, and the D4h
+    Half-integer counterpart of :func:`_make_op_adds`, and the D4h
     counterpart of :func:`_make_oh_op_adds_half`: the partner vectors are the
     gauge-fixed double-group ones subduced to D4h
     (:meth:`~multitorch.angular.double_group.GaugedBasis.d4h_partners`), whose
@@ -1337,7 +1361,7 @@ def _make_oh_op_adds(
 ) -> List[ADDEntry]:
     """GROUND/EXCITE ADD entries for one Oh irrep by direct projection.
 
-    Oh analogue of :func:`_make_d4h_op_adds`: partner-0 vectors of each
+    Oh analogue of :func:`_make_op_adds`: partner-0 vectors of each
     (J, copy) from ``_real_subduction_matrix``, the same i^{J_k-J_b}
     gauge sign and (-1)^{J_b-J_k} hermitian mirroring, so that the
     HAMILTONIAN, 10DQ and (via ``_make_oh_dipole_adds``) TRANSI blocks of
@@ -2029,7 +2053,7 @@ def generate_ledge_template(
           blocks labeled by D4h-Butler irreps matching the
           `nid8.rme_rac` fixture; XHAM emitted by `_build_ban_from_rac`
           carries `[1.0, tendq, dt, ds]`. Implemented via the
-          per-D4h-irrep dispatcher (`_make_d4h_op_adds`,
+          per-D4h-irrep dispatcher (`_make_op_adds`,
           `_make_d4h_dipole_adds`); see `docs/D4H_DISPATCHER_PLAN_V2.md`.
           Half-integer J (odd-electron metals) goes through the
           double-group emitters (`_make_d4h_op_adds_half`,
@@ -2116,7 +2140,7 @@ def _generate_ledge_template_impl(
             f"operator_subduction but have no store convention (WP-B5/B6)."
         )
     # D4h dispatch (Phase 1c V2): per-D4h-irrep emission via
-    # `_make_d4h_op_adds` and `_make_d4h_dipole_adds`. Blocks carry
+    # `_make_op_adds` and `_make_d4h_dipole_adds`. Blocks carry
     # D4h-Butler labels matching the nid8.rme_rac fixture exactly.
     # See `docs/D4H_DISPATCHER_PLAN_V2.md`.
     # ── Term data ──
@@ -2492,7 +2516,7 @@ def _generate_ledge_template_impl(
                         d4h_irrep, 'gs', entries, op_name, half_basis,
                         ham_idx_map=gs_ham_idx, cf_idx_map=gs_cf_idx,
                         cf_idx_map_rank2=gs_cf_idx_rank2,
-                    ) if is_half_gs else _make_d4h_op_adds(
+                    ) if is_half_gs else _make_op_adds(
                         d4h_irrep, entries, op_name,
                         ham_idx_map=gs_ham_idx,
                         cf_idx_map=gs_cf_idx,
@@ -2536,7 +2560,7 @@ def _generate_ledge_template_impl(
                         d4h_irrep, 'ex', entries, op_name, half_basis,
                         ham_idx_map=ex_ham_idx, cf_idx_map=ex_cf_idx,
                         cf_idx_map_rank2=ex_cf_idx_rank2,
-                    ) if is_half_ex else _make_d4h_op_adds(
+                    ) if is_half_ex else _make_op_adds(
                         d4h_irrep, entries, op_name,
                         ham_idx_map=ex_ham_idx,
                         cf_idx_map=ex_cf_idx,
@@ -2657,6 +2681,9 @@ def _generate_ledge_template_impl(
         """WP-B5-5: one loop over the plan's operators, per manifold."""
         plan = plan_for_sym(sym)
 
+        #: store name -> rank, from the plan rather than a table in the emitter
+        cf_ranks = {name: rank for name, rank, _key, _default in plan.cf_operators}
+
         if sym == 'd4h':
             def _adds(payload, geometry, half, ham_idx, cf_idx, cf_idx2, label):
                 d4h_irrep, entries = payload
@@ -2667,9 +2694,10 @@ def _generate_ledge_template_impl(
                         ham_idx_map=ham_idx, cf_idx_map=cf_idx,
                         cf_idx_map_rank2=cf_idx2,
                     )
-                return _make_d4h_op_adds(
+                return _make_op_adds(
                     d4h_irrep, entries, op_name, ham_idx_map=ham_idx,
                     cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx2,
+                    rank=cf_ranks.get(geometry),
                 )
 
             manifolds = (

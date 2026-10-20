@@ -514,7 +514,7 @@ def test_make_d4h_op_adds_DS_eg_block_nonzero():
                   operator builds without a `parity` kwarg.
     """
     from multitorch.angular.rac_generator import (
-        _get_terms, _j_sector_sizes, _make_d4h_op_adds,
+        _get_terms, _j_sector_sizes, _make_op_adds,
     )
     from multitorch.angular.symmetry import D4H_IRREP_DIM, d4h_basis_layout
 
@@ -527,7 +527,7 @@ def test_make_d4h_op_adds_DS_eg_block_nonzero():
     cf_idx_rank2 = {
         (2.0, 2.0): 1, (2.0, 4.0): 2, (4.0, 2.0): 3, (4.0, 4.0): 4,
     }
-    adds = _make_d4h_op_adds(
+    adds = _make_op_adds(
         'Eg', eg_entries, 'DS',
         ham_idx_map={J: 0 for J in j_sizes},
         cf_idx_map={},

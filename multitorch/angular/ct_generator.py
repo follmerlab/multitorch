@@ -60,7 +60,7 @@ from multitorch.angular.rac_generator import (
     _d4h_dipole_channels_half,
     _d4h_partner_vector,
     _make_d4h_dipole_adds,
-    _make_d4h_op_adds,
+    _make_op_adds,
     _make_d4h_op_adds_half,
     _make_oh_dipole_adds,
     _make_oh_op_adds,
@@ -374,8 +374,8 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                         adds = (_make_d4h_op_adds_half(d4h, parity, entries, op, basis, ham_idx_map=m['ham'],
                                                        cf_idx_map=m['cf4'], cf_idx_map_rank2=m['cf2'])
                                 if half else
-                                _make_d4h_op_adds(d4h, entries, op, ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
-                                                  cf_idx_map_rank2=m['cf2']))
+                                _make_op_adds(d4h, entries, op, ham_idx_map=m['ham'],
+                                              cf_idx_map=m['cf4'], cf_idx_map_rank2=m['cf2']))
                         if adds:
                             blocks.append(RACBlockFull(kind=rac_kind, bra_sym=label, op_sym='0+', ket_sym=label,
                                                        geometry=geometry, n_bra=size, n_ket=size, add_entries=adds))

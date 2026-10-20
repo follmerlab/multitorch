@@ -322,3 +322,145 @@ def test_a_changed_operator_tensor_fails_the_gate():
 
     with pytest.raises(AssertionError, match="operator"):
         _run_gate("oh", 8, _wrap(mutate))
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B5-5b step 1: one operator emitter for Oh and D4h
+# ─────────────────────────────────────────────────────────────
+#
+# B5-5b routes Oh through the dispatcher with **Oh as its own target group**,
+# so the subduction step is the identity and the per-Oh-irrep emitters retire.
+# The plan flagged the risk: it changes *which code computes the coefficients*,
+# so byte equality would become the claim rather than the check.
+#
+# Measured before touching the generator, which is what answers that (residual
+# 48's lesson): with the subduction replaced by the identity the dispatcher
+# reproduces ``_make_oh_op_adds`` **exactly** -- 80 cases, 608 ADD entries,
+# largest coefficient 1.095, largest difference 0.0. So it is a relabelling,
+# not a recomputation, and the equality below is a *licence* for step 2 rather
+# than a physics oracle. The physics oracle for step 2 is the Oh Fortran
+# fixtures at cosine > 0.99999, which no amount of this would replace.
+
+#: Oh single-group irreps in the order ``irrep_j_ordering`` walks them.
+_OH_IRREPS_FOR_PARITY = ("A1", "A2", "E", "T1", "T2")
+
+
+def _oh_case(n_val, oh_label, parity):
+    """``(j_order, entries, index maps)`` for one (electron count, irrep, parity).
+
+    ``j_order`` is the retired emitter's ``(J, copy, n)``; ``entries`` is the
+    dispatcher's ``(J, oh_label, copy, partner, n)``. The index maps are
+    synthetic but shared by both sides, so they cancel.
+    """
+    import multitorch.angular.rac_generator as rg
+    from multitorch.angular.point_group import oh_branching
+
+    j_sizes = rg._j_sector_sizes(rg._get_terms(2, n_val))
+    if any(abs(J - round(J)) > 1e-9 for J in j_sizes):
+        return None                                  # half-integer: step 3
+    js = sorted(j_sizes)
+    ham_idx = {J: i + 1 for i, J in enumerate(js)}
+    pairs = [(a, b) for a in js for b in js]
+    cf_idx = {p: i + 1 for i, p in enumerate(pairs)}
+    j_order = [(J, copy, j_sizes[J]) for J in js
+               for copy in range(oh_branching(int(round(J))).get(oh_label, 0))]
+    if not j_order:
+        return None
+    entries = [(J, oh_label, copy, 0, n) for (J, copy, n) in j_order]
+    return j_order, entries, ham_idx, cf_idx
+
+
+B55B_CASES = [(n, irrep, parity)
+              for n in range(1, 10)
+              for irrep in _OH_IRREPS_FOR_PARITY
+              for parity in ("g", "u")]
+
+
+#: ``(store name, vector name, non-empty cases, ADD entries)`` -- the last two
+#: measured, so a version of this test that compared nothing would fail rather
+#: than pass. 128 + 480 = the 608 entries the pre-implementation measurement
+#: reported.
+B55B_OPERATORS = [("HAMILTONIAN", "HAMILTONIAN", 40, 128), ("10DQ", "TENDQ", 40, 480)]
+
+
+@pytest.mark.parametrize("operator_oh,operator_vector,n_cases,n_entries", B55B_OPERATORS)
+def test_the_one_emitter_reproduces_the_oh_emitter_exactly(operator_oh, operator_vector,
+                                                           n_cases, n_entries):
+    """``_make_op_adds(target_group='Oh')`` == ``_make_oh_op_adds``, bit for bit.
+
+    Over every integer electron count, both manifold parities and all five Oh
+    irreps. Counted rather than merely asserted: a version of this that compared
+    nothing would pass, so the test fails if fewer than 200 ADD entries or fewer
+    than the measured number of non-empty cases were actually reached.
+    """
+    import multitorch.angular.rac_generator as rg
+
+    compared = entries_seen = 0
+    worst = biggest = 0.0
+    for n_val, oh_label, parity in B55B_CASES:
+        case = _oh_case(n_val, oh_label, parity)
+        if case is None:
+            continue
+        j_order, entries, ham_idx, cf_idx = case
+        want = rg._make_oh_op_adds(oh_label, j_order, operator_oh, ham_idx, cf_idx)
+        got = rg._make_op_adds(
+            oh_label + parity, entries, operator_vector,
+            ham_idx_map=ham_idx, cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
+            target_group="Oh", rank=4,
+        )
+        key = lambda a: (a.matrix_idx, a.bra, a.ket, a.nbra, a.nket)  # noqa: E731
+        assert {key(a) for a in want} == {key(a) for a in got}, (n_val, oh_label, parity)
+        by_key = {key(a): a.coeff for a in got}
+        for add in want:
+            worst = max(worst, abs(add.coeff - by_key[key(add)]))
+            biggest = max(biggest, abs(add.coeff))
+        if want:
+            compared += 1
+            entries_seen += len(want)
+    assert (compared, entries_seen) == (n_cases, n_entries)
+    assert worst == 0.0, f"max |difference| {worst:.3e} over {entries_seen} entries"
+    assert biggest > 0.5, biggest
+
+
+def test_the_identity_subduction_is_what_makes_that_equality_hold():
+    """Inject a non-identity "identity" and watch the equality above fail.
+
+    The substitution is a partner permutation inside the Oh irrep, which keeps
+    the subduction unitary and the block dimensions right -- so nothing
+    structural catches it and only the coefficients move. That is the mistake
+    a hand-written identity table would actually make.
+    """
+    import numpy as np
+
+    import multitorch.angular.rac_generator as rg
+
+    real = rg.oh_to_target_subduction_matrix
+
+    def permuted(oh_irrep, target_group):
+        out = real(oh_irrep, target_group)
+        if target_group == "Oh":
+            return {k: np.roll(v, 1, axis=1) for k, v in out.items()}
+        return out
+
+    rg.oh_to_target_subduction_matrix = permuted
+    try:
+        with pytest.raises(AssertionError):
+            test_the_one_emitter_reproduces_the_oh_emitter_exactly("10DQ", "TENDQ", 40, 480)
+    finally:
+        rg.oh_to_target_subduction_matrix = real
+
+
+def test_an_operator_with_no_known_rank_is_refused_rather_than_guessed():
+    """The rank now comes from the plan; a name the fallback cannot place errors.
+
+    This is what stops D3d's ``DSIGMA``/``DTAU`` silently inheriting rank 4 from
+    a table of the three D4h names when they reach this emitter.
+    """
+    import multitorch.angular.rac_generator as rg
+
+    case = _oh_case(8, "E", "g")
+    _j_order, entries, ham_idx, cf_idx = case
+    with pytest.raises(ValueError, match="no known rank"):
+        rg._make_op_adds("Eg", entries, "DSIGMA", ham_idx_map=ham_idx,
+                         cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
+                         target_group="Oh")
