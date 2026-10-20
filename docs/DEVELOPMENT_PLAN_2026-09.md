@@ -115,6 +115,9 @@ The 2026-09 scientific audit (§6) superseded the May-era understanding of these
 
 45. **A refactor-parity harness can compare the new code against itself, and ours did (2026-10-19, WP-B5-5; fixed).** B5-3's harness compares `generate_ledge_template` against the retained `_generate_ledge_template_legacy`. B5-5's first attempt replaced the three emission loops **in place** -- inside the legacy function, which the public entry point delegated to -- so both sides of every comparison changed together. All 25 tests passed and the gate proved **nothing**. What gave it away was not the suite but implausibility: a 188-line restructure of the Oh and D4h emission does not pass byte equality on the first try with no iteration. Fixed structurally rather than by care: `_generate_ledge_template_impl(..., emission='plan'|'legacy')` holds the shared body -- term data, COWAN store, index maps, TRANSI, decomposition -- and the two emissions are a closure each, so the harness differs over exactly the code under test and nothing else. Chosen over duplicating the whole 550-line generator, which would have been correct but left a copy to keep in step through B5-6 and B5-7. **The gate now has a gate**: `test_the_two_sides_of_the_gate_are_different_code` perturbs `_emit_operator_blocks`, which only the plan emission reaches, and requires the comparison to *fail*; re-collapsing the two sides was injected and the 18 byte-equality cases went green and silent while that one test failed, which is the evidence that it is the guard and they are not. **The general rule, and it is the same shape as residual 38's and B5-3's:** a harness is not an oracle until you have checked that the two things it compares are two things. Byte equality, a character table's orthonormality and a named oracle's call sites all fail this way -- convincingly, and in the green direction.
 
+46. **The geometry-blind TRANSI fallback was still absorbing a wrong geometry, and that is what made the plan's geometry cosmetic (found and fixed 2026-10-19 by WP-B5-7).** Residual 35 tightened `_find_transi_block` so the exact geometry match fires in both groups and the blind match -- the one that discriminates on `(n_bra, n_ket)` alone -- became "a last resort rather than the Oh path". It was still reachable, and B5-7's injected-bug pass measured what that cost. Naming Oh's dipole geometry `PERP` instead of `MULTIPOLE` in the plan **passed every physics test in the suite** -- all 154 of the files exercised, parity and sum rule included -- and was caught only by the plan's own table test, because the exact match found nothing, the blind pass matched the MULTIPOLE block by dimensions, and the right answer came out anyway. So the plan could name the geometry wrongly and nothing downstream would notice: B5-7 would have been a *restatement* of the geometry rather than a use of it. **Fix:** `_find_transi_block` takes `allow_blind`, and the assembler passes `allow_blind=not declared` -- when the `.ban` declares its group the plan's geometry is authoritative and the blind pass is not tried. Measured before adopting: **1274 tests pass** with the blind pass disabled on every declared-symmetry path, so nothing depended on it there; it survives only for a `.ban` parsed from a file, which carries no group and is where it was always meant to live. Re-injecting the wrong Oh geometry afterwards fails **37 tests**, 32 of them dipole sum rules, instead of one. **The lesson is the one worth carrying into B5-8 and B5-9:** a lookup that falls back to a weaker match cannot validate the stronger one, so a *parameterisation* is only load-bearing once the fallback that rescues a wrong value is gone. Ask of every new plan entry: if this were wrong, what would fail?
+
+
 
 ### Deferred decisions (revisit)
 
@@ -290,7 +293,7 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   | ~~**B5-5**~~ **DONE 2026-10-19** | One plan-driven loop replaces the D4h GROUND/EXCITE blocks and the two legacy Oh loops (188 lines -> one `_emit_operator_blocks` call per manifold). **The identity-subduction merge is deferred — see the close-out.** Found residuals 44 and 45. | harness, all 18 |
   | **B5-5b** | Retire the Oh ADD makers: route Oh through the D4h dispatcher with **Oh as its own target group**, so its subduction step is the identity. **Split out of B5-5** because it changes which code computes the coefficients, so byte equality is the claim and not the check | Ballhausen one-electron energies (`test_cf_one_electron.py`), both groups |
   | ~~**B5-6**~~ **DONE 2026-10-19** | One plan-driven loop over the plan's `dipole_blocks` replaces the D4h and Oh TRANSI loops (100 lines). **Two branches removed as unnecessary, each checked first** — see the close-out. | harness, all 18 |
-  | **B5-7** | Retire the Butler-string geometry match in `assemble.py:625` (`('PARA','MULTIPOLE')` vs `('PERP','MULTIPOLE')`, residual 35); the plan supplies the geometry per triad | fingerprint + suite |
+  | ~~**B5-7**~~ **DONE 2026-10-19** | The Butler-string geometry test is gone; `SymmetryPlan.actor_geometries` supplies the geometry per actor, and the geometry-blind fallback is **no longer tried** when the group is declared, which is what makes the entry load-bearing (**residual 46**). The named line 625 was stale again. | harness + suite + the injected wrong geometry |
   | **B5-8** | **Residual 40: decide the trigonal setting.** B5 is where orientation belongs, and D3d/D3/C3v are three of the WP-B targets, so this blocks B5-9 for them | new tests |
   | **B5-9** | **Add Td end-to-end** — the cheapest third group (one cubic CF parameter and one dipole irrep, exactly like Oh), as the proof the loop is general. This is the increment that first makes a new group reachable from `calcXAS` | dipole sum rule + Oh comparison |
 
@@ -423,6 +426,37 @@ Today `point_group.py` (2035 lines) hard-codes Oh: explicit octahedral rotations
   third independent confirmation that the guards are what catch residual 45 and
   that byte equality cannot. Any future plan-side emitter needs a line there;
   one added without it is the same mistake under a new name.
+
+  **B5-7 close-out (2026-10-19).** The assembler chose a triad's dipole
+  geometry by **testing the Butler string** — `('PARA', 'MULTIPOLE') if
+  act_sym == '^0-' else ('PERP', 'MULTIPOLE')`. That rule has exactly two
+  outcomes, so it is right for Oh and D4h and has nowhere to go beyond them:
+  **D2h and C2v split the dipole three ways** (`B1u + B2u + B3u` and
+  `A1 + B1 + B2`, measured via `operator_components`, since `dipole_geometries`
+  rightly refuses a group with no recorded ttrac convention), and two of the
+  three would have collided on `'PERP'`. `SymmetryPlan.actor_geometries` now
+  names them: Oh `{'1-': ('MULTIPOLE',)}`, D4h
+  `{'1-': ('PERP',), '^0-': ('PARA',)}`.
+
+  **The Butler labels went on the plan, not into `assemble.py`.** A second
+  irrep-to-Butler mapping in the assembler is exactly the four-copies problem
+  residual 43 came from, so `GroupConventions` gained `dipole_butler` —
+  convention, like the rest of that class, cross-checked on construction
+  against the derived component count. That also retired B5-6's two per-group
+  `op_label` closures: the generator reads `plan.dipole_emission`.
+
+  Incidental measurement for B5-9: **Td's dipole has exactly one component
+  (T2)**, as Oh's has one (T1u), which is the structural half of this entry's
+  claim that Td is the cheapest third group.
+
+  Two test-quality findings from the injected-bug pass, both recorded because
+  they were mistakes of mine rather than of the code. Residual 46 is the first.
+  The second: the test asserting the assembler reads the plan was a
+  *source-text* assertion (`"actor_geometries.get(" in src`), and an injection
+  that replaced the enclosing `if` with `if False:` — leaving the string as
+  dead code — passed all 155 tests. It now records what `_find_transi_block`
+  is actually handed and compares that with the plan. **The text of a call is
+  not evidence that the call runs**, which is residual 45 one level down.
 
   **B5-9 is the one that delivers the headline goal.** B5-1 through B5-7 remove ambiguity and restructure; none of them lets a user call a new group, because `calcXAS` still takes only `sym='oh'|'d4h'`.
 

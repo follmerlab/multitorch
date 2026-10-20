@@ -1856,8 +1856,8 @@ def _d4h_transi_irreps(j_sizes, parity, is_half):
     return out
 
 
-def _emit_transi_blocks(blocks, dipole_blocks, transi_gs, transi_ex,
-                        make_channels, op_label):
+def _emit_transi_blocks(blocks, dipole_emission, transi_gs, transi_ex,
+                        make_channels):
     """Emit the dipole blocks: one per (gs irrep, ex irrep, component, channel).
 
     A triad with more than one invariant yields more than one block -- that is
@@ -1866,12 +1866,12 @@ def _emit_transi_blocks(blocks, dipole_blocks, transi_gs, transi_ex,
     """
     for gs_butler, n_bra, gs_payload in transi_gs:
         for ex_butler, n_ket, ex_payload in transi_ex:
-            for op_irrep, geometry, factor in dipole_blocks:
+            for op_butler, op_irrep, geometry, factor in dipole_emission:
                 for adds in make_channels(gs_payload, ex_payload, op_irrep, factor):
                     blocks.append(RACBlockFull(
                         kind='TRANSI',
                         bra_sym=gs_butler,
-                        op_sym=op_label(op_irrep),
+                        op_sym=op_butler,
                         ket_sym=ex_butler,
                         geometry=geometry,
                         n_bra=n_bra, n_ket=n_ket,
@@ -2390,7 +2390,6 @@ def _generate_ledge_template_impl(
 
             transi_gs = _d4h_transi_irreps(gs_j_sizes, 'g', is_half_gs)
             transi_ex = _d4h_transi_irreps(ex_j_sizes, 'u', is_half_ex)
-            op_label = D4H_TO_BUTLER.__getitem__
         else:
             def _channels(gs_payload, ex_payload, _op_irrep, _factor):
                 gs_irrep, gs_j_order = gs_payload
@@ -2407,12 +2406,11 @@ def _generate_ledge_template_impl(
 
             transi_gs = _oh_transi_irreps(gs_j_sizes, '+', oh_irreps_gs, irrep_j_ordering)
             transi_ex = _oh_transi_irreps(ex_j_sizes, '-', oh_irreps_ex, irrep_j_ordering)
-            # the dipole's Butler label in its own group: '1-' for Oh's T1u,
-            # which is the literal the legacy loop wrote out
-            op_label = lambda irrep: butler_label(irrep[:-1], '-')
 
-        _emit_transi_blocks(blocks, plan.dipole_blocks, transi_gs, transi_ex,
-                            _channels, op_label)
+        # the operator's Butler label now comes from the plan too (B5-7), so
+        # neither group derives it here
+        _emit_transi_blocks(blocks, plan.dipole_emission, transi_gs, transi_ex,
+                            _channels)
 
     (_transi_legacy if emission == 'legacy' else _transi_plan)()
 

@@ -121,7 +121,8 @@ def test_a_convention_naming_the_wrong_ranks_is_refused(monkeypatch):
 
     bad = dict(CONVENTIONS)
     bad["Oh"] = GroupConventions(cf_operators=(("DS", 2, "ds", 0.0),),
-                                 hybr=CONVENTIONS["Oh"].hybr)
+                                 hybr=CONVENTIONS["Oh"].hybr,
+                                 dipole_butler=CONVENTIONS["Oh"].dipole_butler)
     monkeypatch.setattr(sp, "CONVENTIONS", bad)
     sp.symmetry_plan.cache_clear()
     try:
@@ -138,7 +139,8 @@ def test_a_convention_naming_the_wrong_channels_is_refused(monkeypatch):
     bad = dict(CONVENTIONS)
     bad["Oh"] = GroupConventions(
         cf_operators=CONVENTIONS["Oh"].cf_operators,
-        hybr=(("Eg", "EGHYBR", "eg"), ("A1g", "A1HYBR", "a1")))
+        hybr=(("Eg", "EGHYBR", "eg"), ("A1g", "A1HYBR", "a1")),
+        dipole_butler=CONVENTIONS["Oh"].dipole_butler)
     monkeypatch.setattr(sp, "CONVENTIONS", bad)
     sp.symmetry_plan.cache_clear()
     try:
@@ -431,3 +433,130 @@ def test_the_same_parameter_twice_is_refused():
     rac, _store, _dec = generate_ledge_template(2, 8, sym="oh")
     with pytest.raises(ValueError, match="both in cf and as a keyword"):
         _build_ban_from_rac(rac, tendq=1.0, cf={"tendq": 2.0}, sym="oh")
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B5-7: the plan supplies the dipole geometry per actor
+# ─────────────────────────────────────────────────────────────
+
+def test_the_plan_reproduces_the_butler_string_rule_it_replaces():
+    """The assembler's old rule, as a table, for the two groups it was right for.
+
+    It read ``('PARA', 'MULTIPOLE') if act_sym == '^0-' else ('PERP',
+    'MULTIPOLE')``. For Oh the exact match was always empty and the MULTIPOLE
+    fallback did the work (residual 35); for D4h both actors matched exactly.
+    The plan now names the geometry per actor, and these are the values the
+    rule produced, kept here as the independent record.
+    """
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    assert plan_for_sym("oh").actor_geometries == {"1-": ("MULTIPOLE",)}
+    assert plan_for_sym("d4h").actor_geometries == {"1-": ("PERP",), "^0-": ("PARA",)}
+
+
+def test_the_butler_string_rule_cannot_express_a_third_actor():
+    """Why the rule had to go, stated as a measurement rather than a worry.
+
+    D2h and C2v split the dipole **three** ways, so a third actor existed to be
+    got wrong: under the old rule anything that is not ``'^0-'`` took the
+    ``'PERP'`` branch, so two of the three would have claimed the same
+    geometry. The plan gives one entry per component, however many there are.
+    """
+    from multitorch.angular.operator_subduction import operator_components
+
+    # No ttrac geometry convention is recorded for these groups -- WP-B4 would
+    # not invent one -- but the *derived* component structure needs none, and
+    # it is the structure that makes the point.
+    for group, expected in (("D2h", ("B1u", "B2u", "B3u")), ("C2v", ("A1", "B1", "B2"))):
+        components = operator_components(group, 1, -1)
+        assert tuple(c.irrep for c in components) == expected
+        assert len(components) == 3, (group, components)
+
+    # Oh and D4h, the two the old rule covered, have one and two.
+    assert len(operator_components("Oh", 1, -1)) == 1
+    assert len(operator_components("D4h", 1, -1)) == 2
+
+    # The rule was `'^0-' -> PARA, anything else -> PERP`: with three actors,
+    # two of them necessarily collide on PERP whatever their Butler labels are,
+    # because the rule has exactly two outcomes and no third branch.
+    outcomes = {"PARA", "PERP"}
+    assert len(outcomes) < 3
+
+
+def test_a_convention_naming_the_wrong_number_of_dipole_actors_is_refused(monkeypatch):
+    """Inject a drifted dipole convention, as for the ranks and the channels."""
+    import multitorch.angular.symmetry_plan as sp
+
+    bad = dict(CONVENTIONS)
+    bad["D4h"] = GroupConventions(
+        cf_operators=CONVENTIONS["D4h"].cf_operators,
+        hybr=CONVENTIONS["D4h"].hybr,
+        dipole_butler=("1-",))          # D4h's dipole has two components
+    monkeypatch.setattr(sp, "CONVENTIONS", bad)
+    sp.symmetry_plan.cache_clear()
+    try:
+        with pytest.raises(RuntimeError, match="the dipole spans"):
+            sp.symmetry_plan("D4h")
+    finally:
+        sp.symmetry_plan.cache_clear()
+
+
+@pytest.mark.parametrize("sym", ["oh", "d4h"])
+def test_the_assembler_asks_for_the_geometries_the_plan_names(sym):
+    """The geometries the assembler actually looks for, captured from the call.
+
+    **Not a source-text assertion.** The first version of this test checked
+    that ``"actor_geometries.get("`` appeared in ``_assemble_one_triad``, and
+    an injection that replaced the surrounding ``if`` with ``if False:`` --
+    leaving the string present but dead -- passed all 155 tests in this
+    group's files. That is residual 45 one level down: the text of a call is
+    not evidence the call runs. So this records what ``_find_transi_block``
+    is actually handed and compares it with the plan.
+    """
+    import multitorch.hamiltonian.assemble as asm
+    from multitorch.angular.rac_generator import generate_ledge_rac
+    from multitorch.angular.symmetry_plan import plan_for_sym
+    from multitorch.api.calc import _build_ban_from_rac
+
+    plan = plan_for_sym(sym)
+    cf = {k: 1.0 for k in plan.cf_parameter_names}
+    rac, cowan = generate_ledge_rac(2, 8, sym=sym)
+    ban = _build_ban_from_rac(rac, sym=sym, cf=cf)
+
+    seen = {}
+    real = asm._find_transi_block
+
+    def recording(rac_, gs_sym, act_sym, fs_sym, geometries, *args, **kwargs):
+        seen.setdefault(act_sym, set()).add(tuple(geometries))
+        return real(rac_, gs_sym, act_sym, fs_sym, geometries, *args, **kwargs)
+
+    asm._find_transi_block = recording
+    try:
+        asm.assemble_and_diagonalize_in_memory(cowan, rac, ban)
+    finally:
+        asm._find_transi_block = real
+
+    assert seen, "no TRANSI lookup happened at all"
+    expected = plan.actor_geometries
+    for act_sym, tuples in seen.items():
+        assert tuples == {expected[act_sym]}, (act_sym, tuples, expected[act_sym])
+    assert set(seen) == set(expected), (set(seen), set(expected))
+
+
+def test_the_butler_fallback_table_is_kept_for_parsed_ban_files():
+    """A ``.ban`` from a file carries no group, so the old rule stays for it."""
+    import multitorch.hamiltonian.assemble as asm
+
+    assert asm.BUTLER_ACTOR_GEOMETRIES == {"^0-": ("PARA", "MULTIPOLE")}
+    assert asm.BUTLER_ACTOR_GEOMETRIES_DEFAULT == ("PERP", "MULTIPOLE")
+
+
+def test_the_generator_takes_the_dipole_butler_label_from_the_plan():
+    """Neither group derives the operator's Butler label in the generator now."""
+    import inspect
+
+    from multitorch.angular import rac_generator
+
+    src = inspect.getsource(rac_generator._generate_ledge_template_impl)
+    assert "plan.dipole_emission" in src
+    assert "op_label" not in src, "the per-group op_label closures should be gone"

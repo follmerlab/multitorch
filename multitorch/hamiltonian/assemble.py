@@ -48,6 +48,18 @@ OPERATOR_ORDER_OH = ['HAMILTONIAN', '10DQ']
 HYBR_ORDER_D4H = ['B1HYBR', 'A1HYBR', 'B2HYBR', 'EHYBR']
 HYBR_ORDER_OH = ['EGHYBR', 'T2GHYBR']
 
+#: The actor -> geometry rule for a ``.ban`` parsed from a file, which carries
+#: no group. Before WP-B5-7 this *was* the rule, applied to every path, and it
+#: worked by testing the Butler string: ``'^0-'`` meant PARA and anything else
+#: PERP, with MULTIPOLE as the fallback Oh needs (residual 35). It is correct
+#: for Oh and D4h and has nowhere to go beyond them -- D2h and C2v split the
+#: dipole three ways, and a third actor would silently take the PERP branch --
+#: so a .ban that declares its symmetry now reads ``SymmetryPlan.
+#: actor_geometries`` instead, and this remains only for file fixtures, which
+#: are Oh or D4h.
+BUTLER_ACTOR_GEOMETRIES = {'^0-': ('PARA', 'MULTIPOLE')}
+BUTLER_ACTOR_GEOMETRIES_DEFAULT = ('PERP', 'MULTIPOLE')
+
 
 def _is_constant_zero(xv) -> bool:
     """A plain-number zero coefficient: its block can be skipped.
@@ -112,6 +124,7 @@ def _find_transi_block(
     n_bra: int,
     n_ket: int,
     copy: int = 0,
+    allow_blind: bool = True,
 ) -> Optional[RACBlockFull]:
     """Find a TRANSI block for a specific triad, geometry and multiplicity copy.
 
@@ -136,7 +149,8 @@ def _find_transi_block(
                 and b.n_bra == n_bra and b.n_ket == n_ket]
 
     found: List[RACBlockFull] = []
-    for geometry in list(geometries) + [None]:
+    candidates = list(geometries) + ([None] if allow_blind else [])
+    for geometry in candidates:
         found = matches(geometry)
         if found:
             break
@@ -283,6 +297,7 @@ def assemble_and_diagonalize_in_memory(
             device,
             memo=memo,
             copy=copy,
+            actor_geometries=c["actor_geometries"],
         )
         if triad is not None:
             results.append(triad)
@@ -318,6 +333,7 @@ def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
         plan = plan_for_sym(ban.symmetry)
         operators = list(plan.operator_order)
         hybr_channels = list(plan.hybr_channels)
+        actor_geometries = plan.actor_geometries
         if len(operators) != n_ops:
             raise ValueError(
                 f"the .ban declares symmetry {ban.symmetry!r}, whose plan has "
@@ -325,12 +341,15 @@ def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
     elif n_ops == 4:
         operators = OPERATOR_ORDER_D4H
         hybr_channels = HYBR_ORDER_D4H
+        actor_geometries = None
     elif n_ops == 2:
         operators = OPERATOR_ORDER_OH
         hybr_channels = HYBR_ORDER_OH
+        actor_geometries = None
     else:
         operators = OPERATOR_ORDER_D4H[:n_ops]
         hybr_channels = HYBR_ORDER_D4H[:len(xmix)]
+        actor_geometries = None
 
     # Get irrep dimensions for the 1/sqrt(IDIM) factor
     irrep_dim = {}
@@ -360,6 +379,7 @@ def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
         nconf=nconf, xham=xham, xmix=xmix, eg_offsets=eg_offsets, ef_offsets=ef_offsets,
         operators=operators, hybr_channels=hybr_channels, irrep_dim=irrep_dim,
         gs_dims=gs_dims, fs_dims=fs_dims, gs_cowan_sec=gs_cowan_sec, fs_cowan_sec=fs_cowan_sec,
+        actor_geometries=actor_geometries,
     )
 
 
@@ -585,6 +605,7 @@ def _assemble_one_triad(
     nconf, device,
     memo: Optional[dict] = None,
     copy: int = 0,
+    actor_geometries: Optional[dict] = None,
 ) -> Optional[TriadResult]:
     """Assemble and diagonalize one symmetry triad.
 
@@ -640,12 +661,23 @@ def _assemble_one_triad(
                     tran_sec = cowan[tran_cowan_sec] if tran_cowan_sec < len(cowan) else []
 
                     # Geometry labels this actor may carry, most specific
-                    # first: D4h splits the dipole into PERP/PARA, Oh writes
-                    # the whole rank-1 actor as MULTIPOLE.
-                    geoms = ('PARA', 'MULTIPOLE') if act_sym == '^0-' else ('PERP', 'MULTIPOLE')
+                    # first. WP-B5-7: the group's SymmetryPlan says which --
+                    # D4h splits the dipole into PERP/PARA, Oh writes the whole
+                    # rank-1 actor as MULTIPOLE -- instead of this being
+                    # recovered by testing the Butler string, which had no way
+                    # to express a third actor (D2h, C2v). A .ban parsed from a
+                    # file carries no group, so the old rule remains for it.
+                    declared = actor_geometries is not None
+                    if declared:
+                        geoms = actor_geometries.get(
+                            act_sym, BUTLER_ACTOR_GEOMETRIES_DEFAULT)
+                    else:
+                        geoms = BUTLER_ACTOR_GEOMETRIES.get(
+                            act_sym, BUTLER_ACTOR_GEOMETRIES_DEFAULT)
 
                     tran_block = _find_transi_block(
                         rac, gs_sym, act_sym, fs_sym, geoms, dg, df, copy=copy,
+                        allow_blind=not declared,
                     )
                     if tran_block is not None:
                         T_sub = assemble_matrix_from_adds(

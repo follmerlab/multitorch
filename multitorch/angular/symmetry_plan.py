@@ -77,6 +77,12 @@ class GroupConventions:
 
     cf_operators: Tuple[Tuple[str, int, str, float], ...]
     hybr: Tuple[Tuple[str, str, str], ...]
+    #: Butler label of each dipole component, in the order
+    #: :func:`~multitorch.angular.operator_subduction.dipole_geometries`
+    #: returns them. A store string like the rest of this class, and the
+    #: thing the assembler used to recover by testing ``act_sym == '^0-'``
+    #: (WP-B5-7).
+    dipole_butler: Tuple[str, ...]
 
 
 #: ttrac's names and orders. Oh carries a single rank-4 crystal-field operator
@@ -86,12 +92,14 @@ CONVENTIONS: Dict[str, GroupConventions] = {
     "Oh": GroupConventions(
         cf_operators=(("10DQ", 4, "tendq", 1.0),),
         hybr=(("Eg", "EGHYBR", "eg"), ("T2g", "T2GHYBR", "t2g")),
+        dipole_butler=("1-",),                      # T1u
     ),
     "D4h": GroupConventions(
         cf_operators=(("10DQ", 4, "tendq", 1.0), ("DT", 4, "dt", 0.0),
                       ("DS", 2, "ds", 0.0)),
         hybr=(("B1g", "B1HYBR", "b1"), ("A1g", "A1HYBR", "a1"),
               ("B2g", "B2HYBR", "b2"), ("Eg", "EHYBR", "e")),
+        dipole_butler=("1-", "^0-"),                # Eu, A2u
     ),
 }
 
@@ -116,6 +124,7 @@ class SymmetryPlan:
     hybr_channels: Tuple[str, ...]
     hybr_parameter_names: Tuple[str, ...]
     dipole_blocks: Tuple[Tuple[str, str, float], ...]
+    dipole_butler: Tuple[str, ...]
 
     @property
     def n_cf_parameters(self) -> int:
@@ -149,6 +158,34 @@ class SymmetryPlan:
                 f"allowed {list(self.cf_parameter_names)}")
         return [1.0] + [cf.get(key, default)
                         for _name, _rank, key, default in self.cf_operators]
+
+    @property
+    def actor_geometries(self) -> Dict[str, Tuple[str, ...]]:
+        """``{Butler actor label: the geometries ttrac writes for it}``.
+
+        What the assembler needs to find a triad's TRANSI block, and the one
+        thing it previously recovered by **testing the Butler string itself**
+        — ``('PARA', 'MULTIPOLE') if act_sym == '^0-' else ('PERP',
+        'MULTIPOLE')`` (WP-B5-7). That rule is correct for Oh and D4h and has
+        nowhere to go beyond them: D2h and C2v split the dipole three ways, so
+        a third actor would silently take the ``'PERP'`` branch.
+
+        One actor can carry more than one geometry in principle, so the value
+        is a tuple in store order, and :func:`_find_transi_block` tries them
+        in that order.
+        """
+        out: Dict[str, Tuple[str, ...]] = {}
+        for butler, (_irrep, geometry, _factor) in zip(self.dipole_butler, self.dipole_blocks):
+            out[butler] = out.get(butler, ()) + (geometry,)
+        return out
+
+    @property
+    def dipole_emission(self) -> Tuple[Tuple[str, str, str, float], ...]:
+        """``(Butler label, irrep, geometry, isotropic factor)`` per component."""
+        return tuple(
+            (butler, irrep, geometry, factor)
+            for butler, (irrep, geometry, factor) in zip(self.dipole_butler, self.dipole_blocks)
+        )
 
     def hybr_values(self, hybridisation=None) -> List[object]:
         """The XMIX values: one per hybridisation channel, in store order.
@@ -228,6 +265,15 @@ def symmetry_plan(group: str) -> SymmetryPlan:
             f"{group}: the d orbitals span {sorted(i for i, _c in derived_hybr)} but the "
             f"convention names channels for {sorted(named_hybr_irreps)}; they disagree")
 
+    # --- dipole: which components is derived, their Butler labels are not ---
+    derived_dipole = dipole_geometries(group)
+    if len(conventions.dipole_butler) != len(derived_dipole):
+        raise RuntimeError(
+            f"{group}: the dipole spans {len(derived_dipole)} component(s) "
+            f"{[i for i, _g, _f in derived_dipole]} but the convention names "
+            f"{len(conventions.dipole_butler)} Butler label(s) "
+            f"{list(conventions.dipole_butler)}; they disagree")
+
     return SymmetryPlan(
         group=group,
         cf_operators=conventions.cf_operators,
@@ -236,7 +282,8 @@ def symmetry_plan(group: str) -> SymmetryPlan:
         hybr_irreps=derived_hybr,
         hybr_channels=tuple(channel for _irrep, channel, _key in conventions.hybr),
         hybr_parameter_names=tuple(key for _irrep, _channel, key in conventions.hybr),
-        dipole_blocks=dipole_geometries(group),
+        dipole_blocks=derived_dipole,
+        dipole_butler=conventions.dipole_butler,
     )
 
 
