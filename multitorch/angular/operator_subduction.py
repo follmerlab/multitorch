@@ -162,25 +162,16 @@ def _rotation_to_z(axis) -> np.ndarray:
 
     Which rotation is immaterial — only the axis ends up fixed, and the
     ``q = 0`` / ``q = +-1`` split is invariant under the residual rotation
-    about z. Built from the package's own ``wigner_from_quaternion`` rather
-        than from a hand-written Cartesian convention: the first attempt at
-    this did write one, and it was wrong in a way the z-axis groups could not
-    reveal (see :func:`polarization_axis`).
+    about z. The quaternion comes from ``finite_group`` rather than being built
+    here, so the package has **one** such convention: the first attempt at this
+    wrote its own Cartesian transform and it was wrong in a way the z-axis
+    groups could not reveal (residual 47; see :func:`polarization_axis`).
+    ``crystal_field`` needs the same rotation at ranks 2 and 4.
     """
-    from multitorch.angular.finite_group import quaternion, wigner_from_quaternion
+    from multitorch.angular.finite_group import (quaternion_carrying_to_z,
+                                                 wigner_from_quaternion)
 
-    n = np.asarray(axis, dtype=np.float64)
-    n = n / np.linalg.norm(n)
-    z = np.array([0.0, 0.0, 1.0])
-    cross = np.cross(n, z)
-    s = float(np.linalg.norm(cross))
-    if s < 1e-12:                      # already along +-z
-        if n[2] > 0:
-            return np.eye(3, dtype=complex)
-        cross, s = np.array([1.0, 0.0, 0.0]), 0.0
-        return wigner_from_quaternion(1.0, np.asarray(quaternion(cross, np.pi), dtype=float))
-    angle = float(np.arctan2(s, float(n @ z)))
-    return wigner_from_quaternion(1.0, np.asarray(quaternion(cross / s, angle), dtype=float))
+    return wigner_from_quaternion(1.0, quaternion_carrying_to_z(axis))
 
 
 def polarization_axis(component: OperatorComponent, axis=(0.0, 0.0, 1.0)) -> Optional[str]:

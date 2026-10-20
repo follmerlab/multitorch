@@ -149,10 +149,23 @@ def test_d_orbital_order_is_what_the_cubic_operator_says():
 @pytest.mark.parametrize("group,operator", [(g, o) for g in ONE_ELECTRON_PATTERNS
                                             for o in ONE_ELECTRON_PATTERNS[g]])
 def test_one_electron_matrix_is_sqrt_2l_plus_1_times_the_ballhausen_pattern(group, operator):
-    """The analytic oracle, and the single normalisation constant with it."""
-    k, pattern = ONE_ELECTRON_PATTERNS[group][operator]
+    """The analytic oracle, and the single normalisation constant with it.
+
+    Read **in the frame the convention is written in** (residual 53): an axial
+    pattern of a group whose principal axis is off z -- D3d's ``DSIGMA`` and
+    ``DTAU`` -- is diagonal in the axial frame and emphatically not in the
+    registered one, where the trigonal field mixes the d orbitals. For every
+    group whose axis is already z the rotation is the exact identity, so this is
+    the same assertion it always was for Oh and D4h.
+    """
+    k, pattern, frame = ONE_ELECTRON_PATTERNS[group][operator]
     v = cf_operator_vector(group, operator)[1]
     M = _operator_real_matrix(2.0, 2.0, k, v)
+    if frame == "axial":
+        D = np.asarray(cf.axial_frame_rotation(group))
+        M = D @ M.astype(complex) @ D.conj().T
+        assert np.max(np.abs(M.imag)) < 1e-11
+        M = M.real
     assert np.max(np.abs(M - np.diag(np.diag(M)))) < 1e-11, "an A1 operator is diagonal here"
     assert np.allclose(np.diag(M), SQRT5 * np.asarray(pattern), atol=1e-11)
 
@@ -203,10 +216,21 @@ def test_a_pattern_outside_the_groups_invariants_is_refused():
 
 
 def test_unknown_group_and_operator_are_refused_with_a_useful_message():
+    """D3d used to be the example here; residual 53 gave it a convention.
+
+    D2h is the one that still has none, and for the reason D3d no longer does:
+    its five-parameter set has no published one-electron table in this package's
+    hands. Replacing the example rather than deleting the test keeps the refusal
+    exercised, and the swap is the record that the D3d refusal was lifted on
+    purpose rather than by a lookup drifting into the table.
+    """
     with pytest.raises(ValueError, match="no named crystal-field convention"):
-        cf_operator_vector("D3d", "DSIGMA")
+        cf_operator_vector("D2h", "DSIGMA")
     with pytest.raises(ValueError, match="unknown crystal-field operator"):
         cf_operator_vector("D4h", "DU")
+    with pytest.raises(ValueError, match="unknown frame"):
+        cf_operator_from_pattern("D4h", 2, ONE_ELECTRON_PATTERNS["D4h"]["DS"][1],
+                                 frame="trigonal")
 
 
 # ─────────────────────────────────────────────────────────────
@@ -224,8 +248,8 @@ def test_dropping_the_unit_tensor_normalisation_breaks_the_hand_coded_agreement(
     measured rather than derived, so it needs this.
     """
     patched = dict(ONE_ELECTRON_PATTERNS)
-    patched["D4h"] = {op: (k, tuple(x / SQRT5 for x in pattern))
-                      for op, (k, pattern) in ONE_ELECTRON_PATTERNS["D4h"].items()}
+    patched["D4h"] = {op: (k, tuple(x / SQRT5 for x in pattern), frame)
+                      for op, (k, pattern, frame) in ONE_ELECTRON_PATTERNS["D4h"].items()}
     monkeypatch.setattr(cf, "ONE_ELECTRON_PATTERNS", patched)
 
     k, derived = cf_operator_vector("D4h", "TENDQ")
@@ -237,8 +261,8 @@ def test_dropping_the_unit_tensor_normalisation_breaks_the_hand_coded_agreement(
 
 def test_swapping_two_conventions_breaks_the_analytic_oracle():
     """Inject a wrong pattern and watch oracle 2 fail: Dt solved as if it were Ds."""
-    k_ds, pattern_ds = ONE_ELECTRON_PATTERNS["D4h"]["DS"]
-    k_dt, pattern_dt = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
+    k_ds, pattern_ds, _ = ONE_ELECTRON_PATTERNS["D4h"]["DS"]
+    k_dt, pattern_dt, _ = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
     wrong = cf_operator_from_pattern("D4h", k_dt, pattern_dt)
     M = _operator_real_matrix(2.0, 2.0, k_dt, wrong)
     # It solves, because Dt is a genuine rank-4 invariant, but what comes back is
@@ -288,7 +312,7 @@ def test_the_named_operator_is_independent_of_the_invariant_bases_gauge():
     tests. Measured here at <= 4e-14 for phases, mixed phases and random
     complex unitary mixes alike.
     """
-    k, pattern = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
+    k, pattern, _ = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
     want = cf_operator_vector("D4h", "DT")[1]
     V = np.array(cf_invariant_vectors("D4h", k))
     assert V.shape[1] == 2
@@ -317,7 +341,7 @@ def test_solving_in_the_real_basis_is_phase_sensitive_and_can_fail_silently():
     at a phase of ``exp(0.7i)`` the answer is off by ~21 in a vector of norm 25
     while the solve's own residual stays at ~5e-15.
     """
-    k, pattern = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
+    k, pattern, _ = ONE_ELECTRON_PATTERNS["D4h"]["DT"]
     want = cf_operator_vector("D4h", "DT")[1]
     V = np.array(cf_invariant_vectors("D4h", k))
     target = (SQRT5 * np.diag(np.asarray(pattern))).ravel()

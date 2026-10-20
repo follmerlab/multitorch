@@ -63,6 +63,32 @@ def quaternion(axis: Sequence[float], angle: float) -> np.ndarray:
     return np.concatenate([[math.cos(angle / 2.0)], math.sin(angle / 2.0) * a])
 
 
+def quaternion_carrying_to_z(axis: Sequence[float]) -> np.ndarray:
+    """A unit quaternion for a rotation that carries *axis* onto +z.
+
+    Which rotation is immaterial: only where the axis ends up is fixed, and
+    everything this is used for -- the ``q = 0`` / ``q = +-1`` split of an
+    operator component, and an axially-written one-electron pattern -- is
+    invariant under the residual rotation about z.
+
+    One place in the package builds this convention, deliberately. Residual 47
+    is what writing a second one costs: a hand-rolled spherical-to-Cartesian
+    transform put D3d's axial dipole channel along (1, -1, -1) and passed every
+    test, because for a group whose axis is already z the transform is only ever
+    exercised where x and y do not enter.
+    """
+    n = np.asarray(axis, dtype=np.float64)
+    n = n / np.linalg.norm(n)
+    z = np.array([0.0, 0.0, 1.0])
+    cross = np.cross(n, z)
+    s = float(np.linalg.norm(cross))
+    if s < 1e-12:                                  # already along +-z
+        if n[2] > 0:
+            return np.array([1.0, 0.0, 0.0, 0.0])  # the identity rotation
+        return quaternion((1.0, 0.0, 0.0), math.pi)
+    return quaternion(cross / s, float(math.atan2(s, float(n @ z))))
+
+
 def quaternion_product(p: np.ndarray, q: np.ndarray) -> np.ndarray:
     """Hamilton product of two quaternions."""
     pw, pv = p[0], p[1:]
