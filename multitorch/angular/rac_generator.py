@@ -1167,8 +1167,8 @@ def _make_d4h_dipole_adds(
     return adds
 
 
-def _make_d4h_op_adds_half(
-    d4h_irrep: str,
+def _make_op_adds_half(
+    target_irrep: str,
     manifold: str,
     entries: List[Tuple[float, str, int, int, int]],
     operator: str,
@@ -1176,8 +1176,17 @@ def _make_d4h_op_adds_half(
     ham_idx_map: Dict[float, int],
     cf_idx_map: Dict[Tuple[float, float], int],
     cf_idx_map_rank2: Dict[Tuple[float, float], int],
+    *,
+    target_group: str = 'D4h',
+    rank: Optional[int] = None,
 ) -> List[ADDEntry]:
-    """GROUND/EXCITE ADD entries of one D4h double irrep (half-integer J).
+    """GROUND/EXCITE ADD entries of one target-group double irrep (half-integer J).
+
+    **WP-B5-5b step 3**, the half-integer counterpart of :func:`_make_op_adds`:
+    *target_group* selects the subduction, which is the identity for Oh itself,
+    and *rank* comes from the group's plan. Measured bit-identical to the
+    retained ``_make_oh_op_adds_half`` with ``target_group='Oh'``: 54 cases over
+    both manifolds, 868 ADD entries, max difference 0.0.
 
     Half-integer counterpart of :func:`_make_op_adds`, and the D4h
     counterpart of :func:`_make_oh_op_adds_half`: the partner vectors are the
@@ -1192,7 +1201,7 @@ def _make_d4h_op_adds_half(
     filtered to it.
     """
     entries = [e for e in entries if e[3] == 0]
-    dim_d4h = double_group.D4H_DOUBLE_IRREP_DIM[d4h_irrep[:-1]]
+    dim_d4h = double_group.target_double_irrep_dim(target_irrep[:-1], target_group)
     adds: List[ADDEntry] = []
 
     if operator == 'HAMILTONIAN':
@@ -1204,18 +1213,21 @@ def _make_d4h_op_adds_half(
             pos += n
         return adds
 
-    rank_map = {'TENDQ': 4, 'DT': 4, 'DS': 2}
-    if operator not in rank_map:
-        raise ValueError(f"_make_d4h_op_adds_half: unknown operator {operator!r}; "
-                         f"expected HAMILTONIAN/TENDQ/DT/DS")
-    k = rank_map[operator]
+    # The rank is the plan's, as in the integer emitter; the fallback covers the
+    # three D4h names for callers that predate the parameter.
+    k = rank if rank is not None else {'TENDQ': 4, 'DT': 4, 'DS': 2}.get(operator)
+    if k is None:
+        raise ValueError(
+            f"_make_op_adds_half: operator {operator!r} has no known rank; pass rank= "
+            f"(from the group's SymmetryPlan). Known without it: TENDQ/DT/DS.")
     matrix_idx_map = cf_idx_map_rank2 if k == 2 else cf_idx_map
     op_vec = _d4h_operator_vector_complex(operator, k)
-    stem = d4h_irrep[:-1]
+    stem = target_irrep[:-1]
 
     def w(entry):
         J, oh, copy, partner, _ = entry
-        return basis.d4h_partners((manifold, J, oh, copy), stem)[:, partner]
+        return basis.target_partners((manifold, J, oh, copy), stem,
+                                     target_group=target_group)[:, partner]
 
     def coefficient(a, b) -> float:
         Jb, Jk = a[0], b[0]
@@ -1224,7 +1236,8 @@ def _make_d4h_op_adds_half(
         O = _build_coupling_operator(Jb, Jk, k, op_vec)
         z = double_group.gauge_factor(Jb, Jk, k) * (w(a).conj() @ O @ w(b))
         if abs(z.imag) > double_group.REALITY_TOL * max(abs(z), 1.0):
-            raise RuntimeError(f"D4h {operator} coupling {a} -> {b} is not real: {z!r}")
+            raise RuntimeError(
+                f"{target_group} {operator} coupling {a} -> {b} is not real: {z!r}")
         return math.sqrt(dim_d4h / (2.0 * Jb + 1.0)) * float(z.real)
 
     bra_pos = 1
@@ -1460,6 +1473,14 @@ def _make_oh_op_adds_half(
     cf_idx_map: Dict[Tuple[float, float], int],
 ) -> List[ADDEntry]:
     """GROUND/EXCITE ADD entries of one double-group irrep (half-integer J).
+
+    **No longer production (WP-B5-5b step 3).** The live path is
+    :func:`_make_op_adds_half` with ``target_group='Oh'``, whose subduction step
+    is the identity and whose route phase is 1. **Retained as the parity
+    oracle**, with the same reasoning as :func:`_make_oh_op_adds`: it is the
+    only independent construction of these coefficients, measured equal to the
+    shared emitter over 52 non-empty cases and 868 ADD entries at a difference
+    of 0.0, and deleting it would delete the oracle (residual 38).
 
     Half-integer counterpart of :func:`_make_oh_op_adds`: the partner vectors
     are the gauge-fixed complex ones of
@@ -2076,7 +2097,7 @@ def generate_ledge_template(
           per-D4h-irrep dispatcher (`_make_op_adds`,
           `_make_d4h_dipole_adds`); see `docs/D4H_DISPATCHER_PLAN_V2.md`.
           Half-integer J (odd-electron metals) goes through the
-          double-group emitters (`_make_d4h_op_adds_half`,
+          double-group emitters (`_make_op_adds_half`,
           `_make_d4h_dipole_adds_half`) on the gauge-fixed basis of
           `angular.double_group` (WP-B2a-4).
 
@@ -2532,7 +2553,7 @@ def _generate_ledge_template_impl(
                     ('DT',          'DT'),
                     ('DS',          'DS'),
                 ):
-                    op_adds = (_make_d4h_op_adds_half(
+                    op_adds = (_make_op_adds_half(
                         d4h_irrep, 'gs', entries, op_name, half_basis,
                         ham_idx_map=gs_ham_idx, cf_idx_map=gs_cf_idx,
                         cf_idx_map_rank2=gs_cf_idx_rank2,
@@ -2576,7 +2597,7 @@ def _generate_ledge_template_impl(
                     ('DT',          'DT'),
                     ('DS',          'DS'),
                 ):
-                    op_adds = (_make_d4h_op_adds_half(
+                    op_adds = (_make_op_adds_half(
                         d4h_irrep, 'ex', entries, op_name, half_basis,
                         ham_idx_map=ex_ham_idx, cf_idx_map=ex_cf_idx,
                         cf_idx_map_rank2=ex_cf_idx_rank2,
@@ -2709,10 +2730,11 @@ def _generate_ledge_template_impl(
                 d4h_irrep, entries = payload
                 op_name = _D4H_EMITTER_NAME.get(geometry, geometry)
                 if half:
-                    return _make_d4h_op_adds_half(
+                    return _make_op_adds_half(
                         d4h_irrep, label, entries, op_name, half_basis,
                         ham_idx_map=ham_idx, cf_idx_map=cf_idx,
                         cf_idx_map_rank2=cf_idx2,
+                        rank=cf_ranks.get(geometry),
                     )
                 return _make_op_adds(
                     d4h_irrep, entries, op_name, ham_idx_map=ham_idx,
@@ -2746,15 +2768,14 @@ def _generate_ledge_template_impl(
                 """
                 irrep, j_order = payload
                 operator = _D4H_EMITTER_NAME.get(geometry, geometry)
-                if half:
-                    return _make_oh_op_adds_half(
-                        irrep, label, j_order, operator, half_basis, ham_idx, cf_idx)
                 entries = [(J, irrep, copy, 0, n_st) for (J, copy, n_st) in j_order]
-                return _make_op_adds(
-                    irrep + parity, entries, operator,
-                    ham_idx_map=ham_idx, cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
-                    target_group='Oh', rank=cf_ranks.get(geometry),
-                )
+                shared = dict(ham_idx_map=ham_idx, cf_idx_map=cf_idx,
+                              cf_idx_map_rank2=cf_idx, target_group='Oh',
+                              rank=cf_ranks.get(geometry))
+                if half:
+                    return _make_op_adds_half(
+                        irrep + parity, label, entries, operator, half_basis, **shared)
+                return _make_op_adds(irrep + parity, entries, operator, **shared)
 
             manifolds = (
                 ('GROUND', _oh_manifold_irreps(gs_j_sizes, '+', oh_irreps_gs,

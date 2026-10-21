@@ -63,6 +63,22 @@ DOUBLE_IRREPS = ("E1/2", "E5/2", "G3/2")
 # D4h double group: Γ6 ↓ E1/2, Γ7 ↓ E3/2, Γ8 ↓ E1/2 ⊕ E3/2
 D4H_DOUBLE_IRREPS = ("E1/2", "E3/2")
 D4H_DOUBLE_IRREP_DIM = {"E1/2": 2, "E3/2": 2}
+
+
+def target_double_irrep_dim(irrep_stem: str, target_group: str) -> int:
+    """Dimension of a double-group irrep, by the table *target_group* uses.
+
+    Oh's ``G3/2`` is four-dimensional and has no D4h counterpart under that
+    name, so the two tables are genuinely different and the emitter cannot
+    share one (WP-B5-5b step 3).
+    """
+    from multitorch.angular.point_group import OH_DOUBLE_IRREP_DIM
+
+    if target_group == "D4h":
+        return D4H_DOUBLE_IRREP_DIM[irrep_stem]
+    if target_group == "Oh":
+        return OH_DOUBLE_IRREP_DIM[irrep_stem]
+    raise ValueError(f"unknown subduction target {target_group!r}; expected 'Oh' or 'D4h'")
 REALITY_TOL = 1e-9
 
 # Node of the gauge graph: (manifold, J, irrep, copy). ``manifold`` is any
@@ -137,22 +153,42 @@ class GaugedBasis:
     def __post_init__(self) -> None:
         self.vectors = {n: v[:, 0] for n, v in self.partners.items()}
 
-    def d4h_partners(self, node: Node, d4h_irrep: str, copy: int = 0) -> np.ndarray:
-        """``(2J+1, 2)`` D4h partner vectors of one Oh node, in the pinned route phase.
+    def target_partners(self, node: Node, target_irrep: str, copy: int = 0, *,
+                        target_group: str = "D4h") -> np.ndarray:
+        """Partner vectors of one Oh node, subduced onto *target_group*.
 
-        Column p is D4h partner p of copy ``copy`` of ``d4h_irrep`` inside this
-        node's Oh irrep. Raises if the route phases were not pinned
-        (``gauged_basis(..., d4h=True)``), since without them the crystal field
-        is not real.
+        The general form of :meth:`d4h_partners` (WP-B5-5b step 3), which is
+        what lets one half-integer operator emitter serve Oh as well as D4h.
+        With Oh as its own target the subduction is the identity and the route
+        phase is 1, so this returns ``self.partners[node]`` -- whose column 0 is
+        :attr:`vectors`, which is exactly what the retained
+        ``_make_oh_op_adds_half`` projects onto through
+        :meth:`coefficient`. Measured bit-identical: 54 cases over both
+        manifolds, 868 ADD entries, max difference 0.0.
+
+        **No route phase is needed for the Oh target and none is demanded.**
+        An Oh calculation builds its basis with ``d4h=False``, so
+        ``route_phase`` is empty; requiring it here would make the Oh route
+        unreachable. The requirement is specific to D4h, where DT and DS are
+        D4h scalars but not Oh ones (residual 31), and it stays on that branch.
         """
+        if target_group == "Oh":
+            return self.partners[node]
+        if target_group != "D4h":
+            raise ValueError(f"unknown subduction target {target_group!r}; "
+                             f"expected 'Oh' or 'D4h'")
         if not self.route_phase:
             raise RuntimeError("this basis was built without d4h=True, so the subduction "
                                "routes carry no pinned phase and the D4h crystal field "
                                "would not be real")
-        sub = oh_to_d4h_double_subduction(node[2])[d4h_irrep]
-        dim = D4H_DOUBLE_IRREP_DIM[d4h_irrep]
-        cols = sub[:, copy * dim:(copy + 1) * dim] * self.route_phase[(node[2], d4h_irrep)]
+        sub = oh_to_d4h_double_subduction(node[2])[target_irrep]
+        dim = D4H_DOUBLE_IRREP_DIM[target_irrep]
+        cols = sub[:, copy * dim:(copy + 1) * dim] * self.route_phase[(node[2], target_irrep)]
         return np.ascontiguousarray(self.partners[node] @ cols)
+
+    def d4h_partners(self, node: Node, d4h_irrep: str, copy: int = 0) -> np.ndarray:
+        """:meth:`target_partners` with the D4h target. Kept for its callers."""
+        return self.target_partners(node, d4h_irrep, copy, target_group="D4h")
 
     def copies(self, manifold: str, J: float, irrep: str) -> int:
         return sum(1 for n in self.nodes if n[0] == manifold and n[1] == J and n[2] == irrep)

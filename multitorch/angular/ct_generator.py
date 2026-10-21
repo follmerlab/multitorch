@@ -61,7 +61,7 @@ from multitorch.angular.rac_generator import (
     _d4h_partner_vector,
     _make_d4h_dipole_adds,
     _make_op_adds,
-    _make_d4h_op_adds_half,
+    _make_op_adds_half,
     _make_oh_dipole_adds,
     _make_oh_op_adds,
     _make_oh_op_adds_half,
@@ -347,18 +347,17 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                         continue
                     m = maps[cfg.label]
                     for op, geometry in CF_ACTORS[sym]:
+                        # WP-B5-5b steps 2 and 3: the shared emitters, Oh as
+                        # its own target so the subduction step is the identity.
+                        shared = dict(ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
+                                      cf_idx_map_rank2=m['cf4'], target_group='Oh',
+                                      rank=cf_ranks.get(geometry))
+                        entries = [(J, irrep, c, 0, n_st) for (J, c, n_st) in order]
                         if half:
-                            adds = _make_oh_op_adds_half(irrep, parity, order, op, basis,
-                                                         m['ham'], m['cf4'])
+                            adds = _make_op_adds_half(irrep + parity, parity, entries,
+                                                      op, basis, **shared)
                         else:
-                            # WP-B5-5b step 2: the shared emitter, Oh as its own
-                            # target so the subduction step is the identity.
-                            adds = _make_op_adds(
-                                irrep + parity,
-                                [(J, irrep, c, 0, n_st) for (J, c, n_st) in order],
-                                op, ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
-                                cf_idx_map_rank2=m['cf4'], target_group='Oh',
-                                rank=cf_ranks.get(geometry))
+                            adds = _make_op_adds(irrep + parity, entries, op, **shared)
                         if adds:
                             size = sum(x[2] for x in order)
                             blocks.append(RACBlockFull(kind=rac_kind, bra_sym=label, op_sym='0+', ket_sym=label,
@@ -392,8 +391,10 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                     m = maps[cfg.label]
                     size = sum(e[4] for e in entries) // dim
                     for op, geometry in CF_ACTORS[sym]:
-                        adds = (_make_d4h_op_adds_half(d4h, parity, entries, op, basis, ham_idx_map=m['ham'],
-                                                       cf_idx_map=m['cf4'], cf_idx_map_rank2=m['cf2'])
+                        adds = (_make_op_adds_half(d4h, parity, entries, op, basis,
+                                                   ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
+                                                   cf_idx_map_rank2=m['cf2'],
+                                                   rank=cf_ranks.get(geometry))
                                 if half else
                                 _make_op_adds(d4h, entries, op, ham_idx_map=m['ham'],
                                               cf_idx_map=m['cf4'], cf_idx_map_rank2=m['cf2']))

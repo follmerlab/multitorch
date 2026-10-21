@@ -470,7 +470,9 @@ def test_an_operator_with_no_known_rank_is_refused_rather_than_guessed():
 # ─────────────────────────────────────────────────────────────
 
 
-def test_the_retired_oh_operator_emitter_is_off_the_production_path():
+@pytest.mark.parametrize("emitter,n_val", [("_make_oh_op_adds", 8),
+                                           ("_make_oh_op_adds_half", 7)])
+def test_the_retired_oh_operator_emitter_is_off_the_production_path(emitter, n_val):
     """``_make_oh_op_adds`` is the oracle now, so nothing production may call it.
 
     Residual 45's gate-for-the-gate, one level out: the equality test above
@@ -478,7 +480,8 @@ def test_the_retired_oh_operator_emitter_is_off_the_production_path():
     comparison is worth nothing if the production path still *is*
     ``_make_oh_op_adds``. Both call sites are covered -- the generator's plan
     emission and ``ct_generator``'s, which the plan's "the Oh ADD makers retire"
-    did not mention (residual 54).
+    did not mention (residual 54). Both emitters are covered, at an even
+    electron count for the integer one and an odd one for the half-integer.
 
     It must stay reachable from the **legacy** emission, which is what keeps it
     exercised rather than merely present; residual 38 is the cost of a dead
@@ -490,33 +493,33 @@ def test_the_retired_oh_operator_emitter_is_off_the_production_path():
 
     seen = {"plan": 0, "legacy": 0, "ct": 0}
     which = {"side": None}
-    real = rg._make_oh_op_adds
+    real = getattr(rg, emitter)
 
     def counting(*args, **kwargs):
         seen[which["side"]] += 1
         return real(*args, **kwargs)
 
-    rg._make_oh_op_adds = counting
-    cg._make_oh_op_adds = counting
+    setattr(rg, emitter, counting)
+    setattr(cg, emitter, counting)
     try:
         for sym in ("oh", "td"):
             which["side"] = "plan"
-            _build(sym, 8, generate_ledge_template)
+            _build(sym, n_val, generate_ledge_template)
         which["side"] = "legacy"
-        _build("oh", 8, _generate_ledge_template_legacy)
+        _build("oh", n_val, _generate_ledge_template_legacy)
         which["side"] = "ct"
-        generate_ct_ledge_template(8, sym="oh")
+        generate_ct_ledge_template(n_val, sym="oh")
     finally:
-        rg._make_oh_op_adds = real
-        cg._make_oh_op_adds = real
+        setattr(rg, emitter, real)
+        setattr(cg, emitter, real)
 
-    assert seen["plan"] == 0, "the plan emission still calls the retired Oh emitter"
-    assert seen["ct"] == 0, "ct_generator still calls the retired Oh emitter"
-    assert seen["legacy"] > 0, "the legacy emission no longer exercises the oracle"
+    assert seen["plan"] == 0, f"the plan emission still calls {emitter}"
+    assert seen["ct"] == 0, f"ct_generator still calls {emitter}"
+    assert seen["legacy"] > 0, f"the legacy emission no longer exercises {emitter}"
 
 
 def test_the_shared_emitter_is_what_the_oh_plan_path_now_calls():
-    """And the positive half: the plan path reaches ``_make_op_adds`` for Oh.
+    """And the positive half: the plan path reaches the shared emitters for Oh.
 
     Asserted by recording what the function is *handed* rather than by reading
     the source, which the previous handoff's lesson 3 is about: a source-text
@@ -533,11 +536,130 @@ def test_the_shared_emitter_is_what_the_oh_plan_path_now_calls():
         calls.append(kwargs.get("target_group"))
         return real(*args, **kwargs)
 
+    real_half = rg._make_op_adds_half
+
+    def recording_half(*args, **kwargs):
+        calls.append(kwargs.get("target_group"))
+        return real_half(*args, **kwargs)
+
     rg._make_op_adds = recording
+    rg._make_op_adds_half = recording_half
     try:
-        _build("oh", 8, generate_ledge_template)
+        _build("oh", 8, generate_ledge_template)      # integer J
+        _build("oh", 7, generate_ledge_template)      # half-integer J
     finally:
         rg._make_op_adds = real
+        rg._make_op_adds_half = real_half
 
-    assert calls, "_make_op_adds is never reached by the Oh plan emission"
+    assert calls, "the shared emitters are never reached by the Oh plan emission"
     assert set(calls) == {"Oh"}, calls
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B5-5b step 3: the half-integer route too
+# ─────────────────────────────────────────────────────────────
+#
+# Measured before implementing, as step 2 was, and this one needed it more:
+# the two half-integer emitters are *not* obviously the same arithmetic.
+# ``_make_oh_op_adds_half`` goes through ``GaugedBasis.coefficient``, while
+# ``_make_d4h_op_adds_half`` fetched D4h partner vectors and applied
+# ``gauge_factor`` itself. Reading them suggests they agree; measuring them
+# shows it -- 54 cases over both manifolds, 868 ADD entries, max difference 0.0.
+#
+# One thing the reading did turn up and the measurement confirmed: the D4h
+# partner lookup *demanded* a pinned route phase, which an Oh calculation never
+# has (it builds its basis with ``d4h=False``). That requirement is specific to
+# D4h -- DT and DS are D4h scalars but not Oh ones, residual 31 -- so
+# ``target_partners`` keeps it on the D4h branch instead of in the shared path.
+
+#: ``(operator, non-empty cases, ADD entries)``, both counts measured.
+#: 27 + 25 = the 52 non-empty cases of the aggregate measurement, and
+#: 131 + 737 = its 868 entries. The two operators differ in case count because
+#: two irreps carry a HAMILTONIAN block and no rank-4 ADD at all.
+B55B_HALF_OPERATORS = [("HAMILTONIAN", 27, 131), ("TENDQ", 25, 737)]
+
+
+def _half_basis_and_sizes(n_val):
+    """``(basis, {manifold: j_sizes})`` for one odd electron count, or None."""
+    from multitorch.angular import double_group
+    import multitorch.angular.rac_generator as rg
+
+    gs_j = rg._j_sector_sizes(rg._get_terms(2, n_val))
+    if all(abs(J - round(J)) < 1e-9 for J in gs_j):
+        return None
+    ex_j = rg._get_excited_j_sizes(2, n_val, 1, 6)
+    basis = double_group.gauged_basis([('gs', gs_j), ('ex', ex_j)], d4h=False)
+    return basis, {'gs': gs_j, 'ex': ex_j}
+
+
+@pytest.mark.parametrize("operator,n_cases,n_entries", B55B_HALF_OPERATORS)
+def test_the_one_half_integer_emitter_reproduces_the_oh_one_exactly(operator, n_cases,
+                                                                    n_entries):
+    """``_make_op_adds_half(target_group='Oh')`` == ``_make_oh_op_adds_half``.
+
+    Both manifold parities, every odd electron count, all three Oh double
+    irreps. Counts asserted so a version that compared nothing fails.
+    """
+    from multitorch.angular.double_group import DOUBLE_IRREPS
+    import multitorch.angular.rac_generator as rg
+
+    compared = entries_seen = 0
+    worst = biggest = 0.0
+    for n_val in (1, 3, 5, 7, 9):
+        prepared = _half_basis_and_sizes(n_val)
+        if prepared is None:
+            continue
+        basis, sizes = prepared
+        for manifold, parity in (('gs', 'g'), ('ex', 'u')):
+            js = sorted(sizes[manifold])
+            ham_idx = {J: i + 1 for i, J in enumerate(js)}
+            cf_idx = {p: i + 1 for i, p in enumerate([(a, b) for a in js for b in js])}
+            for irrep in DOUBLE_IRREPS:
+                j_order = [(J, c, sizes[manifold][J]) for J in js
+                           for c in range(basis.copies(manifold, J, irrep))]
+                if not j_order:
+                    continue
+                want = rg._make_oh_op_adds_half(irrep, manifold, j_order, operator,
+                                                basis, ham_idx, cf_idx)
+                got = rg._make_op_adds_half(
+                    irrep + parity, manifold,
+                    [(J, irrep, c, 0, n) for (J, c, n) in j_order],
+                    operator, basis, ham_idx_map=ham_idx, cf_idx_map=cf_idx,
+                    cf_idx_map_rank2=cf_idx, target_group='Oh', rank=4)
+                key = lambda a: (a.matrix_idx, a.bra, a.ket, a.nbra, a.nket)  # noqa: E731
+                assert {key(a) for a in want} == {key(a) for a in got}, (
+                    n_val, manifold, irrep)
+                by_key = {key(a): a.coeff for a in got}
+                for add in want:
+                    worst = max(worst, abs(add.coeff - by_key[key(add)]))
+                    biggest = max(biggest, abs(add.coeff))
+                if want:
+                    compared += 1
+                    entries_seen += len(want)
+    assert (compared, entries_seen) == (n_cases, n_entries)
+    assert worst == 0.0, f"max |difference| {worst:.3e} over {entries_seen} entries"
+    assert biggest > 0.5, biggest
+
+
+def test_the_oh_target_needs_no_pinned_route_phase_and_the_d4h_one_still_does():
+    """The asymmetry that would have made the Oh half-integer route unreachable.
+
+    An Oh calculation builds its basis with ``d4h=False``, so ``route_phase`` is
+    empty. The D4h partner lookup raises on that, correctly -- without the
+    pinned phases DT and DS would not be real (residual 31). Had the shared path
+    kept that check, every Oh half-integer call would have raised; had it dropped
+    the check, D4h would have lost a real guard. Both halves asserted here.
+    """
+    prepared = _half_basis_and_sizes(7)
+    assert prepared is not None
+    basis, sizes = prepared
+    node = next(n for n in basis.nodes if n[0] == 'gs' and n[2] == 'G3/2')
+
+    assert not basis.route_phase, "an Oh basis should carry no route phases"
+    import numpy as np
+    assert np.array_equal(basis.target_partners(node, 'G3/2', target_group='Oh'),
+                          basis.partners[node])
+    with pytest.raises(RuntimeError, match="without d4h=True"):
+        basis.target_partners(node, 'E1/2', target_group='D4h')
+    with pytest.raises(ValueError, match="unknown subduction target"):
+        basis.target_partners(node, 'G3/2', target_group='D3d')
