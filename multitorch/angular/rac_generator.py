@@ -1361,6 +1361,18 @@ def _make_oh_op_adds(
 ) -> List[ADDEntry]:
     """GROUND/EXCITE ADD entries for one Oh irrep by direct projection.
 
+    **No longer production (WP-B5-5b step 2).** The live path is
+    :func:`_make_op_adds` with ``target_group='Oh'``, whose subduction step is
+    the identity. This is **retained as the parity oracle**, exactly as WP-B3
+    retained ``_d4h_operator_vector_butler``: it is the only independent
+    construction of these coefficients, and the equality between the two is
+    what licenses the switch
+    (``test_the_one_emitter_reproduces_the_oh_emitter_exactly``, 608 ADD
+    entries at a difference of 0.0). Deleting it would delete the oracle, which
+    is how WP-B2's named oracle came to be dead and wrong (residual 38).
+    ``test_the_retired_oh_operator_emitter_is_off_the_production_path`` asserts
+    that nothing production calls it.
+
     Oh analogue of :func:`_make_op_adds`: partner-0 vectors of each
     (J, copy) from ``_real_subduction_matrix``, the same i^{J_k-J_b}
     gauge sign and (-1)^{J_b-J_k} hermitian mirroring, so that the
@@ -1384,8 +1396,10 @@ def _make_oh_op_adds(
                 ))
             bra_pos += nb
         return adds
-    if operator != '10DQ':
-        raise ValueError(f"_make_oh_op_adds: unknown operator {operator!r}")
+    if operator != 'TENDQ':
+        raise ValueError(
+            f"_make_oh_op_adds: unknown operator {operator!r}; expected HAMILTONIAN "
+            f"or TENDQ (the convention name, not the store's '10DQ')")
     k = 4
     op_vec = _d4h_operator_vector_complex('TENDQ', k)   # pure Oh-A1 rank-4, Butler-scaled, sign-pinned
 
@@ -1469,8 +1483,14 @@ def _make_oh_op_adds_half(
                                      coeff=math.sqrt(dim / (2.0 * J + 1.0))))
             pos += n
         return adds
-    if operator != '10DQ':
-        raise ValueError(f"_make_oh_op_adds_half: unknown operator {operator!r}")
+    # The *convention* name, as every other operator emitter takes since
+    # WP-B5-5b step 2 -- the store's own string ('10DQ') stays in the block's
+    # ``geometry`` field. Two names for one operator at two call sites is how
+    # the CT path came to pass 'TENDQ' here and raise.
+    if operator != 'TENDQ':
+        raise ValueError(
+            f"_make_oh_op_adds_half: unknown operator {operator!r}; expected "
+            f"HAMILTONIAN or TENDQ (the convention name, not the store's '10DQ')")
 
     k = 4
     op_vec = _d4h_operator_vector_complex('TENDQ', k)
@@ -2615,9 +2635,9 @@ def _generate_ledge_template_impl(
             ))
 
             # 10DQ block (CF, k=cf_rank). The single CF operator on the Oh path.
-            cf_adds = (_make_oh_op_adds_half(irrep, 'gs', gs_j_order, '10DQ', half_basis, gs_ham_idx, gs_cf_idx)
+            cf_adds = (_make_oh_op_adds_half(irrep, 'gs', gs_j_order, 'TENDQ', half_basis, gs_ham_idx, gs_cf_idx)
                        if is_half_gs
-                       else _make_oh_op_adds(irrep, gs_j_order, '10DQ', gs_ham_idx, gs_cf_idx))
+                       else _make_oh_op_adds(irrep, gs_j_order, 'TENDQ', gs_ham_idx, gs_cf_idx))
             blocks.append(RACBlockFull(
                 kind='GROUND',
                 bra_sym=gs_butler,
@@ -2663,9 +2683,9 @@ def _generate_ledge_template_impl(
             ))
 
             # 10DQ block
-            cf_adds = (_make_oh_op_adds_half(irrep, 'ex', ex_j_order, '10DQ', half_basis, ex_ham_idx, ex_cf_idx)
+            cf_adds = (_make_oh_op_adds_half(irrep, 'ex', ex_j_order, 'TENDQ', half_basis, ex_ham_idx, ex_cf_idx)
                        if is_half_ex
-                       else _make_oh_op_adds(irrep, ex_j_order, '10DQ', ex_ham_idx, ex_cf_idx))
+                       else _make_oh_op_adds(irrep, ex_j_order, 'TENDQ', ex_ham_idx, ex_cf_idx))
             blocks.append(RACBlockFull(
                 kind='GROUND',  # assembler uses 'GROUND' for config-1
                 bra_sym=ex_butler,
@@ -2710,22 +2730,43 @@ def _generate_ledge_template_impl(
             )
             skip_empty = True
         else:
-            def _adds(payload, geometry, half, ham_idx, cf_idx, label):
+            def _adds(payload, geometry, half, ham_idx, cf_idx, label, parity):
+                """WP-B5-5b step 2: integer J goes through the one emitter.
+
+                ``target_group='Oh'`` makes its subduction step the identity, so
+                the partner-0 vector it projects onto is the one the retained
+                ``_make_oh_op_adds`` builds directly -- measured bit-identical
+                over 80 cases and 608 ADD entries (residual 54). Half-integer J
+                still goes to the Oh double-group emitter: that path is **not** a
+                relabelling and is step 3, with its own measurement.
+
+                Td routes here too, with the Oh target: its ADD coefficients are
+                Oh's (residual 48) and only the block labels differ, which
+                ``_oh_manifold_irreps`` applies.
+                """
                 irrep, j_order = payload
+                operator = _D4H_EMITTER_NAME.get(geometry, geometry)
                 if half:
                     return _make_oh_op_adds_half(
-                        irrep, label, j_order, geometry, half_basis, ham_idx, cf_idx)
-                return _make_oh_op_adds(irrep, j_order, geometry, ham_idx, cf_idx)
+                        irrep, label, j_order, operator, half_basis, ham_idx, cf_idx)
+                entries = [(J, irrep, copy, 0, n_st) for (J, copy, n_st) in j_order]
+                return _make_op_adds(
+                    irrep + parity, entries, operator,
+                    ham_idx_map=ham_idx, cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
+                    target_group='Oh', rank=cf_ranks.get(geometry),
+                )
 
             manifolds = (
                 ('GROUND', _oh_manifold_irreps(gs_j_sizes, '+', oh_irreps_gs,
                                                dim_lookup_gs, irrep_j_ordering,
                                                group=plan.group),
-                 lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx, 'gs')),
+                 lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx,
+                                       'gs', 'g')),
                 ('EXCITE', _oh_manifold_irreps(ex_j_sizes, '-', oh_irreps_ex,
                                                dim_lookup_ex, irrep_j_ordering,
                                                group=plan.group),
-                 lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx, 'ex')),
+                 lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx,
+                                       'ex', 'u')),
             )
             # the Oh path emits an operator block even with no ADD entries;
             # residual 44

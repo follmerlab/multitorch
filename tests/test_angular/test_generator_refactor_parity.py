@@ -376,16 +376,15 @@ B55B_CASES = [(n, irrep, parity)
               for parity in ("g", "u")]
 
 
-#: ``(store name, vector name, non-empty cases, ADD entries)`` -- the last two
+#: ``(operator name, non-empty cases, ADD entries)`` -- the last two
 #: measured, so a version of this test that compared nothing would fail rather
 #: than pass. 128 + 480 = the 608 entries the pre-implementation measurement
 #: reported.
-B55B_OPERATORS = [("HAMILTONIAN", "HAMILTONIAN", 40, 128), ("10DQ", "TENDQ", 40, 480)]
+B55B_OPERATORS = [("HAMILTONIAN", 40, 128), ("TENDQ", 40, 480)]
 
 
-@pytest.mark.parametrize("operator_oh,operator_vector,n_cases,n_entries", B55B_OPERATORS)
-def test_the_one_emitter_reproduces_the_oh_emitter_exactly(operator_oh, operator_vector,
-                                                           n_cases, n_entries):
+@pytest.mark.parametrize("operator,n_cases,n_entries", B55B_OPERATORS)
+def test_the_one_emitter_reproduces_the_oh_emitter_exactly(operator, n_cases, n_entries):
     """``_make_op_adds(target_group='Oh')`` == ``_make_oh_op_adds``, bit for bit.
 
     Over every integer electron count, both manifold parities and all five Oh
@@ -402,9 +401,9 @@ def test_the_one_emitter_reproduces_the_oh_emitter_exactly(operator_oh, operator
         if case is None:
             continue
         j_order, entries, ham_idx, cf_idx = case
-        want = rg._make_oh_op_adds(oh_label, j_order, operator_oh, ham_idx, cf_idx)
+        want = rg._make_oh_op_adds(oh_label, j_order, operator, ham_idx, cf_idx)
         got = rg._make_op_adds(
-            oh_label + parity, entries, operator_vector,
+            oh_label + parity, entries, operator,
             ham_idx_map=ham_idx, cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
             target_group="Oh", rank=4,
         )
@@ -445,7 +444,7 @@ def test_the_identity_subduction_is_what_makes_that_equality_hold():
     rg.oh_to_target_subduction_matrix = permuted
     try:
         with pytest.raises(AssertionError):
-            test_the_one_emitter_reproduces_the_oh_emitter_exactly("10DQ", "TENDQ", 40, 480)
+            test_the_one_emitter_reproduces_the_oh_emitter_exactly("TENDQ", 40, 480)
     finally:
         rg.oh_to_target_subduction_matrix = real
 
@@ -464,3 +463,81 @@ def test_an_operator_with_no_known_rank_is_refused_rather_than_guessed():
         rg._make_op_adds("Eg", entries, "DSIGMA", ham_idx_map=ham_idx,
                          cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx,
                          target_group="Oh")
+
+
+# ─────────────────────────────────────────────────────────────
+# WP-B5-5b step 2: the Oh integer route moves to the one emitter
+# ─────────────────────────────────────────────────────────────
+
+
+def test_the_retired_oh_operator_emitter_is_off_the_production_path():
+    """``_make_oh_op_adds`` is the oracle now, so nothing production may call it.
+
+    Residual 45's gate-for-the-gate, one level out: the equality test above
+    compares the shared emitter against ``_make_oh_op_adds``, and that
+    comparison is worth nothing if the production path still *is*
+    ``_make_oh_op_adds``. Both call sites are covered -- the generator's plan
+    emission and ``ct_generator``'s, which the plan's "the Oh ADD makers retire"
+    did not mention (residual 54).
+
+    It must stay reachable from the **legacy** emission, which is what keeps it
+    exercised rather than merely present; residual 38 is the cost of a dead
+    oracle.
+    """
+    import multitorch.angular.ct_generator as cg
+    import multitorch.angular.rac_generator as rg
+    from multitorch.angular.ct_generator import generate_ct_ledge_template
+
+    seen = {"plan": 0, "legacy": 0, "ct": 0}
+    which = {"side": None}
+    real = rg._make_oh_op_adds
+
+    def counting(*args, **kwargs):
+        seen[which["side"]] += 1
+        return real(*args, **kwargs)
+
+    rg._make_oh_op_adds = counting
+    cg._make_oh_op_adds = counting
+    try:
+        for sym in ("oh", "td"):
+            which["side"] = "plan"
+            _build(sym, 8, generate_ledge_template)
+        which["side"] = "legacy"
+        _build("oh", 8, _generate_ledge_template_legacy)
+        which["side"] = "ct"
+        generate_ct_ledge_template(8, sym="oh")
+    finally:
+        rg._make_oh_op_adds = real
+        cg._make_oh_op_adds = real
+
+    assert seen["plan"] == 0, "the plan emission still calls the retired Oh emitter"
+    assert seen["ct"] == 0, "ct_generator still calls the retired Oh emitter"
+    assert seen["legacy"] > 0, "the legacy emission no longer exercises the oracle"
+
+
+def test_the_shared_emitter_is_what_the_oh_plan_path_now_calls():
+    """And the positive half: the plan path reaches ``_make_op_adds`` for Oh.
+
+    Asserted by recording what the function is *handed* rather than by reading
+    the source, which the previous handoff's lesson 3 is about: a source-text
+    assertion passed against an injection that replaced the enclosing ``if``
+    with ``if False:``. Every Oh call must carry ``target_group='Oh'``, which is
+    the thing that makes the subduction the identity.
+    """
+    import multitorch.angular.rac_generator as rg
+
+    calls = []
+    real = rg._make_op_adds
+
+    def recording(*args, **kwargs):
+        calls.append(kwargs.get("target_group"))
+        return real(*args, **kwargs)
+
+    rg._make_op_adds = recording
+    try:
+        _build("oh", 8, generate_ledge_template)
+    finally:
+        rg._make_op_adds = real
+
+    assert calls, "_make_op_adds is never reached by the Oh plan emission"
+    assert set(calls) == {"Oh"}, calls

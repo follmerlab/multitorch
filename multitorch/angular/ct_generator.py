@@ -70,6 +70,7 @@ from multitorch.angular.rac_generator import (
     _operator_real_matrix,
 )
 from multitorch.angular.symmetry import D4H_IRREP_DIM, D4H_TO_BUTLER, d4h_basis_layout, oh_to_d4h_subduction_matrix
+from multitorch.angular.symmetry_plan import plan_for_sym
 from multitorch.io.read_rme import ADDEntry, IrrepInfo, RACBlockFull, RACFileFull
 
 Shell = Tuple[int, int]
@@ -92,7 +93,11 @@ HYBR_ROUTES: Dict[str, Dict[str, Tuple[Tuple[int, str, float], ...]]] = {
         'T2GHYBR': ((0, 'A1', 3 / _S5), (4, 'A1', -3 * _S30 / 5)),
     },
 }
-CF_ACTORS = {'oh': (('HAMILTONIAN', 'HAMILTONIAN'), ('10DQ', '10DQ')),
+#: ``(operator vector name, store geometry name)`` per group. The Oh row
+#: names ``TENDQ`` rather than ``10DQ`` since WP-B5-5b step 2: the first
+#: element is what the shared emitter looks the operator vector up by, the
+#: second is the store's own string. The two rows now differ only in length.
+CF_ACTORS = {'oh': (('HAMILTONIAN', 'HAMILTONIAN'), ('TENDQ', '10DQ')),
              'd4h': (('HAMILTONIAN', 'HAMILTONIAN'), ('TENDQ', '10DQ'), ('DT', 'DT'), ('DS', 'DS'))}
 
 
@@ -301,6 +306,12 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     channels = list(HYBR_ROUTES[sym])
     hybr_vecs = {ch: hybridisation_operator_vectors(ch, sym) for ch in channels}
 
+    # Operator ranks from the group's plan rather than a table in the emitter
+    # (WP-B5-5b step 1). Keyed by the store's geometry string, which is what
+    # ``CF_ACTORS`` carries as its second element.
+    cf_ranks = {name: rank for name, rank, _key, _default
+                in plan_for_sym(sym).cf_operators}
+
     # Half-integer J (odd n): one gauge-fixed double-group basis for the whole
     # calculation, with the two configurations of each parity sharing ONE node
     # set. The partner vectors depend on (J, irrep, copy) only, so a node per
@@ -336,8 +347,18 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                         continue
                     m = maps[cfg.label]
                     for op, geometry in CF_ACTORS[sym]:
-                        adds = (_make_oh_op_adds_half(irrep, parity, order, op, basis, m['ham'], m['cf4'])
-                                if half else _make_oh_op_adds(irrep, order, op, m['ham'], m['cf4']))
+                        if half:
+                            adds = _make_oh_op_adds_half(irrep, parity, order, op, basis,
+                                                         m['ham'], m['cf4'])
+                        else:
+                            # WP-B5-5b step 2: the shared emitter, Oh as its own
+                            # target so the subduction step is the identity.
+                            adds = _make_op_adds(
+                                irrep + parity,
+                                [(J, irrep, c, 0, n_st) for (J, c, n_st) in order],
+                                op, ham_idx_map=m['ham'], cf_idx_map=m['cf4'],
+                                cf_idx_map_rank2=m['cf4'], target_group='Oh',
+                                rank=cf_ranks.get(geometry))
                         if adds:
                             size = sum(x[2] for x in order)
                             blocks.append(RACBlockFull(kind=rac_kind, bra_sym=label, op_sym='0+', ket_sym=label,
