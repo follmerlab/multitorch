@@ -227,12 +227,20 @@ def _is_d4z_rotation(R) -> bool:
 #: Target groups the GROUND/EXCITE operator emitter can subduce Oh onto.
 #: ``'Oh'`` and ``'Td'`` are the identity -- Oh trivially, and Td because it is
 #: Oh relabelled for this observable (residual 48), so its emitter works in Oh
-#: irreps and the labels are applied by ``_manifold_label``.
-SUBDUCTION_TARGETS: Tuple[str, ...] = ("Oh", "Td", "D4h")
+#: irreps and the labels are applied by ``_manifold_label``. Everything else
+#: goes through :func:`oh_to_group_subduction_matrix`, which needs only that the
+#: group be registered in the cubic setting.
+SUBDUCTION_TARGETS: Tuple[str, ...] = ("Oh", "Td", "D4h", "D3d")
 
 
 def target_irrep_dim(target_irrep: str, target_group: str) -> int:
-    """Dimension of a target-group irrep, by the table that group uses."""
+    """Dimension of a target-group irrep, by the table that group uses.
+
+    The two tabulated groups keep their tables -- they are what the Fortran
+    parity runs through -- and anything else is asked of ``point_group``, which
+    derives the dimensions from the group itself.
+    """
+    from multitorch.angular.finite_group import point_group
     from multitorch.angular.point_group import OH_IRREP_DIM
 
     if target_group == "D4h":
@@ -240,8 +248,11 @@ def target_irrep_dim(target_irrep: str, target_group: str) -> int:
     if target_group in ("Oh", "Td"):
         return OH_IRREP_DIM[target_irrep[:-1] if target_irrep[-1] in "gu"
                             else target_irrep]
-    raise ValueError(f"unknown subduction target {target_group!r}; "
-                     f"expected one of {list(SUBDUCTION_TARGETS)}")
+    group = point_group(target_group)
+    if target_irrep not in group.irrep_labels:
+        raise ValueError(f"{target_group} has no irrep {target_irrep!r}; "
+                         f"known: {group.irrep_labels}")
+    return int(group.irrep_dims[group.irrep_labels.index(target_irrep)])
 
 
 def oh_to_target_subduction_matrix(oh_irrep: str, target_group: str
@@ -264,18 +275,260 @@ def oh_to_target_subduction_matrix(oh_irrep: str, target_group: str
     from multitorch.angular.point_group import OH_IRREP_DIM
     import numpy as _np
 
-    if target_group == "D4h":
-        return oh_to_d4h_subduction_matrix(oh_irrep)
     if target_group in ("Oh", "Td"):
         if oh_irrep[-1] not in "gu":
             raise ValueError(f"oh_irrep must include g/u suffix; got {oh_irrep!r}")
         return {oh_irrep: _np.eye(OH_IRREP_DIM[oh_irrep[:-1]])}
-    raise ValueError(f"unknown subduction target {target_group!r}; "
-                     f"expected one of {list(SUBDUCTION_TARGETS)}")
+    return oh_to_group_subduction_matrix(oh_irrep, target_group)
+
+
+# ─────────────────────────────────────────────────────────────
+# The general Oh → G subduction (WP-B6, residual 59)
+# ─────────────────────────────────────────────────────────────
+#
+# :func:`oh_to_d4h_subduction_matrix` below is the tetragonal special case,
+# written first and Fortran-validated through the D4h ADD coefficients it
+# feeds. The general function is the same construction with three things taken
+# from the group instead of from a D4-specific table:
+#
+#   * which of Oh's 24 rotations belong to the target — matrix membership of
+#     the target's own rotation set, rather than ``_is_d4z_rotation``;
+#   * the target's conjugacy classes and characters — ``point_group(H)``,
+#     rather than ``_classify_d4_rotation`` and ``D4_CHARACTERS``;
+#   * the branching multiplicities — the character sum, rather than
+#     ``OH_TO_D4H``.
+#
+# The 2-D irrep's matrices stay geometric: a dihedral group's E is the action
+# on the plane perpendicular to the principal axis, which in the z setting *is*
+# ``R[:2, :2]`` and so reproduces the tetragonal code bit for bit. That is the
+# gate — ``oh_to_group_subduction_matrix(irrep, 'D4h')`` equals
+# ``oh_to_d4h_subduction_matrix(irrep)`` exactly, all ten Oh single-group
+# irreps, max difference 0.0 — which is what makes routing D4h through here a
+# relabelling rather than a recomputation, and leaves its Fortran parity alone.
+
+#: Rotation subgroup of each target group. The projector sums over proper
+#: rotations only: the parity half of the subduction is already fixed by the Oh
+#: irrep's own g/u, which is why the tetragonal code sums D4 characters and then
+#: attaches Oh's parity to the label. Oh and Td are absent deliberately — their
+#: subduction is the identity and never reaches this function.
+OH_ROTATION_SUBGROUP: Dict[str, str] = {
+    'D4h': 'D4', 'D4': 'D4',
+    'D3d': 'D3', 'D3': 'D3', 'C3v': 'D3',
+    'D2h': 'D2', 'D2': 'D2',
+}
+
+
+def _denoise_character(x: float, tol: float = 1e-9) -> float:
+    """Snap a character to the nearest integer when it is one to within *tol*.
+
+    ``point_group``'s character table is computed rather than tabulated, so a
+    character that is exactly ±1 can arrive as 1 - 2.2e-16. Left alone that
+    noise propagates through the projector and moves the partner vectors in
+    their last bit — enough to make the D4h comparison 3.3e-16 rather than
+    0.0, and so to turn a relabelling into a recomputation. Only near-integer
+    values are snapped; anything else is returned unchanged, so a group with
+    genuinely irrational or complex characters is not quietly rounded.
+    """
+    r = round(float(x))
+    return float(r) if abs(float(x) - r) < tol else float(x)
+
+
+def _target_rotations_in_oh(group) -> List[Tuple[int, int]]:
+    """``[(Oh rotation index, group element index)]`` for *group*'s rotations.
+
+    Ordered by Oh rotation index, which is the order the tetragonal code sums
+    in and therefore the order that keeps the two bit-identical.
+
+    Raises if any proper rotation of the group is not a rotation of Oh, which
+    is the guard for residual 40's trap: a trigonal group in the
+    crystallographic z setting is not a subgroup of the standard Oh at all (8
+    of D3d's 12 elements lie outside it), so "10Dq plus a trigonal distortion"
+    is not expressible there and this is the door it should fail at.
+    """
+    import numpy as _np
+    from multitorch.angular.point_group import octahedral_rotations
+
+    oh_rots = octahedral_rotations()
+    pairs: List[Tuple[int, int]] = []
+    for i, R in enumerate(oh_rots):
+        for gi, e in enumerate(group.elements):
+            if e.parity > 0 and _np.allclose(e.rotation, R, atol=1e-10):
+                pairs.append((i, gi))
+                break
+    n_proper = sum(1 for e in group.elements if e.parity > 0)
+    if len(pairs) != n_proper:
+        raise RuntimeError(
+            f"{group.name}: {n_proper} proper rotations but only {len(pairs)} "
+            f"are rotations of Oh — is it registered in the cubic setting? "
+            f"(see GENERATORS in finite_group.py; the z-setting trigonal "
+            f"groups are deliberately not Oh subgroups)")
+    return pairs
+
+
+def _perpendicular_frame(axis) -> "np.ndarray":
+    """``(3, 2)`` orthonormal frame spanning the plane perpendicular to *axis*.
+
+    Built from the package's one rotation-to-z convention (residual 47), so for
+    ``axis = z`` the columns are exactly x and y and the 2-D irrep matrices
+    below are exactly ``R[:2, :2]``.
+    """
+    from multitorch.angular.finite_group import (
+        quaternion_carrying_to_z, quaternion_to_matrix,
+    )
+
+    Q = quaternion_to_matrix(quaternion_carrying_to_z(axis))
+    return Q.T[:, :2]
+
+
+def _target_irrep_matrices(group, label: str, pairs) -> List["np.ndarray"]:
+    """``Γ(R)`` of one target irrep, per rotation, in the ``pairs`` order.
+
+    One-dimensional: the character. Two-dimensional: the action on the plane
+    perpendicular to the principal axis, which is a dihedral group's E.
+    Verified rather than assumed — see :func:`_verify_target_irrep`.
+    """
+    import numpy as _np
+    from multitorch.angular.finite_group import PRINCIPAL_AXIS
+    from multitorch.angular.point_group import octahedral_rotations
+
+    row = group.irrep_labels.index(label)
+    dim = int(group.irrep_dims[row])
+    chi, cls = group.character_table, group.class_of
+
+    if dim == 1:
+        return [_np.array([[_denoise_character(chi[row, cls[gi]].real)]])
+                for _i, gi in pairs]
+    if dim == 2:
+        oh_rots = octahedral_rotations()
+        frame = _perpendicular_frame(
+            PRINCIPAL_AXIS.get(group.name, (0.0, 0.0, 1.0)))
+        return [frame.T @ oh_rots[i] @ frame for i, _gi in pairs]
+    raise NotImplementedError(
+        f"{group.name} irrep {label!r} has dimension {dim}; the geometric "
+        f"construction covers the 1-D irreps and a dihedral E only")
+
+
+def _verify_target_irrep(group, label: str, pairs, mats) -> None:
+    """Γ is unitary, a homomorphism, and has the irrep's character.
+
+    The B2a discipline: fix every free choice, then check it on the hot path.
+    The 2-D case is a geometric guess about which representation the plane
+    perpendicular to the axis carries, and this is what makes it not a guess.
+    """
+    import numpy as _np
+
+    row = group.irrep_labels.index(label)
+    chi, cls = group.character_table, group.class_of
+    table = group.multiplication_table
+    by_element = {gi: M for (_i, gi), M in zip(pairs, mats)}
+    eye = _np.eye(mats[0].shape[0])
+
+    for (_i, gi), M in zip(pairs, mats):
+        if abs(_np.trace(M) - chi[row, cls[gi]].real) > 1e-9:
+            raise RuntimeError(
+                f"{group.name} {label}: trace {_np.trace(M)} at element {gi} "
+                f"is not the character {chi[row, cls[gi]].real}")
+        if not _np.allclose(M @ M.T, eye, atol=1e-10):
+            raise RuntimeError(f"{group.name} {label}: Γ({gi}) is not unitary")
+        for (_j, gj), N in zip(pairs, mats):
+            product = by_element.get(table[gi, gj])
+            if product is not None and not _np.allclose(M @ N, product, atol=1e-10):
+                raise RuntimeError(
+                    f"{group.name} {label}: Γ({gi})Γ({gj}) ≠ Γ({gi}·{gj})")
+
+
+def oh_to_group_subduction_matrix(oh_irrep: str, target_group: str
+                                  ) -> Dict[str, "np.ndarray"]:
+    """Subduction of an Oh single-group irrep onto any registered Oh subgroup.
+
+    The general form of :func:`oh_to_d4h_subduction_matrix`; see the comment
+    block above for what is taken from the group rather than from a table, and
+    for the exact-equality gate against the tetragonal case.
+
+    Returns ``{target irrep: (dim_Oh, mult × dim_target)}`` in the Oh irrep's
+    own basis, copy-major, with the Oh irrep's parity suffix carried onto the
+    target label — the same contract as the tetragonal function.
+    """
+    import numpy as _np
+    from multitorch.angular.finite_group import point_group
+    from multitorch.angular.point_group import (
+        OH_IRREP_DIM, _oh_irrep_matrices_real_std,
+    )
+
+    if oh_irrep[-1] not in 'gu':
+        raise ValueError(f"oh_irrep must include g/u suffix; got {oh_irrep!r}")
+    oh_label, parity = oh_irrep[:-1], oh_irrep[-1]
+    if oh_label not in OH_IRREP_DIM:
+        raise ValueError(
+            f"Unsupported Oh irrep {oh_irrep!r}; expected A1g/A2g/Eg/T1g/T2g "
+            f"(or _u variants)")
+    if target_group not in OH_ROTATION_SUBGROUP:
+        raise ValueError(
+            f"no rotation subgroup registered for {target_group!r}; known: "
+            f"{sorted(OH_ROTATION_SUBGROUP)}")
+
+    group = point_group(OH_ROTATION_SUBGROUP[target_group])
+    pairs = _target_rotations_in_oh(group)
+    n_rot = len(pairs)
+
+    oh_mats = _oh_irrep_matrices_real_std()[oh_label]
+    restricted = [oh_mats[i] for i, _gi in pairs]
+    dim_oh = OH_IRREP_DIM[oh_label]
+    chi, cls = group.character_table, group.class_of
+
+    result: Dict[str, _np.ndarray] = {}
+    for label in group.irrep_labels:
+        row = group.irrep_labels.index(label)
+        dim_target = int(group.irrep_dims[row])
+
+        # multiplicity of this target irrep in the restricted Oh irrep
+        overlap = sum(_np.conj(chi[row, cls[gi]]) * _np.trace(restricted[k])
+                      for k, (_i, gi) in enumerate(pairs)) / n_rot
+        mult = int(round(float(_np.real(overlap))))
+        if mult == 0:
+            continue
+
+        gamma = _target_irrep_matrices(group, label, pairs)
+        _verify_target_irrep(group, label, pairs, gamma)
+
+        def transfer(mu: int, nu: int) -> _np.ndarray:
+            P = _np.zeros((dim_oh, dim_oh), dtype=_np.float64)
+            for k in range(n_rot):
+                P += gamma[k][mu, nu] * restricted[k]
+            return P * (dim_target / n_rot)
+
+        eigvals, eigvecs = _np.linalg.eigh(transfer(0, 0))
+        v0 = eigvecs[:, eigvals > 0.5]      # (dim_oh, mult), one per copy
+        if v0.shape[1] != mult:
+            raise RuntimeError(
+                f"Partner extraction failed for {oh_irrep} → {label}: got "
+                f"{v0.shape[1]} partner-0 vectors, expected {mult}")
+
+        cols = []
+        for copy in range(mult):
+            base = v0[:, copy]
+            for mu in range(dim_target):
+                v = base if mu == 0 else transfer(mu, 0) @ base
+                norm = _np.linalg.norm(v)
+                if norm < 1e-10:
+                    raise RuntimeError(
+                        f"Transfer operator gave a null partner {mu} for "
+                        f"{oh_irrep} → {label}")
+                cols.append(v / norm)
+        result[label + parity] = _np.stack(cols, axis=1)
+
+    return result
 
 
 def oh_to_d4h_subduction_matrix(oh_irrep: str) -> Dict[str, "np.ndarray"]:
     """Return D4h subduction of an Oh single-group irrep.
+
+    **Superseded on the plan path by** :func:`oh_to_group_subduction_matrix`,
+    which reproduces this function bit for bit on all ten Oh single-group
+    irreps and is what ``oh_to_target_subduction_matrix`` now calls. Retained,
+    not deleted: it has direct callers of its own, and it is the oracle for the
+    general version -- the equality is only evidence while the two are
+    genuinely two implementations (residual 45).
 
     For each Oh irrep, computes the unitary rotation that takes the
     Oh-irrep partner basis into D4h-irrep partner basis. Result is
