@@ -1846,13 +1846,18 @@ def ledge_reference_ev(
 # Two per-group quirks are preserved deliberately, because this increment's
 # gate is byte equality and neither can be unified without changing output:
 #
-#   * ``skip_empty`` -- the D4h path drops an operator block with no ADD
-#     entries; the Oh path emits it. Observable at exactly one place in the
-#     18-case matrix: at d9 the excited manifold is 2p^5 3d^10, a closed d
-#     shell with no crystal field, so Oh emits two empty ``10DQ`` blocks that
-#     D4h would not. Harmless -- every consumer filters on ``add_entries``,
-#     as CLAUDE.md requires -- but a byte difference, so it is residual 44
-#     rather than a quiet tidy-up here.
+#   * ``skip_empty`` -- **resolved 2026-10-22, residual 58**: both paths now
+#     emit an operator block whether or not it has ADD entries, because that
+#     is what ttrac does. ``execute_racer_task`` (ttrac.c:7086-7137) writes the
+#     ``REDUCEDMATRIX`` header and the matching ``END`` unconditionally for
+#     every present triad whose operator irrep matches the actor, and the ADD
+#     lines are whatever the inner triad loop happens to find -- possibly
+#     none. ``tests/reference_data/ti4_d0_oh/ti4_d0_oh.rme_rac`` shows it in a
+#     data-carrying section: the 3d^0 ground manifold has no crystal field, and
+#     its ``10DQ`` block is emitted empty right beside a ``HAMILTONIAN`` block
+#     that carries a real ADD. So the Oh path was the faithful one and the D4h
+#     skip was the deviation; removing it adds six empty blocks at exactly one
+#     case (d4h, d9) and changes nothing else in the 27-case matrix.
 #   * the operator's *emitter* name. The RAC carries the plan's store name
 #     (``10DQ``); the D4h ADD makers want their own (``TENDQ``), while the Oh
 #     makers already take the store names. The mapping lives in the adapter,
@@ -2015,7 +2020,7 @@ def _d4h_manifold_irreps(j_sizes, parity, is_half):
 
 
 def _emit_operator_blocks(blocks, irrep_infos, operator_order, manifold_irreps,
-                          make_adds, kind, skip_empty):
+                          make_adds, kind):
     """Emit one manifold's operator blocks: one per (irrep, operator).
 
     ``kind`` labels the :class:`IrrepInfo` — 'GROUND' or 'EXCITE' — while every
@@ -2029,8 +2034,6 @@ def _emit_operator_blocks(blocks, irrep_infos, operator_order, manifold_irreps,
         ))
         for geometry in operator_order:
             adds = make_adds(payload, geometry)
-            if skip_empty and not adds:
-                continue
             blocks.append(RACBlockFull(
                 kind='GROUND',
                 bra_sym=butler,
@@ -2563,8 +2566,6 @@ def _generate_ledge_template_impl(
                         cf_idx_map=gs_cf_idx,
                         cf_idx_map_rank2=gs_cf_idx_rank2,
                     ))
-                    if not op_adds:
-                        continue
                     blocks.append(RACBlockFull(
                         kind='GROUND',
                         bra_sym=butler,
@@ -2607,8 +2608,6 @@ def _generate_ledge_template_impl(
                         cf_idx_map=ex_cf_idx,
                         cf_idx_map_rank2=ex_cf_idx_rank2,
                     ))
-                    if not op_adds:
-                        continue
                     blocks.append(RACBlockFull(
                         kind='GROUND',          # assembler config-1 convention
                         bra_sym=butler,
@@ -2750,7 +2749,6 @@ def _generate_ledge_template_impl(
                  lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx,
                                        ex_cf_idx_rank2, 'ex')),
             )
-            skip_empty = True
         else:
             def _adds(payload, geometry, half, ham_idx, cf_idx, label, parity):
                 """WP-B5-5b step 2: integer J goes through the one emitter.
@@ -2789,14 +2787,11 @@ def _generate_ledge_template_impl(
                  lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx,
                                        'ex', 'u')),
             )
-            # the Oh path emits an operator block even with no ADD entries;
-            # residual 44
-            skip_empty = False
 
         for kind, manifold_irreps, make_adds in manifolds:
             _emit_operator_blocks(
                 blocks, irrep_infos, plan.operator_order, manifold_irreps,
-                make_adds, kind, skip_empty,
+                make_adds, kind,
             )
 
     (_emission_legacy if emission == 'legacy' else _emission_plan)()

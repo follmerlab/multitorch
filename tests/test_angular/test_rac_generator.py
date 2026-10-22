@@ -316,3 +316,170 @@ def test_generator_runs_all_even_n(l, n):
     # COWAN store section 2 should exist and have tensors
     assert len(cowan) > 2
     assert len(cowan[2]) > 0
+
+
+# ---------- Empty operator blocks: emitted, not skipped (residual 58) ----------
+#
+# Residual 44 recorded that the Oh emission path wrote an operator block whether
+# or not it had ADD entries while the D4h path skipped an empty one, and left the
+# difference open because "dropping them is a byte change". The plan's prescribed
+# fix was ``skip_empty=True`` for Oh too -- which is the wrong direction. ttrac's
+# ``execute_racer_task`` (ttrac.c:7086-7137) writes the ``REDUCEDMATRIX`` header
+# and the matching ``END`` **unconditionally** for every present triad whose
+# operator irrep matches the actor; the ADD lines are whatever the inner triad
+# loop finds, possibly none. So the empty block is Fortran's own convention, the
+# Oh path was faithful, and the D4h skip was the deviation.
+#
+# The oracle is reference data rather than that source read: the two tests below
+# are a pair, the first pinning what the Fortran chain actually emitted and the
+# second pinning that the port matches it.
+
+OPERATOR_GROUPS = ('oh', 'td', 'd4h')
+
+
+def _blocks_by_section(path):
+    """``[[(kind, bra, operator, n_add), ...], ...]`` per .rme_rac section.
+
+    A run of ``IRREP`` lines opens a section, which is how ``read_rme_rac_full``
+    splits them too; this reader is deliberately independent of it so that the
+    fixture evidence does not depend on the parser under test elsewhere.
+    """
+    import re
+    head = re.compile(r'\s*REDUCEDMATRIX\s+(\S+)\s+(\S+)\s+\S+\s+\S+\s+\d+\s+(\S+)')
+    sections, section, block, in_header = [], None, None, False
+    for line in open(path):
+        if line.strip().startswith('IRREP '):
+            if not in_header:
+                if block is not None:
+                    section.append(block)
+                    block = None
+                section = []
+                sections.append(section)
+                in_header = True
+            continue
+        in_header = False
+        m = head.match(line)
+        if m:
+            if block is not None:
+                section.append(block)
+            block = [m.group(1), m.group(2), m.group(3), 0]
+        elif line.strip().startswith('ADD') and block is not None:
+            block[3] += 1
+    if block is not None:
+        section.append(block)
+    return sections
+
+
+def test_the_fortran_chain_emits_an_operator_block_with_no_add_entries():
+    """ttrac writes an empty ``10DQ`` block for a d-shell with no crystal field.
+
+    ``ti4_d0_oh`` is the discriminating fixture: its third section carries real
+    ADD entries, and in it the 3d⁰ ground manifold -- an empty d shell, so every
+    crystal-field coupling vanishes identically -- gets a ``10DQ`` block with
+    zero ADDs sitting immediately after a ``HAMILTONIAN`` block on the same
+    irrep that carries one. That rules out the alternative reading, which is
+    that empty blocks appear only in the leading placeholder sections.
+    """
+    path = os.path.join(REF_DIR, 'ti4_d0_oh', 'ti4_d0_oh.rme_rac')
+    sections = _blocks_by_section(path)
+
+    mixed = [(i, s) for i, s in enumerate(sections, 1)
+             if any(b[3] for b in s) and any(not b[3] for b in s)]
+    assert mixed, "no section mixes empty and non-empty blocks"
+
+    # the d^0 ground manifold, in a section that carries data
+    found = []
+    for i, section in mixed:
+        by_key = {(b[0], b[1], b[2]): b[3] for b in section}
+        ham = by_key.get(('GROUND', '0+', 'HAMILTONIAN'))
+        cf = by_key.get(('GROUND', '0+', '10DQ'))
+        if ham and cf == 0:
+            found.append(i)
+    assert found, (
+        "expected a section where GROUND 0+ carries a HAMILTONIAN ADD and an "
+        f"empty 10DQ block; got {[(i, sorted(b[:3] + [b[3]] for b in s)) for i, s in mixed]}"
+    )
+
+
+@pytest.mark.parametrize("sym", OPERATOR_GROUPS)
+@pytest.mark.parametrize("n", range(1, 10))
+def test_every_manifold_irrep_gets_every_operator_block(sym, n):
+    """The operator blocks are the full ``irreps x operator_order`` grid.
+
+    No gaps, in any group, at any electron count -- which is the port's side of
+    the Fortran convention above. The case this bites is d9: the excited
+    manifold is 2p⁵3d¹⁰, a closed d shell, so every crystal-field coupling is
+    zero and the blocks are empty. Before residual 58 the D4h path dropped six
+    of them there (``10DQ``, ``DT`` and ``DS`` on both ``1/2-`` and ``3/2-``)
+    and Oh dropped none, which is the whole of the difference across the
+    27-case matrix.
+    """
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    operators = tuple(plan_for_sym(sym).operator_order)
+    rac, _store, _dec = generate_ledge_template(2, n, sym=sym)
+
+    emitted = {(b.bra_sym, b.geometry) for b in rac.blocks
+               if b.geometry in operators and b.bra_sym == b.ket_sym}
+    expected = {(info.name, op) for info in rac.irreps for op in operators}
+
+    assert emitted == expected, (
+        f"{sym} d{n}: missing {sorted(expected - emitted)}, "
+        f"unexpected {sorted(emitted - expected)}"
+    )
+
+
+def test_d9_is_where_the_empty_blocks_live_and_they_are_the_only_empty_ones():
+    """Pins the measurement: six empty blocks in D4h d9, two in Oh/Td, else none.
+
+    Counted so that a version of the grid test that passed vacuously -- because
+    nothing was ever empty -- would fail here instead of going quiet.
+    """
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.angular.symmetry_plan import plan_for_sym
+
+    empties = {}
+    for sym in OPERATOR_GROUPS:
+        operators = tuple(plan_for_sym(sym).operator_order)
+        for n in range(1, 10):
+            rac, _store, _dec = generate_ledge_template(2, n, sym=sym)
+            empty = [(b.bra_sym, b.geometry) for b in rac.blocks
+                     if b.geometry in operators and not b.add_entries]
+            if empty:
+                empties[(sym, n)] = sorted(empty)
+
+    assert set(empties) == {('oh', 9), ('td', 9), ('d4h', 9)}, sorted(empties)
+    assert len(empties[('d4h', 9)]) == 6, empties[('d4h', 9)]
+    assert len(empties[('oh', 9)]) == 2, empties[('oh', 9)]
+    assert len(empties[('td', 9)]) == 2, empties[('td', 9)]
+    # all of them are the crystal field on the closed d^10 excited manifold
+    assert all(op != 'HAMILTONIAN' for sym_n in empties for _irrep, op in empties[sym_n])
+
+
+def test_reinstating_the_skip_makes_the_grid_incomplete():
+    """The injection: without it the grid test could be vacuous.
+
+    Wraps the one emitter so that it drops an empty block again -- the state the
+    D4h path was in before residual 58 -- and requires the grid test to fail.
+    """
+    from multitorch.angular import rac_generator as rg
+
+    original = rg._emit_operator_blocks
+
+    def skipping(blocks, irrep_infos, operator_order, manifold_irreps,
+                 make_adds, kind):
+        before = len(blocks)
+        original(blocks, irrep_infos, operator_order, manifold_irreps,
+                 make_adds, kind)
+        blocks[before:] = [b for b in blocks[before:] if b.add_entries]
+
+    rg._emit_operator_blocks = skipping
+    try:
+        with pytest.raises(AssertionError, match="missing"):
+            test_every_manifold_irrep_gets_every_operator_block('d4h', 9)
+    finally:
+        rg._emit_operator_blocks = original
+
+    # and with the real emitter back it passes again
+    test_every_manifold_irrep_gets_every_operator_block('d4h', 9)
