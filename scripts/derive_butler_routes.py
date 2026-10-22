@@ -80,16 +80,41 @@ def parse_irreps(body: str) -> dict[str, int]:
 
     The sign marks the double-group (spinor) irreps; we keep |dim| and let the
     caller decide. Boson irreps carry ``+``, fermion irreps ``-``.
+
+    A **complex-conjugate pair** is written ``X * -X <dim>``: the first
+    member's dimension slot holds ``*``, the pair marker, and the shared
+    dimension follows the second member. D3's line ends ``S1 * -S1 -1``, so
+    ``S1`` and ``-S1`` are the conjugate pair of 1-D spinor irreps. Reading the
+    line two tokens at a time and skipping what does not match ``[+-]\d+``
+    silently **drops the first member of every pair** -- ``S1`` for D3 and D5,
+    ``S1`` and ``2`` for T, and one or more for every cyclic group. That is
+    checked below: the dimensions of a group's irreps satisfy
+    ``sum(d**2) == |double group|``, which fails for exactly those groups when
+    a member is missing.
     """
     match = re.search(r"IRREPS (.*?)(?: TRIADS|$)", body)
     if not match:
         return {}
     tokens = match.group(1).split()
-    return {
-        tokens[i]: abs(int(tokens[i + 1]))
-        for i in range(0, len(tokens) - 1, 2)
-        if re.fullmatch(r"[+-]\d+", tokens[i + 1])
-    }
+    out: dict[str, int] = {}
+    i = 0
+    while i < len(tokens) - 1:
+        label, slot = tokens[i], tokens[i + 1]
+        if slot == "*":
+            # ``X * -X <dim>``: a conjugate pair sharing one dimension
+            if i + 3 >= len(tokens) or not re.fullmatch(r"[+-]\d+", tokens[i + 3]):
+                raise ValueError(
+                    f"conjugate-pair marker on {label!r} is not followed by "
+                    f"``-label dim``: {tokens[i:i + 4]}")
+            dim = abs(int(tokens[i + 3]))
+            out[label] = dim
+            out[tokens[i + 2]] = dim
+            i += 4
+            continue
+        if re.fullmatch(r"[+-]\d+", slot):
+            out[label] = abs(int(slot))
+        i += 2
+    return out
 
 
 def parse_branchings(body: str) -> dict[str, list[str]]:

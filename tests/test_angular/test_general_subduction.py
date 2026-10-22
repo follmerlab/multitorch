@@ -487,27 +487,147 @@ def test_the_trigonal_double_group_has_one_dimensional_spinor_irreps():
 DISK0 = Path(__file__).resolve().parents[2].parent / "ttmult" / "src" / "disk0"
 
 
+def _butler_module():
+    """``scripts/derive_butler_routes`` imported the way the descent tests do."""
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    try:
+        import derive_butler_routes as butler
+    finally:
+        sys.path.pop(0)
+    return butler
+
+
 @pytest.mark.skipif(not DISK0.exists(), reason=f"Butler tables not present at {DISK0}")
 def test_the_butler_transcription_still_matches_disk0():
     """Drift guard on the transcription, not on the oracle.
 
     ``disk0`` is not part of this repository, so the table above is a
     transcription and the transcription is the weak link. When the Fortran tree
-    is reachable, re-read the ``$F3/OD3`` block's ``BRANCHINGS`` line and
-    require it to say what :data:`BUTLER_O_TO_D3` says.
+    is reachable, re-read the ``O=>D3`` block through the script's own parser --
+    not a local one. A child token is ``[(mult)]<phase><label>`` with the phase
+    always explicit, and the label may itself begin with ``-`` to mark the
+    partner of a conjugate pair, so ``+-S1`` is phase ``+`` on irrep ``-S1``
+    while ``--S1`` would be phase ``-`` on the same irrep. Stripping a leading
+    ``+`` happens to work for this table, where every phase is ``+``, and would
+    silently mislabel one with a ``-`` phase.
     """
-    text = DISK0.read_text(errors='replace')
-    start = text.index('$F3/OD3')
-    block = text[start:text.index('$F3/', start + 1)]
-    branchings = block[block.index('BRANCHINGS') + len('BRANCHINGS'):
-                       block.index('ENDBRANCHINGS')]
+    butler = _butler_module()
+    tables = butler.ButlerTables(DISK0)
+    assert butler.run_gate(tables, verbose=False), "the script's own gate failed"
 
-    parsed = {}
-    for clause in branchings.split(';'):
-        fields = clause.split()
-        if not fields:
-            continue
-        parsed[fields[0]] = [f.lstrip('+') for f in fields[1:]]
+    assert tables.branch('O', 'D3') == BUTLER_O_TO_D3, (
+        f"disk0 says {tables.branch('O', 'D3')}, "
+        f"the transcription says {BUTLER_O_TO_D3}")
 
-    assert parsed == BUTLER_O_TO_D3, (
-        f"disk0 says {parsed}, the transcription says {BUTLER_O_TO_D3}")
+
+# ── What Butler's tables do and do not fix about the 1-D pair (residual 61) ──
+#
+# D3's two 1-D spinor irreps are a complex-conjugate pair, which Butler names
+# distinctly -- ``S1`` and ``-S1`` -- so the question for step 2 was whether the
+# tables fix *which* concrete subspace is which, or whether it is a free
+# convention the port has to pin itself.
+#
+# Measured, the two blocks inside Γ8 ⇓ D3 differ in exactly one thing: the sign
+# of the C2 eigenvalue, ±i. Both have C3 = −1. That makes Butler's TRIADS line
+# for D3 check out -- ``S1 S1 ^0 0 + CHOSEN`` needs (±i)² = −1, which is A2's C2
+# character, and ``-S1 S1 0 0 -`` needs (+i)(−i) = +1, which is A1's -- so the
+# table independently corroborates the computed eigenvalues. But the *absolute*
+# assignment rides on Butler's spinor lift of the C2 elements, which lives in
+# the 2jm/3jm data and not in any line that can simply be read. Since the pair
+# is Kramers-degenerate, no observable depends on the choice, only on its
+# consistency; so the choice is ours to state and the thing to test is
+# invariance under swapping it, not agreement with Butler on which is which.
+
+def _gamma8_one_dimensional_blocks():
+    """The two 1-D blocks of Γ8 ⇓ D3, with D3's rotations in the ``pairs`` order."""
+    from multitorch.angular.point_group import _oh_double_irrep_matrices
+
+    group = point_group('D3')
+    pairs = symmetry._target_rotations_in_oh(group)
+    mats = [_oh_double_irrep_matrices()['G3/2'][i] for i, _gi in pairs]
+    blocks = [b for b in _commutant_blocks(mats) if b.shape[1] == 1]
+    return group, pairs, mats, blocks
+
+
+def test_the_one_dimensional_pair_differs_only_in_the_sign_of_the_c2_eigenvalue():
+    """Both have C3 = −1; the discriminant is the C2 eigenvalue, ±i."""
+    group, pairs, mats, blocks = _gamma8_one_dimensional_blocks()
+    assert len(blocks) == 2, f"expected two 1-D blocks, got {len(blocks)}"
+
+    eigenvalues = []
+    for b in blocks:
+        v = b[:, 0]
+        eigenvalues.append([complex(v.conj() @ (M @ v)) for M in mats])
+
+    for row in eigenvalues:
+        for lam in row:
+            assert abs(abs(lam) - 1.0) < 1e-9, "a 1-D block is not invariant"
+
+    for k, (_i, gi) in enumerate(pairs):
+        angle = np.degrees(group.elements[gi].angle)
+        a, b = eigenvalues[0][k], eigenvalues[1][k]
+        if abs(angle) < 1e-6:                                   # identity
+            assert abs(a - 1) < 1e-9 and abs(b - 1) < 1e-9
+        elif abs(abs(angle) - 120) < 1 or abs(abs(angle) - 240) < 1:
+            assert abs(a + 1) < 1e-9 and abs(b + 1) < 1e-9, (
+                f"C3 eigenvalue should be −1 for both, got {a} and {b}")
+        else:                                                   # a C2
+            assert abs(abs(a.imag) - 1) < 1e-9 and abs(a.real) < 1e-9, a
+            assert abs(b - a.conjugate()) < 1e-9, (
+                f"the two blocks should be conjugate on a C2, got {a} and {b}")
+
+
+def test_butlers_d3_triads_agree_with_those_eigenvalues():
+    """``S1 S1 ^0`` and ``-S1 S1 0`` are what the measured eigenvalues give.
+
+    Transcribed from ``ttmult/src/disk0``, ``GROUPDATA D3``, the TRIADS line:
+    ``... S1 1 S0 0 -; S1 S1 ^0 0 + CHOSEN; -S1 S1 0 0 - ENDTRIADS``.
+    A1 (``0``) has C2 character +1 and A2 (``^0``) has −1, so the products of
+    the C2 eigenvalues decide which coupling is allowed -- and they come out
+    Butler's way without anything being fitted.
+    """
+    group, pairs, mats, blocks = _gamma8_one_dimensional_blocks()
+    c2 = [k for k, (_i, gi) in enumerate(pairs)
+          if abs(abs(np.degrees(group.elements[gi].angle)) - 180) < 1]
+    assert len(c2) == 3, f"D3 should have three C2 rotations, found {len(c2)}"
+
+    lam = [[complex(b[:, 0].conj() @ (mats[k] @ b[:, 0])) for k in c2]
+           for b in blocks]
+
+    # S1 (x) S1 -> A2: C2 character -1
+    for a in lam[0]:
+        assert abs(a * a - (-1)) < 1e-9, f"(S1 x S1) C2 character {a * a}, want −1"
+    # S1 (x) -S1 -> A1: C2 character +1
+    for a, b in zip(lam[0], lam[1]):
+        assert abs(a * b - 1) < 1e-9, f"(S1 x -S1) C2 character {a * b}, want +1"
+
+
+# ── Butler's IRREPS line: the conjugate-pair marker (residual 61) ──
+
+@pytest.mark.skipif(not DISK0.exists(), reason=f"Butler tables not present at {DISK0}")
+def test_butlers_irrep_dimensions_account_for_the_whole_double_group():
+    """``sum(dim**2) == |double group|`` for every group Butler tabulates.
+
+    The oracle for the conjugate-pair marker. ``X * -X <dim>`` declares a pair
+    sharing one dimension, and reading the IRREPS line two tokens at a time --
+    which is the natural thing to do and was what the script did -- drops the
+    first member of every pair. That is invisible for O and D4h, which have no
+    pairs and are all the script's gate covers, and it would have bitten on
+    first contact with D3, whose ``S1`` was missing. This check is sharp: a
+    dropped 1-D member puts D3 at 11 instead of 12.
+    """
+    butler = _butler_module()
+    tables = butler.ButlerTables(DISK0)
+    assert butler.run_gate(tables, verbose=False), "the script's own gate failed"
+    orders = {'O': 48, 'D4': 16, 'D3': 12, 'T': 24, 'C2': 4, 'C3': 6,
+              'C4': 8, 'D5': 20}
+    for group, order in orders.items():
+        dims = tables.irreps[group]
+        assert sum(d * d for d in dims.values()) == order, (
+            f"{group}: sum(dim^2) = {sum(d * d for d in dims.values())}, "
+            f"double group order {order}; irreps {dims}")
+
+    # the pair is present as two members of equal dimension
+    assert tables.irreps['D3']['S1'] == tables.irreps['D3']['-S1'] == 1
+    assert tables.irreps['T']['S1'] == tables.irreps['T']['-S1'] == 2
