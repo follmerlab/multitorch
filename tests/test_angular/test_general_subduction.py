@@ -631,3 +631,184 @@ def test_butlers_irrep_dimensions_account_for_the_whole_double_group():
     # the pair is present as two members of equal dimension
     assert tables.irreps['D3']['S1'] == tables.irreps['D3']['-S1'] == 1
     assert tables.irreps['T']['S1'] == tables.irreps['T']['-S1'] == 2
+
+
+# ─────────────────────────────────────────────────────────────
+# The general Oh → G DOUBLE subduction (residual 66)
+# ─────────────────────────────────────────────────────────────
+
+def _double_hosts(target):
+    """``(group, pairs, {oh_double: restricted matrices})`` for *target*."""
+    from multitorch.angular.point_group import _oh_double_irrep_matrices
+
+    group = point_group(OH_ROTATION_SUBGROUP[target])
+    pairs = symmetry._target_rotations_in_oh(group)
+    hosts = {oh: [_oh_double_irrep_matrices()[oh][i] for i, _gi in pairs]
+             for oh in OH_DOUBLE_IRREPS}
+    return group, pairs, hosts
+
+
+@pytest.mark.parametrize("oh_double", OH_DOUBLE_IRREPS)
+def test_the_general_double_subduction_reproduces_the_tetragonal_one_bit_for_bit(oh_double):
+    """The gate: exact equality, which is what keeps D4h's Fortran parity.
+
+    D4h's double-group realization is pinned by the ADD coefficients the
+    Fortran chain validates, so routing it through the general function has to
+    be a *relabelling*. Measured 0.0 on all four
+    (Oh double irrep -> D4h irrep) routes.
+
+    Exact equality is a licence and not a physics oracle (CLAUDE.md), which is
+    why the tetragonal function is retained rather than deleted -- the equality
+    is evidence only while the two are genuinely two implementations (residual
+    45) -- and why it is paired with the block-diagonalisation check below.
+    """
+    from multitorch.angular.double_group import (
+        oh_to_d4h_double_subduction, oh_to_target_double_subduction,
+    )
+
+    ref = oh_to_d4h_double_subduction(oh_double)
+    got = oh_to_target_double_subduction(oh_double, "D4h")
+    assert set(got) == set(ref), (sorted(got), sorted(ref))
+    for name, want in ref.items():
+        assert got[name].shape == want.shape, (name, got[name].shape, want.shape)
+        assert np.abs(got[name] - want).max() == 0.0, (
+            name, float(np.abs(got[name] - want).max()))
+
+
+@pytest.mark.parametrize("target", ["D4h", "D3d"])
+def test_the_double_partner_bases_block_diagonalise_the_group(target):
+    """The invariance, not the shapes (residual 60's lesson).
+
+    ``S* D(R) S == I_mult (x) Gamma(R)`` for every rotation of the target, every
+    Oh double irrep. This is what a subduction matrix *is*, and it is a
+    statement about the group rather than about either implementation -- the
+    bit-exact gate above says only that two functions agree.
+
+    Residual 60 is the reason this is phrased as an invariance: a commutant
+    solve written with the column-major vec identity returned matrices
+    commuting with **nothing** and still split Gamma8 as Butler's [1, 1, 2],
+    both 1-D blocks at the right dimension. The block structure was right and
+    the arithmetic was not.
+    """
+    from multitorch.angular.double_group import (
+        oh_to_target_double_subduction, target_double_irrep_matrices,
+    )
+
+    _group, pairs, hosts = _double_hosts(target)
+    gammas = target_double_irrep_matrices(target)
+    worst, checked = 0.0, 0
+    for oh_double, host in hosts.items():
+        for name, S in oh_to_target_double_subduction(oh_double, target).items():
+            gamma = gammas[name]
+            dim = gamma[0].shape[0]
+            assert S.shape[1] % dim == 0, (name, S.shape, dim)
+            mult = S.shape[1] // dim
+            # the columns are an orthonormal partner basis
+            assert np.abs(S.conj().T @ S - np.eye(S.shape[1])).max() < 1e-12
+            for k in range(len(pairs)):
+                got = S.conj().T @ host[k] @ S
+                want = np.kron(np.eye(mult), gamma[k])
+                worst = max(worst, float(np.abs(got - want).max()))
+                checked += 1
+    assert checked > 0
+    assert worst < 1e-12, worst
+
+
+def test_the_general_double_subduction_branches_the_way_butler_says():
+    """Butler's ``O=>D3`` double-group rows, against the subduction we build.
+
+    ``S0 +S0``, ``^S0 +S0`` and ``S1 +S0 +S1 +-S1`` -- Gamma6 and Gamma7 both
+    land on D3's 2-D spinor irrep, and the two **one-dimensional** ones occur
+    nowhere but inside Gamma8. Compared as *sets* of target irreps, because
+    residual 61 established that Butler's data cannot settle which 1-D irrep is
+    ``S1`` and which is ``-S1`` without implementing his 2jm/3jm conventions.
+    """
+    from multitorch.angular.double_group import oh_to_target_double_subduction
+
+    for oh_double in OH_DOUBLE_IRREPS:
+        want = {BUTLER_D3_TO_LABEL[b]
+                for b in BUTLER_O_TO_D3[OH_TO_BUTLER_O[oh_double]]}
+        got = set(oh_to_target_double_subduction(oh_double, "D3d"))
+        assert got == want, (oh_double, sorted(got), sorted(want))
+
+
+def test_the_trigonal_one_dimensional_pair_is_conjugate_and_ordered_by_its_c2_sign():
+    """The convention, stated and pinned -- not checked against Butler.
+
+    The two 1-D blocks of Gamma8 ⇓ D3 differ in exactly one quantity, the sign
+    of the C2 eigenvalue (residual 61: both have C3 = -1). ``+i`` takes the
+    first of ``point_group``'s same-dimension labels. That ordering is **ours**:
+    fixing it absolutely needs Butler's spinor lift of the C2 elements, which
+    is 2jm/3jm data and not a readable line.
+
+    What this test pins is that the pair really is a conjugate pair -- which is
+    what Butler's ``S1``/``-S1`` notation asserts and what makes the choice a
+    convention rather than a fact -- and that the rule was applied in the
+    stated direction.
+
+    **Still owed, and deliberately not faked here:** the observable test, that
+    swapping the two labels in *both* manifolds leaves the spectrum unchanged
+    while swapping one changes it. That needs the route phases and a D3d
+    pipeline; it belongs to the increment that builds them, and nothing here
+    substitutes for it.
+    """
+    from multitorch.angular.double_group import (
+        oh_to_target_double_subduction, target_double_irrep_matrices,
+    )
+
+    group, pairs, _hosts = _double_hosts("D3d")
+    gammas = target_double_irrep_matrices("D3d")
+    one_d = {k: v for k, v in gammas.items() if v[0].shape[0] == 1}
+    assert sorted(one_d) == ["1E3/2", "2E3/2"], sorted(one_d)
+
+    a, b = gammas["1E3/2"], gammas["2E3/2"]
+    assert max(abs(a[k][0, 0] - np.conj(b[k][0, 0]))
+               for k in range(len(pairs))) < 1e-12, "the pair is not conjugate"
+
+    c2 = [k for k, (_i, gi) in enumerate(pairs)
+          if abs(np.degrees(group.elements[gi].angle) - 180.0) < 1e-6]
+    c3 = [k for k, (_i, gi) in enumerate(pairs)
+          if abs(abs(np.degrees(group.elements[gi].angle)) - 120.0) < 1.0
+          or abs(abs(np.degrees(group.elements[gi].angle)) - 240.0) < 1.0]
+    assert c2 and c3
+    for k in c3:
+        assert abs(a[k][0, 0] + 1.0) < 1e-12 and abs(b[k][0, 0] + 1.0) < 1e-12, (
+            "C3 should be -1 for both members")
+    # the convention, in the direction the docstring states
+    assert a[c2[0]][0, 0].imag > 0.9, a[c2[0]][0, 0]
+    assert b[c2[0]][0, 0].imag < -0.9, b[c2[0]][0, 0]
+    for k in c2:
+        assert abs(abs(a[k][0, 0].imag) - 1.0) < 1e-12 and abs(a[k][0, 0].real) < 1e-12
+
+    # each 1-D irrep occurs once inside Gamma8 and nowhere else
+    sub = oh_to_target_double_subduction("G3/2", "D3d")
+    assert sub["1E3/2"].shape == (4, 1) and sub["2E3/2"].shape == (4, 1)
+    for oh_double in ("E1/2", "E5/2"):
+        got = oh_to_target_double_subduction(oh_double, "D3d")
+        assert "1E3/2" not in got and "2E3/2" not in got, (oh_double, sorted(got))
+
+
+@pytest.mark.parametrize("target,oh_double", [("D4h", "G3/2"), ("D3d", "G3/2")])
+def test_the_production_split_agrees_with_the_independent_commutant_decomposition(
+        target, oh_double):
+    """Two genuinely different mechanisms, which is what makes this evidence.
+
+    The production function projects with transfer operators built from a
+    Gamma it takes from a restriction; ``_commutant_blocks`` solves for the
+    commutant of the restricted matrices by SVD and splits a generic element's
+    eigenspaces. Neither is derived from the other, so agreeing on the block
+    dimensions is a statement about the restriction.
+    """
+    from multitorch.angular.double_group import (
+        oh_to_target_double_subduction, target_double_irrep_matrices,
+    )
+
+    _group, _pairs, hosts = _double_hosts(target)
+    blocks = _commutant_blocks(hosts[oh_double])
+    gammas = target_double_irrep_matrices(target)
+    ours = []
+    for name, S in oh_to_target_double_subduction(oh_double, target).items():
+        dim = gammas[name][0].shape[0]
+        ours.extend([dim] * (S.shape[1] // dim))
+    assert sorted(ours) == sorted(b.shape[1] for b in blocks), (
+        target, oh_double, sorted(ours), sorted(b.shape[1] for b in blocks))

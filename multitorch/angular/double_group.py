@@ -319,6 +319,262 @@ def oh_to_d4h_double_subduction(oh_irrep: str) -> Dict[str, np.ndarray]:
     return out
 
 
+@lru_cache(maxsize=None)
+def target_double_irrep_matrices(target_group: str) -> Dict[str, Tuple[np.ndarray, ...]]:
+    """Double-group irrep matrices of an Oh rotation subgroup, over its proper rotations.
+
+    The general form of :func:`_d4_double_irrep_matrices`, keyed by the labels
+    of ``point_group(G, spinor=True)`` and ordered to match
+    :func:`target_double_irrep_dim`. Returned over the rotations of
+    :func:`~multitorch.angular.symmetry._target_rotations_in_oh`, in that
+    order, with the barred half of the double group implicit: these are
+    projective representations, so ``D(R-bar) = -D(R)`` and an inner product
+    over the double group is ``2 Sum_n |chi|^2 / 2n``.
+
+    **Every matrix comes from a restriction of an Oh double irrep**, never from
+    ``point_group(G, spinor=True).irrep_matrices``. Two reasons, and the first
+    is not a preference:
+
+    1. The transfer operators that consume these must share the **projective
+       cocycle** of :func:`~multitorch.angular.point_group._oh_double_irrep_matrices`,
+       whose lift is fixed by ``wigner_D_matrix``'s Euler-angle branch. A Gamma
+       built independently can realize the same irrep with a different lift,
+       and the projector then fails to be one.
+    2. ``point_group``'s spinor gauge is a seeded ``eigh``, so adopting it
+       would move D4h's partner bases by more than a phase -- and D4h's
+       realization is pinned by Fortran parity.
+
+    **The per-irrep source rule**, measured rather than assumed (residual 66):
+
+    * Where an Oh double irrep restricts **irreducibly** and is not equivalent
+      to one already taken, its restriction *is* the target irrep, taken whole.
+      That is what ``_d4_double_irrep_matrices`` does for E1/2 (Gamma6) and
+      E3/2 (Gamma7), and taking it whole is what keeps D4h bit for bit.
+    * Otherwise the restriction is **reduced**: every irrep already in hand is
+      projected out with its own transfer operator, and whatever complement
+      survives is split by the eigenvalues of the group's first C2. For D3 that
+      complement is two-dimensional and the eigenvalues are exactly +-i, which
+      is the whole content of the trigonal case: Gamma6 and Gamma7 both restrict
+      irreducibly but **to each other**, so they give one irrep and not two, and
+      D3's two *one-dimensional* spinor irreps occur nowhere but inside Gamma8
+      (residual 60, and Butler's ``O=>D3`` row ``S1 +S0 +S1 +-S1``).
+
+    **The 1-D pair's labelling is a convention, applied once, where the labels
+    are assigned** -- not in the extraction loop, which runs in raw eigenvalue
+    order so that the convention has exactly one home.
+    The two blocks differ in exactly one quantity, the sign of the C2
+    eigenvalue (residual 61: both have C3 = -1, and the discriminating
+    character is the C2 one). The block with ``+i`` on the group's first C2 --
+    first in the ``pairs`` order, which is by Oh rotation index -- takes the
+    first of ``point_group``'s same-dimension labels. **Fixing this absolutely
+    would need Butler's spinor lift of the C2 elements, which is 2jm/3jm data
+    and not a readable line; and because the pair is Kramers-degenerate,
+    swapping the labels conjugates the Hamiltonian block and leaves every
+    eigenvalue alone.** So the choice is stated here, and the thing tested is
+    invariance under swapping it in both manifolds together against a change
+    when only one is swapped -- not agreement with Butler on which is which.
+    """
+    from multitorch.angular import symmetry
+    from multitorch.angular.finite_group import point_group
+    from multitorch.angular.point_group import _oh_double_irrep_matrices
+
+    if target_group not in symmetry.OH_ROTATION_SUBGROUP:
+        raise ValueError(
+            f"no rotation subgroup registered for {target_group!r}; known: "
+            f"{sorted(symmetry.OH_ROTATION_SUBGROUP)}")
+    group = point_group(symmetry.OH_ROTATION_SUBGROUP[target_group])
+    pairs = symmetry._target_rotations_in_oh(group)
+    n_rot = len(pairs)
+
+    def inner(chi_a, chi_b):
+        """<chi_a|chi_b> over the double group, the barred half included."""
+        return 2 * np.vdot(chi_a, chi_b).real / (2 * n_rot)
+
+    def chars(mats, basis=None):
+        if basis is None:
+            return np.array([np.trace(M) for M in mats])
+        return np.array([np.trace(basis.conj().T @ M @ basis) for M in mats])
+
+    def transfer(mu, nu, gamma, host):
+        dim = gamma[0].shape[0]
+        P = np.zeros((host[0].shape[0],) * 2, dtype=np.complex128)
+        for k in range(n_rot):
+            P += np.conj(gamma[k][mu, nu]) * host[k]
+        return P * (dim / n_rot)
+
+    def columns_of(gamma, host):
+        """Partner columns of the irrep *gamma* inside *host*, or None."""
+        P00 = transfer(0, 0, gamma, host)
+        vals, vecs = np.linalg.eigh(0.5 * (P00 + P00.conj().T))
+        seeds = vecs[:, vals > 0.5]
+        if seeds.shape[1] == 0:
+            return None
+        cols = []
+        for c in range(seeds.shape[1]):
+            for mu in range(gamma[0].shape[0]):
+                v = seeds[:, c] if mu == 0 else transfer(mu, 0, gamma, host) @ seeds[:, c]
+                norm = np.linalg.norm(v)
+                if norm < 1e-10:
+                    raise RuntimeError("transfer operator gave a null partner")
+                cols.append(v / norm)
+        return np.stack(cols, axis=1)
+
+    c2_k = next((k for k, (_i, gi) in enumerate(pairs)
+                 if abs(np.degrees(group.elements[gi].angle) - 180.0) < 1e-6), None)
+
+    # (Gamma, index of the Oh source in DOUBLE_IRREPS, C2 eigenvalue or None)
+    found: List[Tuple[Tuple[np.ndarray, ...], int, Optional[complex]]] = []
+    for oh_index, oh in enumerate(DOUBLE_IRREPS):
+        host = [_oh_double_irrep_matrices()[oh][i] for i, _gi in pairs]
+        chi = chars(host)
+        if abs(inner(chi, chi) - 1.0) < 1e-9:
+            if any(abs(inner(chars(g), chi) - 1.0) < 1e-9 for g, _i, _s in found):
+                continue            # irreducible but equivalent to one in hand
+            found.append((tuple(host), oh_index, None))
+            continue
+
+        # Reducible: remove what is already known, then split the remainder.
+        taken = []
+        for gamma, _oi, _sig in found:
+            cols = columns_of(gamma, host)
+            if cols is not None:
+                taken.append(cols)
+        dim_host = host[0].shape[0]
+        if taken:
+            B = np.concatenate(taken, axis=1)
+            Q = np.eye(dim_host) - B @ B.conj().T
+        else:
+            Q = np.eye(dim_host)
+        w, V = np.linalg.eigh(0.5 * (Q + Q.conj().T))
+        comp = V[:, w > 0.5]
+        if comp.shape[1] == 0:
+            continue
+        if c2_k is None:
+            raise NotImplementedError(
+                f"{target_group}: {oh} restricts reducibly and its remainder cannot be "
+                f"split -- the group has no C2 to separate it by")
+        M = comp.conj().T @ host[c2_k] @ comp
+        ev, evec = np.linalg.eig(M)
+        # Raw eigenvalue order, deliberately: the C2 convention is applied once,
+        # where the labels are assigned. Ordering here as well would leave that
+        # one dead -- measured, an injection removing the sort key's C2 term
+        # changed nothing because this loop had already produced the order.
+        for j in range(len(ev)):
+            v = comp @ evec[:, j]
+            v = v / np.linalg.norm(v)
+            gamma = tuple(np.array([[complex(v.conj() @ (M_ @ v))]]) for M_ in host)
+            if not all(np.allclose(M_ @ v, gamma[k][0, 0] * v, atol=1e-9)
+                       for k, M_ in enumerate(host)):
+                raise NotImplementedError(
+                    f"{target_group}: splitting {oh}'s remainder by C2 did not give an "
+                    f"invariant subspace, so the remainder is not a sum of 1-D irreps")
+            gchi = chars(gamma)
+            if abs(inner(gchi, gchi) - 1.0) > 1e-9:
+                raise RuntimeError(
+                    f"{target_group}: a block extracted from {oh} has "
+                    f"<chi|chi> = {inner(gchi, gchi):.6f} and is not irreducible")
+            if any(abs(inner(chars(g), gchi) - 1.0) < 1e-9 for g, _i, _s in found):
+                continue
+            found.append((gamma, oh_index, complex(ev[j])))
+
+    # Label them. Dimension settles every case but a same-dimension pair, and
+    # there are two kinds of those. D4h's E1/2 and E3/2 are both whole
+    # restrictions, of *different* Oh irreps (Gamma6 and Gamma7), so the source
+    # orders them -- and that ordering is the Fortran-pinned mapping the
+    # tetragonal table already encodes. D3d's two 1-D irreps come from the same
+    # host, Gamma8, so only the C2 sign separates them (see the docstring). One
+    # sort key does both: source first, then +i before -i.
+    spinor = point_group(group.name, spinor=True)
+    labels = [spinor.irrep_labels[i] for i, is_spinor in enumerate(spinor.spinor_irreps)
+              if is_spinor]
+    by_dim: Dict[int, List[str]] = {}
+    for label in labels:
+        row = spinor.irrep_labels.index(label)
+        by_dim.setdefault(int(spinor.irrep_dims[row]), []).append(label)
+
+    out: Dict[str, Tuple[np.ndarray, ...]] = {}
+    for dim, group_labels in sorted(by_dim.items()):
+        mine = [(g, oi, sig) for g, oi, sig in found if g[0].shape[0] == dim]
+        if len(mine) != len(group_labels):
+            raise RuntimeError(
+                f"{target_group}: found {len(mine)} irreps of dimension {dim} but "
+                f"point_group lists {len(group_labels)} ({group_labels})")
+        if len(mine) > 1:
+            same_host = len({oi for _g, oi, _s in mine}) == 1
+            if same_host and any(sig is None for _g, _oi, sig in mine):
+                raise RuntimeError(
+                    f"{target_group}: a dimension-{dim} pair shares one Oh host, so only "
+                    f"the C2 sign could order it, and a member carries no sign")
+            mine.sort(key=lambda t: (t[1], -(t[2].imag if t[2] is not None else 0.0)))
+        for label, (gamma, _oi, _sig) in zip(group_labels, mine):
+            out[label] = gamma
+    return out
+
+
+@lru_cache(maxsize=None)
+def oh_to_target_double_subduction(oh_irrep: str, target_group: str) -> Dict[str, np.ndarray]:
+    """Partner columns of each target double irrep inside one Oh double irrep.
+
+    The general form of :func:`oh_to_d4h_double_subduction` -- same contract,
+    ``{target irrep: (dim_oh, mult x dim) complex}``, partner-major per copy --
+    with the tetragonal pieces taken from the group: the rotations from
+    :func:`~multitorch.angular.symmetry._target_rotations_in_oh` instead of
+    ``_is_d4z_rotation``, and the irrep matrices from
+    :func:`target_double_irrep_matrices` instead of
+    :func:`_d4_double_irrep_matrices`. The construction is unchanged: partner 0
+    from the projector ``P_00`` and partner ``mu`` from the transfer operator
+    ``P_mu0``, so every route lands on one fixed realization.
+
+    **Gate: exact equality with the tetragonal function on all three Oh double
+    irreps, max difference 0.0**, which is what keeps D4h's Fortran-validated
+    ADD coefficients from moving; the tetragonal function is retained as the
+    oracle rather than deleted, the equality being evidence only while the two
+    are genuinely two implementations (residual 45).
+
+    As there, **the overall phase of each route's partner 0 is not fixed here**
+    -- it is whatever the eigensolver returned -- and it multiplies every
+    reduced element whose bra and ket reach a target irrep by different routes.
+    :func:`gauged_basis` pins it; for a target whose scalars are not Oh scalars
+    that pinning is required, not optional.
+    """
+    from multitorch.angular import symmetry
+    from multitorch.angular.finite_group import point_group
+    from multitorch.angular.point_group import _oh_double_irrep_matrices
+
+    group = point_group(symmetry.OH_ROTATION_SUBGROUP[target_group])
+    pairs = symmetry._target_rotations_in_oh(group)
+    n_rot = len(pairs)
+    dim_oh = OH_DOUBLE_IRREP_DIM[oh_irrep]
+    mats = [_oh_double_irrep_matrices()[oh_irrep][i] for i, _gi in pairs]
+
+    out: Dict[str, np.ndarray] = {}
+    for name, gamma in target_double_irrep_matrices(target_group).items():
+        dim = gamma[0].shape[0]
+
+        def transfer(mu: int, nu: int) -> np.ndarray:
+            P = np.zeros((dim_oh, dim_oh), dtype=np.complex128)
+            for i in range(n_rot):
+                P += np.conj(gamma[i][mu, nu]) * mats[i]
+            return P * (dim / n_rot)
+
+        P00 = transfer(0, 0)
+        eigvals, eigvecs = np.linalg.eigh(0.5 * (P00 + P00.conj().T))
+        first = eigvecs[:, eigvals > 0.5]
+        if first.shape[1] == 0:
+            continue
+        cols = []
+        for c in range(first.shape[1]):
+            for mu in range(dim):
+                v = first[:, c] if mu == 0 else transfer(mu, 0) @ first[:, c]
+                norm = np.linalg.norm(v)
+                if norm < 1e-10:
+                    raise RuntimeError(f"transfer operator gave a null partner {mu} for "
+                                       f"{oh_irrep} -> {name}")
+                cols.append(v / norm)
+        out[name] = np.ascontiguousarray(np.stack(cols, axis=1))
+    return out
+
+
 def d4h_double_layout(j_sizes: Dict[float, int], parity: str = "g") -> Dict[str, List[Tuple]]:
     """Per-D4h-double-irrep basis layout, the half-integer
     :func:`~multitorch.angular.symmetry.d4h_basis_layout`.
