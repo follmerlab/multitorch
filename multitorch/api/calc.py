@@ -125,6 +125,9 @@ def preload_from_scratch(
     ``atomic`` overrides keyed ``'gs'`` / ``'ex'``. ``calcXAS_from_scratch`` is
     this cache plus :func:`calcXAS_cached`.
 
+    ``sym`` is 'oh', 'd4h' or 'td', lower-case, as in
+    :func:`calcXAS_from_scratch`; unlike the fixture path it is case-sensitive.
+
     ``charge_transfer=True`` adds the ligand-hole configurations d^(n+1)L and
     2p^5 d^(n+2)L (:func:`~multitorch.angular.ct_generator.generate_ct_ledge_template`,
     either parity of the electron count). Their HFS parameters are those of the
@@ -744,7 +747,11 @@ def calcXAS(
     valence : str
         Oxidation state ('i', 'ii', 'iii', 'iv').
     sym : str
-        Crystal symmetry ('oh' or 'd4h'; 'd4h' fixtures exist for Ni(II) only).
+        Crystal symmetry, case-insensitive. This is the *fixture* path, so the
+        choice is limited to what the bundled Fortran references cover:
+        ``'oh'`` for every bundled ion and ``'d4h'`` for Ni(II) only.
+        ``'td'`` is supported by the package but has no fixture — reach it
+        through :func:`calcXAS_from_scratch`, which needs no reference files.
     edge : str
         X-ray edge. Only ``'l'`` (L2,3, 2p→3d) is implemented; anything else raises
         ``NotImplementedError``. Ignored with ``ban_output_path`` (the file is the result).
@@ -977,10 +984,17 @@ def _find_fixture_dir(element: str, valence: str, sym: str) -> Path:
     if candidate.is_dir():
         return candidate
 
+    from multitorch.angular.symmetry_plan import SYM_TO_GROUP
+
+    hint = ""
+    if sym_lower in SYM_TO_GROUP:
+        hint = (f" {sym_lower!r} is a supported symmetry but no bundled Fortran "
+                f"reference uses it; calcXAS_from_scratch(sym={sym_lower!r}) needs "
+                f"no fixture.")
     raise FileNotFoundError(
         f"No fixture directory found for {elem} {val_lower} {sym_lower}. "
         f"Tried: {candidate}. Available fixtures: "
-        f"{[d.name for d in refdata.iterdir() if d.is_dir()]}"
+        f"{[d.name for d in refdata.iterdir() if d.is_dir()]}.{hint}"
     )
 
 
@@ -1378,7 +1392,9 @@ def calcXAS_from_scratch(
       5. Hamiltonian assembly + diagonalization
       6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
 
-    ``sym`` 'oh' or 'd4h', for integer and half-integer J alike (WP-B2a).
+    ``sym`` 'oh', 'd4h' or 'td', for integer and half-integer J alike (WP-B2a).
+    Charge transfer is 'oh' and 'd4h' only: 'td' together with any of
+    ``delta``/``u``/``lmct``/``mlct`` raises rather than approximating.
     Passing any of ``delta``/``u``/``lmct``/``mlct`` adds the ligand-hole
     configurations, i.e. preloads with ``charge_transfer=True``; without them
     this is a single-configuration calculation. Differentiable in ``slater``,
@@ -1393,8 +1409,10 @@ def calcXAS_from_scratch(
     valence : str
         Oxidation state ('i', 'ii', 'iii', 'iv').
     cf : dict
-        Crystal field parameters (eV): 'tendq' (default 1.0), and for
-        ``sym='d4h'`` 'dt', 'ds' (default 0). Floats or tensors.
+        Crystal field parameters (eV): 'tendq' (default 1.0) for every
+        symmetry, plus 'dt' and 'ds' (default 0) for ``sym='d4h'``. Floats or
+        tensors. The cubic groups ``'oh'`` and ``'td'`` take 'tendq' alone and
+        refuse the tetragonal keys rather than ignoring them (residual 43).
     slater : float or torch.Tensor
         Slater integral reduction: fraction of the HFS F^k and G^k of both
         configurations (default 0.8).
@@ -1430,8 +1448,14 @@ def calcXAS_from_scratch(
         PyTorch device.
     zeta_method : str
         HFS SOC method ('blume_watson' or 'central_field').
-    sym : {'oh', 'd4h'}
-        Point group.
+    sym : {'oh', 'd4h', 'td'}
+        Point group, lower-case. For ``'td'`` the single cubic parameter
+        ``tendq`` is the coefficient of the *same* rank-4 invariant as in Oh,
+        so ``tendq=+1.0`` reproduces Oh's level ordering and a physical
+        tetrahedron needs a **negative** value — around -4/9 of the octahedral
+        one for the same ligands. The sign is not flipped internally; the
+        choice is recorded with
+        :data:`~multitorch.angular.symmetry_plan.CONVENTIONS`.
     atomic : dict, optional
         Absolute per-parameter values (eV) replacing ``HFS × slater`` or
         ``HFS × soc`` for individual integrals, keyed by configuration

@@ -7,6 +7,7 @@ string slater, section-0 overrides), or one computed from an unconverged SCF.
 from __future__ import annotations
 
 import functools
+import re
 
 import pytest
 import torch
@@ -162,3 +163,125 @@ def test_fixture_defaults_reproduce_the_shipped_calculation():
     _, _, a = calcXAS_cached(cache, return_sticks=True, nbins=200)
     _, _, b = calcXAS_cached(cache, cf=d["cf"], delta=d["delta"], u=d["u"], lmct=d["lmct"], return_sticks=True, nbins=200)
     assert torch.allclose(a, b)
+
+
+def _sym_parameter_entry(doc: str):
+    """The numpydoc ``sym :`` entry of *doc*, or None if it documents no parameters.
+
+    The entry, not the whole docstring: a reader looking up what ``sym``
+    accepts reads this block, and it is the block that drifted. Mere presence
+    of a symmetry name somewhere in the docstring is not enough -- measured,
+    an injection that reverted both the prose line and this entry still left
+    ``'td'`` in the ``cf`` entry and passed a whole-docstring check.
+    """
+    lines = doc.splitlines()
+    for n, line in enumerate(lines):
+        m = re.match(r"^(\s*)sym :", line)
+        if not m:
+            continue
+        indent = len(m.group(1))
+        out = [line]
+        for later in lines[n + 1:]:
+            if re.match(r"^\s{%d}\S" % indent, later) and not later.startswith(" " * (indent + 1)):
+                break
+            out.append(later)
+        return "\n".join(out)
+    return None
+
+
+def test_supported_symmetries_are_documented_everywhere():
+    """Every ``sym`` the package dispatches on is named where a reader looks it up.
+
+    ``SYM_TO_GROUP`` is the registry ``plan_for_sym`` dispatches on, so it is
+    the source of truth, and the docstrings fell behind it: ``'td'`` landed in
+    WP-B5-9 and four docstrings went on saying "'oh' or 'd4h'" -- including the
+    Parameters entry of the one entry point that supports it. The failure mode
+    is a user not knowing a working symmetry exists, so the guard is keyed to
+    the registry rather than to any list in prose, and to the ``sym`` parameter
+    entry rather than to the docstring as a whole.
+
+    ``calcXAS`` is included deliberately even though it cannot *reach* 'td':
+    it is the fixture path, and what its reader needs is the pointer to the
+    path that can.
+    """
+    from multitorch.angular.symmetry_plan import SYM_TO_GROUP, plan_for_sym
+    from multitorch.api.calc import calcXAS, calcXAS_from_scratch
+
+    docs = {"calcXAS": calcXAS.__doc__,
+            "calcXAS_from_scratch": calcXAS_from_scratch.__doc__,
+            "preload_from_scratch": preload_from_scratch.__doc__,
+            "plan_for_sym": plan_for_sym.__doc__}
+    # Where a ``sym`` Parameters entry exists it is the authoritative text; the
+    # two without one (no Parameters section at all) are checked whole.
+    scoped = {name: _sym_parameter_entry(doc) or doc for name, doc in docs.items()}
+    assert _sym_parameter_entry(docs["calcXAS_from_scratch"]) is not None
+    assert _sym_parameter_entry(docs["plan_for_sym"]) is None
+    missing = {(name, sym) for name, text in scoped.items()
+               for sym in SYM_TO_GROUP if f"'{sym}'" not in text}
+    assert not missing, f"undocumented symmetries: {sorted(missing)}"
+
+    # And where the type line *enumerates* the accepted set, the enumeration
+    # must be the registry. Presence alone is too weak -- measured: reverting
+    # the ``sym : {...}`` line to its two-group form left ``'td'`` in the
+    # entry's own description and passed the check above. An enumeration that
+    # contradicts the prose beside it is worse than an omission, because it
+    # reads as the authoritative answer.
+    for name, doc in docs.items():
+        entry = _sym_parameter_entry(doc)
+        if entry is None:
+            continue
+        m = re.match(r"^\s*sym : \{(.+?)\}", entry)
+        if m is None:
+            continue
+        assert set(re.findall(r"'([^']+)'", m.group(1))) == set(SYM_TO_GROUP), (
+            f"{name}'s sym enumeration disagrees with SYM_TO_GROUP: {m.group(1)}")
+
+
+def test_the_supported_symmetry_set_is_the_registry_in_every_validator():
+    """The three validators agree with ``SYM_TO_GROUP``, tested by behaviour.
+
+    The set is written out as a literal in ``_validate_from_scratch`` and in
+    ``generate_ledge_template``, which is why the docstrings could drift at
+    all. Asserted by calling them rather than by reading their source, since a
+    source-text assertion is not evidence the line runs. The charge-transfer
+    generator is a deliberate *subset* -- CT beyond Oh/D4h is carried-forward
+    work -- so it is checked to be one, not to be equal.
+    """
+    from multitorch.angular.ct_generator import generate_ct_ledge_template
+    from multitorch.angular.rac_generator import generate_ledge_template
+    from multitorch.angular.symmetry_plan import SYM_TO_GROUP
+    from multitorch.api.calc import _validate_from_scratch
+
+    for sym in SYM_TO_GROUP:
+        _validate_from_scratch("Ni", "ii", 8, sym)                 # must not raise
+    with pytest.raises(ValueError, match="unsupported symmetry"):
+        _validate_from_scratch("Ni", "ii", 8, "d3d")
+    with pytest.raises(ValueError, match="[Uu]nsupported symmetry"):
+        generate_ledge_template(2, 8, sym="d3d")                   # raises before any work
+
+    ct_supported = set()
+    for sym in SYM_TO_GROUP:
+        try:
+            generate_ct_ledge_template(2, sym=sym)
+        except ValueError as exc:
+            assert "unsupported symmetry" in str(exc), exc
+        else:
+            ct_supported.add(sym)
+    assert ct_supported and ct_supported < set(SYM_TO_GROUP), ct_supported
+
+
+def test_the_fixture_path_points_at_the_from_scratch_one_for_a_bundled_symmetry_gap():
+    """``calcXAS(sym='td')`` fails on a missing fixture; the message must say where to go.
+
+    Td is supported and has no Fortran reference, so the fixture lookup cannot
+    find a directory for it. Before this the user got a bare "No fixture
+    directory found" plus a listing of unrelated directories, which reads as
+    "Td is unsupported" -- the opposite of the truth.
+    """
+    from multitorch.api.calc import _find_fixture_dir
+
+    with pytest.raises(FileNotFoundError, match="calcXAS_from_scratch"):
+        _find_fixture_dir("Ni", "ii", "td")
+    with pytest.raises(FileNotFoundError) as exc:
+        _find_fixture_dir("Ni", "ii", "d3d")
+    assert "calcXAS_from_scratch" not in str(exc.value), "d3d is not supported anywhere"

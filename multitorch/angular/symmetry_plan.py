@@ -309,7 +309,12 @@ SYM_TO_GROUP: Dict[str, str] = {"oh": "Oh", "d4h": "D4h", "td": "Td"}
 
 
 def plan_for_sym(sym: str) -> SymmetryPlan:
-    """The plan for one of the public API's ``sym`` strings (``'oh'``, ``'d4h'``)."""
+    """The plan for one of the public API's ``sym`` strings.
+
+    The keys are :data:`SYM_TO_GROUP`'s -- ``'oh'``, ``'d4h'`` and ``'td'`` --
+    and that mapping is the single source of truth the public entry points are
+    checked against (``test_supported_symmetries_are_documented_everywhere``).
+    """
     try:
         group = SYM_TO_GROUP[sym]
     except KeyError:
