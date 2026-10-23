@@ -1884,20 +1884,37 @@ def _calcDOC_bootstrap(ban_output_path: str, T: float) -> dict:
             "The file may not have been produced by ttban_exact."
         )
 
+    # One entry per ground *state*, not per triad listing (residual 34, which
+    # named only the Phase 5 path -- this one has the same defect). ttban writes
+    # one BAND per listing, so a ground irrep reached by several final states,
+    # or carrying two invariant channels, is printed several times with
+    # identical weights: nid8ct lists '1+' five times and '0+' twice, and
+    # weighting per listing makes '1+' five times as important as it is. A band
+    # whose triad could not be read keeps a unique key, so a file we cannot
+    # parse degrades to the old per-band behaviour rather than collapsing.
+    pool, seen = [], set()
+    for i, bm in enumerate(bo.band_metadata):
+        tokens = bm.triad_sym.split()
+        key = tokens[0] if tokens else f"#{i}"
+        if key in seen:
+            continue
+        seen.add(key)
+        pool.append(bm)
+
     # Boltzmann-weight the per-band config weights
     from multitorch._constants import K_B_FLOAT
-    energies = [bm.gs_energy for bm in bo.band_metadata]
+    energies = [bm.gs_energy for bm in pool]
     e_min = min(energies)
 
     if T > 0:
         boltz = [
             bm.gs_degeneracy * math.exp(-(bm.gs_energy - e_min) / (K_B_FLOAT * T))
-            for bm in bo.band_metadata
+            for bm in pool
         ]
     else:
         boltz = [
             float(abs(bm.gs_energy - e_min) < 1e-10)
-            for bm in bo.band_metadata
+            for bm in pool
         ]
 
     z = sum(boltz)
@@ -1906,7 +1923,7 @@ def _calcDOC_bootstrap(ban_output_path: str, T: float) -> dict:
 
     n_configs = max(len(bm.config_weights) for bm in bo.band_metadata)
     avg_weights = [0.0] * n_configs
-    for bm, w in zip(bo.band_metadata, boltz):
+    for bm, w in zip(pool, boltz):
         for i, cw in enumerate(bm.config_weights):
             avg_weights[i] += w * cw
     avg_weights = [w / z for w in avg_weights]
@@ -1980,8 +1997,8 @@ def _calcDOC_phase5(
     weighted_sum = [0.0] * n_configs
     z_total = 0.0
 
+    counted = set()
     for t in result.triads:
-        n = t.Eg.shape[0]
         cw = []
         for c_idx in range(len(t.gs_conf_sizes)):
             mask = (t.gs_conf_labels == (c_idx + 1))
@@ -1990,23 +2007,39 @@ def _calcDOC_phase5(
             )
             cw.append(config_weight_per_state)
 
-        # Boltzmann weights — eigenvalues are in eV (build_cowan converts Ry→eV)
-        e_rel = t.Eg - e_min
+        # Boltzmann weights — eigenvalues are in eV (build_cowan converts Ry→eV).
+        # Two references, because the two outputs are different quantities:
+        # the pool-wide average is referenced to the global ground state, and
+        # each triad's own breakdown to its own.
         if T > 0:
-            boltz = torch.exp(-e_rel / (K_B_FLOAT * T))
+            boltz = torch.exp(-(t.Eg - e_min) / (K_B_FLOAT * T))
+            local = torch.exp(-(t.Eg - t.Eg.min()) / (K_B_FLOAT * T))
         else:
-            boltz = (e_rel.abs() < 1e-10).to(DTYPE)
+            boltz = ((t.Eg - e_min).abs() < 1e-10).to(DTYPE)
+            local = ((t.Eg - t.Eg.min()).abs() < 1e-10).to(DTYPE)
 
-        z_triad = float(boltz.sum())
-        z_total += z_triad
+        # The aggregate is a Boltzmann average over ground *states*, so a
+        # ground irrep listed in several triads enters once (residual 34).
+        if t.gs_sym not in counted:
+            counted.add(t.gs_sym)
+            z_total += float(boltz.sum())
+            for c_idx in range(len(t.gs_conf_sizes)):
+                weighted_sum[c_idx] += float((cw[c_idx] * boltz).sum())
 
-        triad_weights = []
-        for c_idx in range(len(t.gs_conf_sizes)):
-            w = float((cw[c_idx] * boltz).sum())
-            weighted_sum[c_idx] += w
-            triad_weights.append(
-                float((cw[c_idx] * boltz).sum()) / max(z_triad, 1e-30)
-            )
+        # Each triad's own breakdown is a property of *its* ground state, the
+        # number ttban prints per BAND, and must not be scaled by how populated
+        # that triad is within the global pool. The ratio is invariant under a
+        # constant rescaling of ``boltz`` in exact arithmetic, but the old
+        # ``max(z_triad, 1e-30)`` floor destroyed that invariance: a triad
+        # 1.26 eV above the global ground has z = 4e-80 at 80 K, the floor
+        # fires, and the weight collapsed to 0.000000 -- 8 of Ni(II) Oh's 12
+        # triads, 6 of 13 in D4h. Referenced to the triad's own minimum,
+        # ``local`` contains exp(0) = 1 and the sum cannot underflow.
+        z_local = float(local.sum())
+        triad_weights = [
+            float((cw[c_idx] * local).sum()) / z_local
+            for c_idx in range(len(t.gs_conf_sizes))
+        ]
 
         per_triad.append({
             'sym': f"{t.gs_sym}  {t.act_sym}  {t.fs_sym}",

@@ -115,6 +115,7 @@ def read_ban_output(path: str | Path) -> BanOutput:
     path = Path(path)
     result = BanOutput()
     current_band = None
+    prev_nonblank = ""
 
     with open(path, "r") as f:
         line = f.readline()
@@ -129,7 +130,18 @@ def read_ban_output(path: str | Path) -> BanOutput:
 
             if "Ground state energy Eg0=" in line:
                 if current_band is None:
-                    current_band = BandMetadata()
+                    # ttban writes the ``TRIADS`` keyword once per BAND and
+                    # then lists each triad as a bare line, so the branch above
+                    # reached only the first band of a file -- ``triad_sym``
+                    # came back empty for 1 of 13 bands in nid8ct and for 1 of
+                    # N in every bundled fixture. The triad is the non-blank
+                    # line immediately before this one; taken that way it
+                    # matches ``read_ban``'s own ``.ban`` triads on 95 of 95
+                    # bands across the ten bundled files, two files parsed by
+                    # two parsers neither derived from the other. The
+                    # half-integer files carry a fourth token, the PRMULT
+                    # channel-copy index, so only the first three are the triad.
+                    current_band = BandMetadata(triad_sym=prev_nonblank)
                 # Parse "Ground state energy Eg0= -2.190453291     (   1 times)"
                 parts = line.split("Eg0=")[1]
                 energy_str = parts.split("(")[0].strip()
@@ -178,6 +190,8 @@ def read_ban_output(path: str | Path) -> BanOutput:
                 )
                 result.triad_list.append(triad)
 
+            if line.strip():
+                prev_nonblank = line.strip()
             line = f.readline()
 
     return result
