@@ -663,3 +663,99 @@ def test_the_oh_target_needs_no_pinned_route_phase_and_the_d4h_one_still_does():
         basis.target_partners(node, 'E1/2', target_group='D4h')
     with pytest.raises(ValueError, match="unknown subduction target"):
         basis.target_partners(node, 'G3/2', target_group='D3d')
+
+
+# ── Is the half-integer path dimension-general? (residual 62) ──
+#
+# D3's double group has two **one-dimensional** spinor irreps, while every D4h
+# double irrep is 2-D, so the half-integer path has only ever been exercised at
+# dimension 2. The worry was a hardcoded 2 somewhere in it. Measured, there is
+# none: every downstream use of a double-irrep dimension uses it *as a
+# variable* -- ``sqrt(dim / (2J + 1))`` in the operator coefficient,
+# ``sub[:, copy * dim:(copy + 1) * dim]`` in the partner slice, ``range(dim)``
+# in the layout. What was D4h-specific was the *lookup*, and that is
+# ``target_double_irrep_dim``.
+#
+# These two tests pin both halves of that: the lookup now knows the trigonal
+# dimensions, and the arithmetic responds to a dimension of 1 the way the
+# formula says it should rather than ignoring it.
+
+def test_target_double_irrep_dim_knows_the_trigonal_dimensions():
+    """D3d's {1, 1, 2}, with Oh's and D4h's tables untouched."""
+    from multitorch.angular.double_group import target_double_irrep_dim
+
+    assert target_double_irrep_dim('G3/2', 'Oh') == 4
+    assert target_double_irrep_dim('E1/2', 'Oh') == 2
+    assert target_double_irrep_dim('E1/2', 'D4h') == 2
+    assert target_double_irrep_dim('E3/2', 'D4h') == 2
+
+    assert target_double_irrep_dim('E1/2', 'D3d') == 2
+    assert target_double_irrep_dim('1E3/2', 'D3d') == 1
+    assert target_double_irrep_dim('2E3/2', 'D3d') == 1
+
+    # D4h's E3/2 is not a D3d irrep, and saying so beats returning 2
+    with pytest.raises(ValueError, match="no double-group irrep"):
+        target_double_irrep_dim('E3/2', 'D3d')
+
+
+def test_the_half_integer_operator_coefficients_scale_as_sqrt_of_the_dimension():
+    """Force the double-irrep dimension to 1 and watch the coefficients move.
+
+    The probe is artificial -- D4h has no 1-D double irrep -- and that is the
+    point: it drives the one quantity a trigonal target would change and shows
+    the arithmetic is driven by it rather than by a literal 2. Every operator
+    coefficient scales by exactly ``sqrt(1/2)``, uniformly across HAMILTONIAN,
+    10DQ, DT and DS, because the dimension enters only as ``sqrt(dim)``.
+
+    **The dipole blocks do not move at all**, which is a caveat rather than a
+    reassurance: the dipole emitter never consults the double-irrep dimension,
+    so this measurement says nothing about whether it is right for a 1-D block.
+    Residual 57 declined to unify the dipole emitters and residual 62 leaves
+    that question open; it is the thing to check when D3d's half-integer path
+    is built, not something these numbers settle.
+    """
+    import math
+
+    from multitorch.angular import double_group
+    from multitorch.angular.rac_generator import generate_ledge_template
+
+    def coefficients(sym, n):
+        rac, _store, _dec = generate_ledge_template(2, n, sym=sym)
+        return {(b.bra_sym, b.geometry): tuple(a.coeff for a in b.add_entries)
+                for b in rac.blocks if b.add_entries}
+
+    # d7 puts half-integer J in both manifolds, so every block here is a
+    # double-group one and the probe reaches all of them
+    real = coefficients('d4h', 7)
+
+    original = double_group.target_double_irrep_dim
+    double_group.target_double_irrep_dim = (
+        lambda stem, target: 1 if target == 'D4h' else original(stem, target))
+    try:
+        forced = coefficients('d4h', 7)
+    finally:
+        double_group.target_double_irrep_dim = original
+
+    assert set(real) == set(forced), "forcing the dimension changed the block set"
+
+    ratios: dict = {}
+    compared = 0
+    for key in real:
+        assert len(real[key]) == len(forced[key]), key
+        for before, after in zip(real[key], forced[key]):
+            if abs(before) > 1e-12:
+                ratios.setdefault(key[1], set()).add(round(after / before, 10))
+                compared += 1
+
+    assert compared > 500, f"only {compared} coefficients compared; too few to mean much"
+
+    expected = round(1.0 / math.sqrt(2.0), 10)
+    for operator in ('HAMILTONIAN', '10DQ', 'DT', 'DS'):
+        assert ratios[operator] == {expected}, (
+            f"{operator}: ratios {sorted(ratios[operator])}, expected "
+            f"the single value {expected} = sqrt(1/2)")
+
+    for operator in ('PARA', 'PERP'):
+        assert ratios[operator] == {1.0}, (
+            f"{operator}: the dipole emitter should not consult the "
+            f"double-irrep dimension, but ratios were {sorted(ratios[operator])}")

@@ -71,14 +71,34 @@ def target_double_irrep_dim(irrep_stem: str, target_group: str) -> int:
     Oh's ``G3/2`` is four-dimensional and has no D4h counterpart under that
     name, so the two tables are genuinely different and the emitter cannot
     share one (WP-B5-5b step 3).
+
+    The two tabulated groups keep their tables -- they are what the Fortran
+    parity runs through -- and any other group is asked of ``point_group``,
+    whose spinor irreps carry the parity suffix this function's callers have
+    already stripped. **This is the only place the half-integer path needed
+    widening for a target with a one-dimensional double irrep** (residual 62):
+    everywhere a double-irrep dimension is used downstream it is used *as a
+    variable* -- ``sqrt(dim / (2J + 1))`` in the operator coefficient,
+    ``sub[:, copy * dim:(copy + 1) * dim]`` in the partner slice,
+    ``range(dim)`` in the layout -- so nothing there assumes 2.
     """
+    from multitorch.angular.finite_group import point_group
     from multitorch.angular.point_group import OH_DOUBLE_IRREP_DIM
 
     if target_group == "D4h":
         return D4H_DOUBLE_IRREP_DIM[irrep_stem]
     if target_group == "Oh":
         return OH_DOUBLE_IRREP_DIM[irrep_stem]
-    raise ValueError(f"unknown subduction target {target_group!r}; expected 'Oh' or 'D4h'")
+
+    group = point_group(target_group, spinor=True)
+    dims = {label[:-1] if label[-1] in "gu" else label: int(group.irrep_dims[i])
+            for i, is_spinor in enumerate(group.spinor_irreps) if is_spinor
+            for label in (group.irrep_labels[i],)}
+    if irrep_stem not in dims:
+        raise ValueError(
+            f"{target_group} has no double-group irrep {irrep_stem!r}; "
+            f"known: {sorted(dims)}")
+    return dims[irrep_stem]
 REALITY_TOL = 1e-9
 
 # Node of the gauge graph: (manifold, J, irrep, copy). ``manifold`` is any

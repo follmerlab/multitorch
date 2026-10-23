@@ -76,7 +76,7 @@ def _blocks(text: str, keyword: str) -> dict[str, str]:
 
 
 def parse_irreps(body: str) -> dict[str, int]:
-    """``IRREPS 0 +1 S0 -2 1 +3 ...`` -> {label: dimension}.
+    r"""``IRREPS 0 +1 S0 -2 1 +3 ...`` -> {label: dimension}.
 
     The sign marks the double-group (spinor) irreps; we keep |dim| and let the
     caller decide. Boson irreps carry ``+``, fermion irreps ``-``.
