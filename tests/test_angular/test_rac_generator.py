@@ -324,7 +324,7 @@ def test_generator_runs_all_even_n(l, n):
 # or not it had ADD entries while the D4h path skipped an empty one, and left the
 # difference open because "dropping them is a byte change". The plan's prescribed
 # fix was ``skip_empty=True`` for Oh too -- which is the wrong direction. ttrac's
-# ``execute_racer_task`` (ttrac.c:7086-7137) writes the ``REDUCEDMATRIX`` header
+# ``execute_racer_task`` (ttrac.c:7087-7137) writes the ``REDUCEDMATRIX`` header
 # and the matching ``END`` **unconditionally** for every present triad whose
 # operator irrep matches the actor; the ADD lines are whatever the inner triad
 # loop finds, possibly none. So the empty block is Fortran's own convention, the

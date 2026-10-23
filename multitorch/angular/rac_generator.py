@@ -1848,7 +1848,7 @@ def ledge_reference_ev(
 #
 #   * ``skip_empty`` -- **resolved 2026-10-22, residual 58**: both paths now
 #     emit an operator block whether or not it has ADD entries, because that
-#     is what ttrac does. ``execute_racer_task`` (ttrac.c:7086-7137) writes the
+#     is what ttrac does. ``execute_racer_task`` (ttrac.c:7087-7137) writes the
 #     ``REDUCEDMATRIX`` header and the matching ``END`` unconditionally for
 #     every present triad whose operator irrep matches the actor, and the ADD
 #     lines are whatever the inner triad loop happens to find -- possibly
