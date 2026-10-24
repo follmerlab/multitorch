@@ -109,6 +109,31 @@ CONVENTIONS: Dict[str, GroupConventions] = {
         hybr=(("E", "EHYBR", "e"), ("T2", "T2HYBR", "t2")),
         dipole_butler=("^1-",),                     # T2, Butler '^1'
     ),
+    # D3d. Three crystal-field parameters of ranks 4, 4, 2 -- the same counts
+    # as D4h -- and the `DSIGMA`/`DTAU` convention is **not** invented here:
+    # residual 53 pinned it against the published trigonal one-electron
+    # energies with zero free parameters, and `ONE_ELECTRON_PATTERNS['D3d']`
+    # already carries it. The store order is rank 4 before rank 2, as D4h's
+    # is, so `10DQ, DTAU, DSIGMA`.
+    #
+    # **The three hybridisation channel names are placeholders and say so.**
+    # The d orbitals span A1g + Eg + Eg here, a *repeated* irrep that neither
+    # Oh nor D4h has, so there is no existing name to carry over and no
+    # Fortran deck to read one from. They are unreachable rather than
+    # guessed-at: charge transfer beyond Oh/D4h is refused
+    # (`generate_ct_ledge_template`), which is the only consumer of these
+    # strings, and a test pins that refusal. Whoever implements trigonal CT
+    # has to pin them against a reference then -- that is residual 49's
+    # neutral-name route, used for exactly the piece that cannot be derived.
+    "D3d": GroupConventions(
+        cf_operators=(("10DQ", 4, "tendq", 1.0),
+                      ("DTAU", 4, "dtau", 0.0),
+                      ("DSIGMA", 2, "dsigma", 0.0)),
+        hybr=(("A1g", "A1HYBR", "a1"),
+              ("Eg", "E1HYBR", "e1"),
+              ("Eg", "E2HYBR", "e2")),
+        dipole_butler=("1-", "^0-"),            # Eu, A2u -- as D4h, via T1u -> A2 + E
+    ),
     "D4h": GroupConventions(
         cf_operators=(("10DQ", 4, "tendq", 1.0), ("DT", 4, "dt", 0.0),
                       ("DS", 2, "ds", 0.0)),
@@ -305,15 +330,19 @@ def symmetry_plan(group: str) -> SymmetryPlan:
 #: Mapping from the lowercase ``sym`` strings the public API uses to the
 #: Schoenflies names :mod:`finite_group` registers. ``calcXAS(sym=...)`` takes
 #: the former; everything derived here is keyed by the latter.
-SYM_TO_GROUP: Dict[str, str] = {"oh": "Oh", "d4h": "D4h", "td": "Td"}
+SYM_TO_GROUP: Dict[str, str] = {"oh": "Oh", "d4h": "D4h", "td": "Td",
+                               "d3d": "D3d"}
 
 
 def plan_for_sym(sym: str) -> SymmetryPlan:
     """The plan for one of the public API's ``sym`` strings.
 
-    The keys are :data:`SYM_TO_GROUP`'s -- ``'oh'``, ``'d4h'`` and ``'td'`` --
-    and that mapping is the single source of truth the public entry points are
-    checked against (``test_supported_symmetries_are_documented_everywhere``).
+    The keys are :data:`SYM_TO_GROUP`'s -- ``'oh'``, ``'d4h'``, ``'td'`` and
+    ``'d3d'`` -- and that mapping is the single source of truth the public
+    entry points are checked against
+    (``test_supported_symmetries_are_documented_everywhere``). A plan says
+    nothing about which *electron counts* a group supports: ``'d3d'`` is
+    even-only, which `_validate_from_scratch` enforces.
     """
     try:
         group = SYM_TO_GROUP[sym]

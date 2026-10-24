@@ -123,3 +123,38 @@ print(json.dumps(dict(res=b.residual, n=len(b.nodes),
     assert scrambled["res"] < 1e-9
     v_scrambled = np.array([complex(r, i) for r, i in scrambled["v"]])
     assert abs(np.vdot(V[:, 0], v_scrambled)) == pytest.approx(1.0, abs=1e-10)
+
+
+def test_the_d4h_crystal_field_operator_order_is_load_bearing_for_parity():
+    """``_d4h_cf_operators``' key order fixes which coupling pins each route phase.
+
+    The route phases are **pure gauge** -- a per-route phase is a diagonal
+    unitary conjugation of the target irrep's block, so it leaves every
+    eigenvalue alone -- which means *any* order is physically correct. But
+    ``_pin_d4h_routes`` pins each phase against the **first** coupling it
+    finds, so the order picks which one that is, and only one order reproduces
+    the D4h coefficients the Fortran chain validated.
+
+    Measured: offering the operators in declaration order instead of
+    ``TENDQ, DT, DS`` moves 1303 of d4h d7's ADD entries. That is why the order
+    is pinned here with its reason rather than left as an accident of how the
+    dict literal was typed.
+    """
+    from unittest import mock
+
+    from multitorch.angular import double_group as dg
+
+    assert list(dg._d4h_cf_operators()) == ["TENDQ", "DT", "DS"]
+
+    # ...and the order really does change the pinned phase, so this is a guard
+    # and not a restatement of the source.
+    basis = dg.gauged_basis([("gs", [0.5, 1.5, 2.5]), ("ex", [0.5, 1.5, 2.5])],
+                            d4h=True)
+    pinned = dict(basis.route_phase)
+    original = dg._d4h_cf_operators()
+    reordered = {k: original[k] for k in ("DS", "DT", "TENDQ")}
+    with mock.patch.object(dg, "_d4h_cf_operators", return_value=reordered):
+        other = dg._pin_d4h_routes(basis)
+    assert pinned != other, (
+        "reordering the operators left every route phase unchanged, so this test "
+        "is not measuring what its docstring claims")

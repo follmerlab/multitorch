@@ -827,6 +827,56 @@ def d4h_basis_layout(
     return layout
 
 
+def target_basis_layout(
+    j_sizes: Dict[float, int],
+    target_group: str,
+    parity: str = 'g',
+) -> Dict[str, List[Tuple[float, str, int, int, int]]]:
+    """The general form of :func:`d4h_basis_layout`, for any registered target.
+
+    Same contract: ``{target irrep + parity: [(J, oh_irrep, copy, partner,
+    n_states), ...]}``, with the Oh irrep label carrying no parity and the
+    blocks in ascending-J order.
+
+    Three D4-specific pieces are taken from the group instead of a table: the
+    branching (the keys of :func:`oh_to_target_subduction_matrix` rather than
+    ``OH_TO_D4H``), the target irrep dimension (:func:`target_irrep_dim`
+    rather than ``D4H_IRREP_DIM``), and the irrep ordering (the subduction's
+    own sorted keys). Integer J only -- the half-integer layouts live in
+    :mod:`~multitorch.angular.double_group`, and for a group whose double
+    irreps are not pseudo-real there is no real-coefficient layout at all
+    (residual 68).
+
+    **Gate: exact equality with** :func:`d4h_basis_layout` **for D4h**, which is
+    what keeps the tetragonal RAC coefficients from moving; the tetragonal
+    function is retained as the oracle rather than deleted (residual 45).
+    """
+    from multitorch.angular.point_group import OH_IRREP_DIM, oh_branching
+
+    if parity not in ('g', 'u'):
+        raise ValueError(f"parity must be 'g' or 'u', got {parity!r}")
+
+    layout: Dict[str, List[Tuple[float, str, int, int, int]]] = {}
+    for J in sorted(j_sizes):
+        if abs(J - round(J)) > 0.1:
+            raise NotImplementedError(
+                f"target_basis_layout got half-integer J={J}; the half-integer "
+                f"layouts are in multitorch.angular.double_group")
+        n_states = j_sizes[J]
+        for oh_label in OH_IRREP_DIM:
+            mult = oh_branching(int(round(J))).get(oh_label, 0)
+            if mult == 0:
+                continue
+            branched = oh_to_target_subduction_matrix(f'{oh_label}{parity}', target_group)
+            for target_irrep in branched:
+                n_partners = target_irrep_dim(target_irrep, target_group)
+                for copy_idx in range(mult):
+                    for partner_idx in range(n_partners):
+                        layout.setdefault(target_irrep, []).append(
+                            (J, oh_label, copy_idx, partner_idx, n_states))
+    return layout
+
+
 def d4h_irreps_for_J(J) -> List[Tuple[str, int]]:
     """Return [(D4h_irrep, multiplicity), ...] for D^J in D4h.
 

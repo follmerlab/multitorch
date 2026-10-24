@@ -214,7 +214,23 @@ def test_plan_for_sym_maps_the_public_api_strings():
     assert plan_for_sym("oh").group == "Oh"
     assert plan_for_sym("d4h").group == "D4h"
     assert plan_for_sym("td").group == "Td"          # WP-B5-9
-    assert set(SYM_TO_GROUP) == {"oh", "d4h", "td"}
+    assert plan_for_sym("d3d").group == "D3d"        # residual 69
+    assert set(SYM_TO_GROUP) == {"oh", "d4h", "td", "d3d"}
+
+
+def test_a_plan_says_nothing_about_which_electron_counts_a_group_supports():
+    """D3d has a plan and still refuses odd counts, which is a different gate.
+
+    Worth separating because the two were conflated while D3d was unreachable:
+    `SYM_TO_GROUP` is about whether the *group* has a store convention, while
+    the half-integer refusal is about whether a real-coefficient Hamiltonian
+    exists at all (residual 68). A plan cannot express the second, so nothing
+    here should be read as "d3d works for every ion".
+    """
+    plan = plan_for_sym("d3d")
+    assert plan.cf_parameter_names == ("tendq", "dtau", "dsigma")
+    assert len(plan.hybr_channels) == 3            # A1g + Eg + Eg, a repeated irrep
+    assert plan.dipole_butler == ("1-", "^0-")     # as D4h: T1u -> A2 + E
 
 
 def test_td_introduces_no_per_group_parameter_convention():

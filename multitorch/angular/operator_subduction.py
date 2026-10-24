@@ -85,6 +85,16 @@ GEOMETRY_NAMES: Dict[str, Tuple[Tuple[str, str], ...]] = {
     # into the label -- which is a fact about the group, not a choice (WP-B5-9,
     # residual 48).
     "Td": (("T2", "MULTIPOLE"),),
+    # D3d has no Fortran reference either, and needs no new convention: its
+    # dipole splits exactly as D4h's does, into a 1-D component along the
+    # principal axis and a 2-D one perpendicular to it, with the *same*
+    # isotropic weights -- measured, A2u (dim 1, 0.5773502691896257) and Eu
+    # (dim 2, 0.816496580927726), digit for digit D4h's. That is a fact about
+    # a uniaxial group rather than a choice, so PERP/PARA carry over with
+    # them. The trigonal axis is [111] in the registered cubic setting
+    # (residual 40), which `polarization_axis` has handled off-axis since
+    # B5-8, so the names refer to the group's own axis and not to z.
+    "D3d": (("Eu", "PERP"), ("A2u", "PARA")),
 }
 
 

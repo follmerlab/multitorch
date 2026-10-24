@@ -125,8 +125,9 @@ def preload_from_scratch(
     ``atomic`` overrides keyed ``'gs'`` / ``'ex'``. ``calcXAS_from_scratch`` is
     this cache plus :func:`calcXAS_cached`.
 
-    ``sym`` is 'oh', 'd4h' or 'td', lower-case, as in
+    ``sym`` is 'oh', 'd4h', 'td' or 'd3d', lower-case, as in
     :func:`calcXAS_from_scratch`; unlike the fixture path it is case-sensitive.
+    ``'d3d'`` is even-electron-count only.
 
     ``charge_transfer=True`` adds the ligand-hole configurations d^(n+1)L and
     2p^5 d^(n+2)L (:func:`~multitorch.angular.ct_generator.generate_ct_ledge_template`,
@@ -750,8 +751,9 @@ def calcXAS(
         Crystal symmetry, case-insensitive. This is the *fixture* path, so the
         choice is limited to what the bundled Fortran references cover:
         ``'oh'`` for every bundled ion and ``'d4h'`` for Ni(II) only.
-        ``'td'`` is supported by the package but has no fixture — reach it
-        through :func:`calcXAS_from_scratch`, which needs no reference files.
+        ``'td'`` and ``'d3d'`` are supported by the package but have no
+        fixture — reach them through :func:`calcXAS_from_scratch`, which needs
+        no reference files.
     edge : str
         X-ray edge. Only ``'l'`` (L2,3, 2p→3d) is implemented; anything else raises
         ``NotImplementedError``. Ignored with ``ban_output_path`` (the file is the result).
@@ -1239,11 +1241,24 @@ def _hfs_to_slater_params_cached(Z, gs_items, ex_items, zeta_method):
 
 def _validate_from_scratch(element: str, valence: str, n_d: int, sym: str) -> None:
     """Reject what the from-scratch L-edge generator cannot do, before the HFS run."""
-    if sym not in ("oh", "d4h", "td"):
-        raise ValueError(f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td'")
+    if sym not in ("oh", "d4h", "td", "d3d"):
+        raise ValueError(
+            f"unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td', 'd3d'")
     if not 1 <= n_d <= 9:
         raise ValueError(f"{element} {valence} has {n_d} 3d electrons; the from-scratch L-edge generator needs "
                          f"an open 3d shell (1 to 9 electrons); d0 and d10 are not supported")
+    if sym == "d3d" and n_d % 2 == 1:
+        raise NotImplementedError(
+            f"sym='d3d' supports even 3d electron counts only, and {element} {valence} "
+            f"has {n_d}. An odd count gives half-integer J, and D3's double group has "
+            f"two ONE-dimensional spinor irreps forming a complex-conjugate pair "
+            f"(Frobenius-Schur indicator 0, where every D4h double irrep is "
+            f"pseudo-real at -1), so the crystal-field block on each has no real form "
+            f"while the RAC store holds real coefficients. This is a property of the "
+            f"group, not a missing gauge choice: the loop-product obstruction is "
+            f"9.9e-01 and is invariant under the whole phase freedom available. "
+            f"Even counts (d2, d4, d6, d8) are integer-J and fully supported. "
+            f"See residual 68.")
 
 
 def _from_scratch_structure(element: str, valence: str, sym: str, zeta_method: str):
@@ -1392,9 +1407,14 @@ def calcXAS_from_scratch(
       5. Hamiltonian assembly + diagonalization
       6. Boltzmann-weighted stick spectrum → pseudo-Voigt broadening
 
-    ``sym`` 'oh', 'd4h' or 'td', for integer and half-integer J alike (WP-B2a).
-    Charge transfer is 'oh' and 'd4h' only: 'td' together with any of
-    ``delta``/``u``/``lmct``/``mlct`` raises rather than approximating.
+    ``sym`` 'oh', 'd4h' and 'td' take any electron count, integer and
+    half-integer J alike (WP-B2a); **'d3d' takes even counts only** (d2, d4,
+    d6, d8), and an odd one raises with its reason — D3's double group has two
+    one-dimensional spinor irreps forming a complex-conjugate pair, so the
+    trigonal crystal field has no real-coefficient form at half-integer J
+    (residual 68). Charge transfer is 'oh' and 'd4h' only: 'td' or 'd3d' with
+    any of ``delta``/``u``/``lmct``/``mlct`` raises rather than
+    approximating.
     Passing any of ``delta``/``u``/``lmct``/``mlct`` adds the ligand-hole
     configurations, i.e. preloads with ``charge_transfer=True``; without them
     this is a single-configuration calculation. Differentiable in ``slater``,
@@ -1411,8 +1431,10 @@ def calcXAS_from_scratch(
     cf : dict
         Crystal field parameters (eV): 'tendq' (default 1.0) for every
         symmetry, plus 'dt' and 'ds' (default 0) for ``sym='d4h'``. Floats or
-        tensors. The cubic groups ``'oh'`` and ``'td'`` take 'tendq' alone and
-        refuse the tetragonal keys rather than ignoring them (residual 43).
+        tensors, and ``sym='d3d'`` takes 'dsigma' and 'dtau' instead of
+        'dt'/'ds'. The cubic groups ``'oh'`` and ``'td'`` take 'tendq' alone
+        and refuse the distortion keys rather than ignoring them (residual
+        43).
     slater : float or torch.Tensor
         Slater integral reduction: fraction of the HFS F^k and G^k of both
         configurations (default 0.8).
@@ -1448,8 +1470,11 @@ def calcXAS_from_scratch(
         PyTorch device.
     zeta_method : str
         HFS SOC method ('blume_watson' or 'central_field').
-    sym : {'oh', 'd4h', 'td'}
-        Point group, lower-case. For ``'td'`` the single cubic parameter
+    sym : {'oh', 'd4h', 'td', 'd3d'}
+        Point group, lower-case. ``'d3d'`` is trigonal (C3 along [111] in the
+        registered cubic axes) and takes ``tendq`` plus ``dsigma`` and
+        ``dtau``, the Ballhausen trigonal pair; it is restricted to even 3d
+        electron counts, see above. For ``'td'`` the single cubic parameter
         ``tendq`` is the coefficient of the *same* rank-4 invariant as in Oh,
         so ``tendq=+1.0`` reproduces Oh's level ordering and a physical
         tetrahedron needs a **negative** value — around -4/9 of the octahedral

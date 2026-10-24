@@ -254,10 +254,20 @@ def test_the_supported_symmetry_set_is_the_registry_in_every_validator():
 
     for sym in SYM_TO_GROUP:
         _validate_from_scratch("Ni", "ii", 8, sym)                 # must not raise
+    # 'c4v' is registered as group theory and has no store convention, which is
+    # the state 'd3d' was in until it got one -- so it is the standing negative
+    # case. (It was 'd3d' here; that is exactly the drift this test exists for.)
     with pytest.raises(ValueError, match="unsupported symmetry"):
-        _validate_from_scratch("Ni", "ii", 8, "d3d")
+        _validate_from_scratch("Ni", "ii", 8, "c4v")
     with pytest.raises(ValueError, match="[Uu]nsupported symmetry"):
-        generate_ledge_template(2, 8, sym="d3d")                   # raises before any work
+        generate_ledge_template(2, 8, sym="c4v")                   # raises before any work
+
+    # A supported symmetry can still restrict the *electron count*, which is a
+    # different question from whether the group is registered: D3d is
+    # even-only (residual 68), and that refusal names its reason.
+    _validate_from_scratch("Ni", "ii", 8, "d3d")                   # even: fine
+    with pytest.raises(NotImplementedError, match="Frobenius-Schur"):
+        _validate_from_scratch("Co", "ii", 7, "d3d")
 
     ct_supported = set()
     for sym in SYM_TO_GROUP:
@@ -280,8 +290,11 @@ def test_the_fixture_path_points_at_the_from_scratch_one_for_a_bundled_symmetry_
     """
     from multitorch.api.calc import _find_fixture_dir
 
-    with pytest.raises(FileNotFoundError, match="calcXAS_from_scratch"):
-        _find_fixture_dir("Ni", "ii", "td")
+    for sym in ("td", "d3d"):
+        with pytest.raises(FileNotFoundError, match="calcXAS_from_scratch"):
+            _find_fixture_dir("Ni", "ii", sym)
+    # ...while a group with no store convention at all gets no such pointer,
+    # because there is nowhere to point. ('d3d' was this case until it got one.)
     with pytest.raises(FileNotFoundError) as exc:
-        _find_fixture_dir("Ni", "ii", "d3d")
-    assert "calcXAS_from_scratch" not in str(exc.value), "d3d is not supported anywhere"
+        _find_fixture_dir("Ni", "ii", "c4v")
+    assert "calcXAS_from_scratch" not in str(exc.value), "c4v is supported nowhere"

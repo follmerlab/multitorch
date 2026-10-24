@@ -69,6 +69,7 @@ from multitorch.angular.symmetry import (
     d4h_basis_layout,
     oh_to_d4h_subduction_matrix,
     oh_to_target_subduction_matrix,
+    target_basis_layout,
     target_irrep_dim,
 )
 
@@ -943,7 +944,19 @@ def _make_op_adds(
             f"(from the group's SymmetryPlan). Known without it: TENDQ/DT/DS."
         )
     matrix_idx_map = cf_idx_map_rank2 if k == 2 else cf_idx_map
-    op_vec_complex = _d4h_operator_vector_complex(operator, k, target_d4h_irrep)
+    if target_group in ('Oh', 'D4h') or target_d4h_irrep != 'A1g':
+        op_vec_complex = _d4h_operator_vector_complex(operator, k, target_d4h_irrep)
+    else:
+        # A group whose operator names are not the three D4h ones solves its
+        # vector from its own invariant subspace. Bit-identical to the call
+        # above for D4h's TENDQ/DT/DS -- measured 0.0 on all three -- so this
+        # is a widening, not a change to the validated path.
+        from multitorch.angular.crystal_field import cf_operator_vector
+        _k_solved, op_vec_complex = cf_operator_vector(target_group, operator)
+        if _k_solved != k:
+            raise RuntimeError(
+                f"{target_group}: operator {operator!r} has rank {_k_solved} in the "
+                f"group's convention but the plan asked for rank {k}")
 
     # Cache per (J_b, J_k) and per partner vector
     O_cache: Dict[Tuple[float, float], np.ndarray] = {}
@@ -1033,6 +1046,7 @@ def _make_d4h_dipole_adds(
     op_d4h_target: str,
     multipole_idx: Dict[Tuple[float, float], int],
     factor: float,
+    group: str = 'D4h',
 ) -> List[ADDEntry]:
     """Build TRANSI ADD entries for one (D4h gs, D4h ex, dipole sub-irrep).
 
@@ -1082,15 +1096,15 @@ def _make_d4h_dipole_adds(
     """
     # Build the dipole operator vectors (rank-1, complex basis) for each
     # partner of the target D4h sub-irrep of T1u.
-    sub = oh_to_d4h_subduction_matrix('T1u')[op_d4h_target]
+    sub = oh_to_target_subduction_matrix('T1u', group)[op_d4h_target]
     n_op_partners = sub.shape[1]
     U_1 = _c2r_unitary(1)
     op_vecs_complex = [
         U_1.conj().T @ np.ascontiguousarray(sub[:, p]).astype(np.complex128)
         for p in range(n_op_partners)
     ]
-    n_gs_partners = D4H_IRREP_DIM[d4h_gs]
-    n_ex_partners = D4H_IRREP_DIM[d4h_ex]
+    n_gs_partners = target_irrep_dim(d4h_gs, group)
+    n_ex_partners = target_irrep_dim(d4h_ex, group)
     rme_op_norm = math.sqrt(float(n_op_partners))   # √dim_Γ_op_d4h
 
     O_cache: Dict[Tuple[float, float, int], np.ndarray] = {}
@@ -1108,16 +1122,16 @@ def _make_d4h_dipole_adds(
     def get_v_gs(J: float, oh_label: str, copy: int, p_gs: int) -> np.ndarray:
         key = (J, oh_label, copy, p_gs)
         if key not in v_gs_cache:
-            v_gs_cache[key] = _d4h_partner_vector(
-                J, oh_label, copy, d4h_gs, p_gs,
+            v_gs_cache[key] = _target_partner_vector(
+                J, oh_label, copy, d4h_gs, p_gs, target_group=group,
             )
         return v_gs_cache[key]
 
     def get_v_ex(J: float, oh_label: str, copy: int, p_ex: int) -> np.ndarray:
         key = (J, oh_label, copy, p_ex)
         if key not in v_ex_cache:
-            v_ex_cache[key] = _d4h_partner_vector(
-                J, oh_label, copy, d4h_ex, p_ex,
+            v_ex_cache[key] = _target_partner_vector(
+                J, oh_label, copy, d4h_ex, p_ex, target_group=group,
             )
         return v_ex_cache[key]
 
@@ -1867,6 +1881,14 @@ def ledge_reference_ev(
 #: D4h ADD-maker names for the plan's store names, where the two differ.
 _D4H_EMITTER_NAME = {'10DQ': 'TENDQ'}
 
+#: The ``sym`` strings whose RAC is emitted per *subduced* irrep rather than per
+#: Oh irrep. Oh and Td are cubic -- Td is Oh relabelled, so its subduction is a
+#: bijection and the Oh loops already produce the right blocks -- while a
+#: uniaxial group splits the Oh irreps and needs the layout path. Written out
+#: rather than inferred from the plan: a new group joining this list is a
+#: decision with a parity gate attached, not something to guess from a count.
+SUBDUCED_SYMS = ('d4h', 'd3d')
+
 #: Oh single-group irrep -> Td irrep for an **ungerade** manifold (WP-B5-9).
 #: Td is a subgroup of Oh with no inversion centre, so parity is absorbed into
 #: the label: the gerade irreps map across unchanged (``Xg -> X``) while the
@@ -1941,7 +1963,7 @@ def _oh_transi_irreps(j_sizes, parity, oh_irreps, j_ordering, group='Oh'):
     return out
 
 
-def _d4h_transi_irreps(j_sizes, parity, is_half):
+def _d4h_transi_irreps(j_sizes, parity, is_half, group='D4h'):
     """``(butler, n_states, payload)`` per D4h irrep, partner-0 entries only.
 
     The dipole blocks report the partner-0 state count, *not* the block
@@ -1950,7 +1972,7 @@ def _d4h_transi_irreps(j_sizes, parity, is_half):
     rather than a reuse of :func:`_d4h_manifold_irreps`.
     """
     layout = (double_group.d4h_double_layout(j_sizes, parity=parity) if is_half
-              else d4h_basis_layout(j_sizes, parity=parity))
+              else target_basis_layout(j_sizes, group, parity=parity))
     butler = D4H_DOUBLE_TO_BUTLER if is_half else D4H_TO_BUTLER
     out = []
     for d4h_irrep, raw in sorted(layout.items()):
@@ -2003,17 +2025,23 @@ def _oh_manifold_irreps(j_sizes, parity, oh_irreps, dim_lookup, j_ordering,
     return out
 
 
-def _d4h_manifold_irreps(j_sizes, parity, is_half):
-    """``(butler, dim, block_dim, payload)`` per D4h irrep, in the layout order."""
+def _d4h_manifold_irreps(j_sizes, parity, is_half, group='D4h'):
+    """``(butler, dim, block_dim, payload)`` per target irrep, in the layout order.
+
+    The Butler labels are shared: D3d's A1g/A2g/Eg carry the *same* strings as
+    D4h's (``0+``, ``^0+``, ``1+``), because ``O=>D3`` branches T1u to A2 + E
+    exactly as ``O=>D4`` does, so ``D4H_TO_BUTLER`` serves both and its B1/B2
+    entries simply go unused for a trigonal group.
+    """
     layout = (double_group.d4h_double_layout(j_sizes, parity=parity) if is_half
-              else d4h_basis_layout(j_sizes, parity=parity))
+              else target_basis_layout(j_sizes, group, parity=parity))
     butler = D4H_DOUBLE_TO_BUTLER if is_half else D4H_TO_BUTLER
-    dims = double_group.D4H_DOUBLE_IRREP_DIM if is_half else D4H_IRREP_DIM
     out = []
     for d4h_irrep, entries in sorted(layout.items()):
         if not entries:
             continue
-        dim_here = dims[d4h_irrep[:-1] if is_half else d4h_irrep]
+        dim_here = (double_group.D4H_DOUBLE_IRREP_DIM[d4h_irrep[:-1]] if is_half
+                    else target_irrep_dim(d4h_irrep, group))
         out.append((butler[d4h_irrep], dim_here,
                     sum(e[4] for e in entries) // dim_here, (d4h_irrep, entries)))
     return out
@@ -2177,9 +2205,9 @@ def _generate_ledge_template_impl(
     from multitorch.angular.symmetry_plan import plan_for_sym
     from multitorch.hamiltonian.parametric import HamiltonianDecomposition, zero_anchor_config
 
-    if sym not in ('oh', 'd4h', 'td'):
+    if sym not in ('oh', 'd4h', 'td', 'd3d'):
         raise ValueError(
-            f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td'. "
+            f"Unsupported symmetry {sym!r}; supported: 'oh', 'd4h', 'td', 'd3d'. "
             f"Other groups are reachable through crystal_field and "
             f"operator_subduction but have no store convention (WP-B5/B6)."
         )
@@ -2206,6 +2234,17 @@ def _generate_ledge_template_impl(
     # Half-integer J (odd electron count): the Hamiltonian and crystal-field
     # blocks come from the gauge-fixed double-group basis (WP-B2a-1/2) and the
     # TRANSI blocks from the triads' invariants (WP-B2a-3). Oh only so far.
+    if sym == 'd3d' and (is_half_gs or is_half_ex):
+        raise NotImplementedError(
+            "sym='d3d' supports even electron counts only (integer J). D3's double "
+            "group has two ONE-dimensional spinor irreps forming a complex-conjugate "
+            "pair -- Frobenius-Schur indicator 0, where every D4h double irrep is "
+            "pseudo-real (-1) -- so the crystal-field block on each has no real form "
+            "and the RAC store holds real coefficients. Measured: the loop-product "
+            "obstruction is 9.9e-01, and it is invariant under exactly the phase "
+            "freedom the gauge has available, so this is not a missing gauge choice. "
+            "Supporting it needs the Kramers pair carried as one two-dimensional "
+            "corepresentation, or complex store coefficients (residual 68).")
     half_basis = None
     if is_half_gs or is_half_ex:
         # d4h=True additionally pins the subduction routes into the D4h double
@@ -2214,7 +2253,7 @@ def _generate_ledge_template_impl(
         half_basis = double_group.gauged_basis(
             [('gs', gs_j_sizes), ('ex', ex_j_sizes)], d4h=(sym == 'd4h'),
         )
-    if sym == 'd4h':
+    if sym in SUBDUCED_SYMS:
         if cf_rank != 4:
             raise ValueError(
                 f"sym='d4h' uses fixed rank-4 (TENDQ/DT) and rank-2 (DS) "
@@ -2298,7 +2337,7 @@ def _generate_ledge_template_impl(
 
     # D4h: also build rank-2 CF matrices for the DS operator.
     gs_cf_idx_rank2: Dict[Tuple[float, float], int] = {}
-    if sym == 'd4h':
+    if sym in SUBDUCED_SYMS:
         gs_cf_blocks_rank2 = _build_cf_cowan_matrices(
             l_val, n_val_gs, 2, gs_j_sizes,
         )
@@ -2328,7 +2367,7 @@ def _generate_ledge_template_impl(
 
     # D4h: also build rank-2 excited CF matrices for the DS operator.
     ex_cf_idx_rank2: Dict[Tuple[float, float], int] = {}
-    if sym == 'd4h':
+    if sym in SUBDUCED_SYMS:
         ex_cf_blocks_rank2 = _build_excited_cf_cowan(
             l_val, n_val_gs, l_core, n_core_gs, 2,
         )
@@ -2473,7 +2512,7 @@ def _generate_ledge_template_impl(
         # the same question the two loops asked differently; see the module note
         is_half = is_half_gs or is_half_ex
 
-        if sym == 'd4h':
+        if sym in SUBDUCED_SYMS:
             def _channels(gs_payload, ex_payload, op_irrep, factor):
                 d4h_gs, gs_entries = gs_payload
                 d4h_ex, ex_entries = ex_payload
@@ -2491,11 +2530,12 @@ def _generate_ledge_template_impl(
                     d4h_ex=d4h_ex, ex_entries=ex_entries,
                     op_d4h_target=op_irrep,
                     multipole_idx=multipole_idx, factor=factor,
+                    group=plan.group,
                 )
                 return [adds] if adds else []
 
-            transi_gs = _d4h_transi_irreps(gs_j_sizes, 'g', is_half_gs)
-            transi_ex = _d4h_transi_irreps(ex_j_sizes, 'u', is_half_ex)
+            transi_gs = _d4h_transi_irreps(gs_j_sizes, 'g', is_half_gs, plan.group)
+            transi_ex = _d4h_transi_irreps(ex_j_sizes, 'u', is_half_ex, plan.group)
         else:
             def _channels(gs_payload, ex_payload, _op_irrep, _factor):
                 gs_irrep, gs_j_order = gs_payload
@@ -2724,7 +2764,7 @@ def _generate_ledge_template_impl(
         #: store name -> rank, from the plan rather than a table in the emitter
         cf_ranks = {name: rank for name, rank, _key, _default in plan.cf_operators}
 
-        if sym == 'd4h':
+        if sym in SUBDUCED_SYMS:
             def _adds(payload, geometry, half, ham_idx, cf_idx, cf_idx2, label):
                 d4h_irrep, entries = payload
                 op_name = _D4H_EMITTER_NAME.get(geometry, geometry)
@@ -2738,14 +2778,14 @@ def _generate_ledge_template_impl(
                 return _make_op_adds(
                     d4h_irrep, entries, op_name, ham_idx_map=ham_idx,
                     cf_idx_map=cf_idx, cf_idx_map_rank2=cf_idx2,
-                    rank=cf_ranks.get(geometry),
+                    rank=cf_ranks.get(geometry), target_group=plan.group,
                 )
 
             manifolds = (
-                ('GROUND', _d4h_manifold_irreps(gs_j_sizes, 'g', is_half_gs),
+                ('GROUND', _d4h_manifold_irreps(gs_j_sizes, 'g', is_half_gs, plan.group),
                  lambda pl, geo: _adds(pl, geo, is_half_gs, gs_ham_idx, gs_cf_idx,
                                        gs_cf_idx_rank2, 'gs')),
-                ('EXCITE', _d4h_manifold_irreps(ex_j_sizes, 'u', is_half_ex),
+                ('EXCITE', _d4h_manifold_irreps(ex_j_sizes, 'u', is_half_ex, plan.group),
                  lambda pl, geo: _adds(pl, geo, is_half_ex, ex_ham_idx, ex_cf_idx,
                                        ex_cf_idx_rank2, 'ex')),
             )

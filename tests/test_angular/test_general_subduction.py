@@ -812,3 +812,45 @@ def test_the_production_split_agrees_with_the_independent_commutant_decompositio
         ours.extend([dim] * (S.shape[1] // dim))
     assert sorted(ours) == sorted(b.shape[1] for b in blocks), (
         target, oh_double, sorted(ours), sorted(b.shape[1] for b in blocks))
+
+
+# ─────────────────────────────────────────────────────────────
+# The general integer-J basis layout (residual 69)
+# ─────────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize("n", [2, 4, 6, 8])
+@pytest.mark.parametrize("parity", ["g", "u"])
+def test_the_general_layout_reproduces_the_tetragonal_one_bit_for_bit(n, parity):
+    """The gate for ``target_basis_layout``, the same discipline as the subduction.
+
+    The layout decides the block order and the per-block dimensions of the RAC,
+    so a D4h difference here would move every tetragonal coefficient. Exact
+    equality on all four even electron counts and both parities; the tetragonal
+    function is retained as the oracle rather than deleted (residual 45).
+    """
+    from multitorch.angular.rac_generator import _get_terms, _j_sector_sizes
+    from multitorch.angular.symmetry import d4h_basis_layout, target_basis_layout
+
+    j_sizes = _j_sector_sizes(_get_terms(2, n))
+    assert (target_basis_layout(j_sizes, "D4h", parity=parity)
+            == d4h_basis_layout(j_sizes, parity=parity))
+
+
+def test_the_trigonal_layout_spans_the_whole_configuration():
+    """D3d's blocks must account for every microstate, which Oh's labels also do.
+
+    A dropped irrep would be invisible to the descent-limit test if it were
+    dropped in both groups, so the total is checked against the binomial rather
+    than against Oh.
+    """
+    import math
+
+    from multitorch.angular.rac_generator import _get_terms, _j_sector_sizes
+    from multitorch.angular.symmetry import target_basis_layout
+
+    for n in (2, 4, 6, 8):
+        j_sizes = _j_sector_sizes(_get_terms(2, n))
+        layout = target_basis_layout(j_sizes, "D3d", parity="g")
+        assert sorted(layout) == ["A1g", "A2g", "Eg"], sorted(layout)
+        total = sum(e[4] for entries in layout.values() for e in entries)
+        assert total == math.comb(10, n), (n, total, math.comb(10, n))
