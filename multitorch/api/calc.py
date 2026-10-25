@@ -30,7 +30,7 @@ from typing import List
 
 from multitorch._constants import DTYPE
 from multitorch.spectrum.sticks import get_sticks
-from multitorch.spectrum.broaden import pseudo_voigt
+from multitorch.spectrum.broaden import pseudo_voigt, resolve_broaden_mode
 from multitorch.device_utils import suggest_device_for_xas, suggest_device_for_rixs
 
 
@@ -279,7 +279,7 @@ def calcXAS_cached(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin=None, xmax=None, nbins: int = 2000,
     return_sticks: bool = False,
     device: str = "cpu",
@@ -325,6 +325,7 @@ def calcXAS_cached(
     (x, y) or (x, y, sticks)
         Same as ``calcXAS``.
     """
+    broaden_mode = resolve_broaden_mode(broaden_mode)
     from multitorch.device_utils import suggest_device_for_xas
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
@@ -391,7 +392,7 @@ def calcXAS_batch(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin=None, xmax=None, nbins: int = 2000,
     device=None,
     atomic: Optional[dict] = None,
@@ -481,6 +482,7 @@ def calcXAS_batch(
     Crystal-field parameters (cf) are applied uniformly across the batch.
     For per-spectrum CF variation, batch over cf externally and stack results.
     """
+    broaden_mode = resolve_broaden_mode(broaden_mode)
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.parametric import rebuild_hamiltonian_store
     from multitorch.spectrum.sticks import get_sticks_from_banresult
@@ -729,7 +731,7 @@ def calcXAS(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin: Optional[float] = None,
     xmax: Optional[float] = None,
     nbins: int = 2000,
@@ -813,8 +815,13 @@ def calcXAS(
         there.
     max_gs : int
         Number of ground states to include.
-    broaden_mode : str
-        'legacy' or 'correct' pseudo-Voigt mode.
+    broaden_mode : {'correct', 'legacy'} or None
+        Pseudo-Voigt mixing convention. ``'correct'`` is Thompson et al.
+        (1987); ``'legacy'`` reproduces pyctm's transcription error in eta
+        and is what the bundled `.xy` reference spectra were written with.
+        ``None`` takes the package default, ``'correct'`` since 0.2.0, and
+        warns that it changed. Neither mode is the ttmult suite's own
+        lineshape -- see ``multitorch.spectrum.broaden``.
     xmin, xmax : float or None
         Energy range for output spectrum. Auto-detected if None.
     nbins : int
@@ -846,6 +853,8 @@ def calcXAS(
     sticks : torch.Tensor  shape (N, 2)  (only if return_sticks=True)
         Columns: [energy (eV), intensity].
     """
+    broaden_mode = resolve_broaden_mode(broaden_mode)
+
     # Smart device selection if not explicitly provided
     if device is None:
         device = suggest_device_for_xas(element=element, valence=valence)
@@ -887,7 +896,7 @@ def _calcXAS_from_ban(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin: Optional[float] = None,
     xmax: Optional[float] = None,
     nbins: int = 2000,
@@ -909,6 +918,7 @@ def _calcXAS_from_ban(
     pool holds fewer components than ours and its total intensity is lower by
     that ratio (exactly 3x for Mn2+ and Fe3+). Residual 15 and 36.
     """
+    broaden_mode = resolve_broaden_mode(broaden_mode)
     from multitorch.io.read_oba import read_ban_output
 
     ban = read_ban_output(ban_path)
@@ -1071,7 +1081,7 @@ def _calcXAS_phase5(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin=None, xmax=None, nbins: int = 2000,
     return_sticks: bool = False,
     device: str = "cpu",
@@ -1085,6 +1095,7 @@ def _calcXAS_phase5(
     flows through ``slater`` and ``soc`` into the COWAN store Hamiltonian
     blocks via :mod:`~multitorch.hamiltonian.build_cowan`.
     """
+    broaden_mode = resolve_broaden_mode(broaden_mode)
     _check_edge(edge)
     from multitorch.hamiltonian.assemble import assemble_and_diagonalize_in_memory
     from multitorch.hamiltonian.build_ban import modify_ban_params
@@ -1386,7 +1397,7 @@ def calcXAS_from_scratch(
     gamma2: float = 0.4,
     med_energy: Optional[float] = None,
     max_gs: int = 1,
-    broaden_mode: str = "legacy",
+    broaden_mode: Optional[str] = None,
     xmin: Optional[float] = None,
     xmax: Optional[float] = None,
     nbins: int = 2000,
@@ -1458,8 +1469,9 @@ def calcXAS_from_scratch(
         of the intensity-bearing sticks (see ``calcXAS``).
     max_gs : int
         Number of ground states to include in Boltzmann average.
-    broaden_mode : str
-        'legacy' or 'correct' pseudo-Voigt mode.
+    broaden_mode : {'correct', 'legacy'} or None
+        Pseudo-Voigt mixing convention; see ``calcXAS``. ``None`` takes the
+        package default, ``'correct'`` since 0.2.0, and warns that it changed.
     xmin, xmax : float or None
         Energy range. Auto-detected if None.
     nbins : int
@@ -1502,6 +1514,9 @@ def calcXAS_from_scratch(
     # HFS constants + parameter-free angular structure (preload), then the
     # parameter-linear contraction H = Σ p_i O_i (p_i = HFS_i × slater|soc or
     # an `atomic` override; tensors keep their gradients).
+    #
+    # Resolved up front: a bad mode should not cost an HFS run to discover.
+    broaden_mode = resolve_broaden_mode(broaden_mode)
     charge_transfer = any(x is not None for x in (delta, u, lmct, mlct))
     if charge_transfer and delta is None:
         # Checked here rather than in `_cache_ban` so the message arrives

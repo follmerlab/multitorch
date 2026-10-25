@@ -8,6 +8,18 @@ Two modes:
               its exponent: `- 0.47719*(FWHML/f)` instead of `- 0.47719*(FWHML/f)**2`
   'correct' — uses the Thompson et al. (1987) formula correctly
 
+**'correct' means Thompson-correct, not Fortran-matching.** The ttmult suite
+does its own broadening in `ttmult/src/spectra.c`, driven by `ttplo`, and it is
+not a pseudo-Voigt at all: each line gets a Fano profile
+``I / (γπ(q²−1)) · (qγ + E)² / (γ² + E²)`` — a normalised Lorentzian of HWHM
+γ in the ``q → ∞`` limit the example decks use — and the result is then
+convolved with a *discretely* sampled Gaussian, truncated at ±10σ and
+renormalised by the sum of its own weights. That is a true Voigt, computed
+numerically. Both modes here are analytic approximations to it, and neither has
+been compared against it: the only end-to-end oracle this module has is the
+eight pyctm `.xy` reference spectra, which were written with 'legacy'.
+See residual 70 in `docs/DEVELOPMENT_PLAN_2026-09.md`.
+
 Reference:
   Thompson P., Cox D.E., Hastings J.B. (1987) J. Appl. Cryst. 20, 79.
   Ida T., Ando M., Toraya H. (2000) J. Appl. Cryst. 33, 1311.
@@ -19,6 +31,7 @@ broadening are available.
 """
 from __future__ import annotations
 from typing import Optional, Union
+import warnings
 import torch
 import math
 
@@ -37,6 +50,52 @@ def _to_float(v: _Scalar) -> float:
     return float(v) if isinstance(v, torch.Tensor) else v
 
 
+#: The pseudo-Voigt mixing conventions this module implements.
+BROADEN_MODES = ("correct", "legacy")
+
+#: What ``mode=None`` / ``broaden_mode=None`` resolves to. Was ``'legacy'``
+#: through 0.1.x (SCA-001).
+DEFAULT_BROADEN_MODE = "correct"
+
+_DEFAULT_CHANGED = (
+    "The default broadening mode changed from 'legacy' to 'correct' in "
+    "multitorch 0.2.0 (SCA-001). 'legacy' reproduced a transcription error in "
+    "pyctm's eta mixing parameter -- the second Thompson term linear instead "
+    "of quadratic -- which understates the Lorentzian fraction by up to 0.119 "
+    "and so overstates peak heights by a few percent at L-edge widths. "
+    "Pass broaden_mode='legacy' (or mode='legacy') to reproduce spectra from "
+    "multitorch 0.1.x or from pyctm; pass 'correct' to silence this notice. "
+    "The notice is removed in 0.3.0."
+)
+
+
+def resolve_broaden_mode(mode: Optional[str]) -> str:
+    """
+    Resolve a user-supplied broadening mode to one of :data:`BROADEN_MODES`.
+
+    ``None`` means "whatever the package default is", which is
+    :data:`DEFAULT_BROADEN_MODE`; taking it raises a ``FutureWarning``, because
+    the default changed in 0.2.0 and the change moves every peak height. An
+    explicit mode never warns -- including ``'legacy'``, which is a supported
+    compatibility mode and not deprecated: the pyctm `.xy` reference spectra
+    are its consumer and they are not going away.
+
+    An unrecognised mode raises. It used to be silently treated as
+    ``'correct'``, so ``mode='Legacy'`` or a typo in ``'legacy'`` quietly
+    selected the other formula.
+    """
+    if mode is None:
+        warnings.warn(_DEFAULT_CHANGED, FutureWarning, stacklevel=3)
+        return DEFAULT_BROADEN_MODE
+    if mode not in BROADEN_MODES:
+        raise ValueError(
+            f"broadening mode {mode!r} is not one of {BROADEN_MODES}; "
+            "pass 'correct' for Thompson et al. (1987) or 'legacy' for "
+            "pyctm bug-compatibility"
+        )
+    return mode
+
+
 def pseudo_voigt(
     x: torch.Tensor,
     x0: torch.Tensor,
@@ -45,7 +104,7 @@ def pseudo_voigt(
     fwhm_l: _Scalar,
     fwhm_l2: Optional[_Scalar] = None,
     med_energy: Optional[float] = None,
-    mode: str = "legacy",
+    mode: Optional[str] = None,
 ) -> torch.Tensor:
     """
     Vectorized pseudo-Voigt broadening of a stick spectrum.
@@ -71,14 +130,18 @@ def pseudo_voigt(
     med_energy : float or None
         Crossover energy between L3 and L2 broadening.
         If None, uses median of x.
-    mode : str
-        'legacy' (matches pyctm bug) or 'correct' (Thompson 1987).
+    mode : {'correct', 'legacy'} or None
+        ``'correct'`` is Thompson et al. (1987); ``'legacy'`` reproduces
+        pyctm's transcription error in eta. ``None`` takes the package
+        default, ``'correct'`` since 0.2.0, and warns that it changed.
+        Anything else raises.
 
     Returns
     -------
     y : torch.Tensor  shape (N_grid,)
         Broadened spectrum.
     """
+    mode = resolve_broaden_mode(mode)
     if fwhm_l2 is None:
         fwhm_l2 = fwhm_l
     if med_energy is None:
@@ -138,9 +201,13 @@ def _pv_params(fwhm_g: _Scalar, fwhm_l: _Scalar, mode: str):
     if mode == "legacy":
         # Bug: second term is linear, not quadratic
         n = 1.36603 * ratio - 0.47719 * ratio + 0.11116 * ratio**3
-    else:
+    elif mode == "correct":
         # Correct Thompson 1987 formula
         n = 1.36603 * ratio - 0.47719 * ratio**2 + 0.11116 * ratio**3
+    else:
+        # Unreachable through pseudo_voigt, which resolves first; a bare
+        # _pv_params call used to take this branch as "correct" silently.
+        raise ValueError(f"unknown broadening mode {mode!r}")
 
     return f, s, n
 

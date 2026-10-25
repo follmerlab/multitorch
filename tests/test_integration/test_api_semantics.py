@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import pytest
 import torch
 
 from multitorch._constants import DTYPE
@@ -42,12 +43,17 @@ def test_dark_ligand_hole_states_do_not_set_the_window():
     assert float(x[-1]) == float(E[~dark].max()) + 5.0
 
 
-def test_med_energy_is_honoured():
-    kw = dict(cf={}, xmin=10.0, xmax=45.0, nbins=800, return_sticks=True, gamma1=0.2, gamma2=0.8)
+@pytest.mark.parametrize("mode", ["correct", "legacy"])
+def test_med_energy_is_honoured(mode):
+    # Both modes, so the assertion does not quietly depend on which one is the
+    # default (SCA-001 flipped it) and so `broaden_mode` is pinned as actually
+    # reaching the lineshape rather than being accepted and dropped.
+    kw = dict(cf={}, xmin=10.0, xmax=45.0, nbins=800, return_sticks=True,
+              gamma1=0.2, gamma2=0.8, broaden_mode=mode)
     x, y_auto, st = calcXAS(**NI, **kw)
     _, y_set, _ = calcXAS(**NI, med_energy=30.0, **kw)
     ref = pseudo_voigt(x, st[:, 0], st[:, 1], fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.8,
-                       med_energy=30.0, mode="legacy")
+                       med_energy=30.0, mode=mode)
     assert torch.allclose(y_set, ref, atol=1e-12)
     # Ni L3 ends near 22 eV and L2 starts near 32 eV: any split in between is the same
     _, _, med_auto = _stick_window(st[:, 0], st[:, 1], None, None, None)

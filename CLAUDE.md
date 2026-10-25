@@ -1,15 +1,31 @@
 # multitorch — Project Instructions
 
-## Current status (updated 2026-04-17)
+## Current status (updated 2026-10-25)
+
+**Start here:** the newest `docs/HANDOFF_*.md`, then
+`docs/DEVELOPMENT_PLAN_2026-09.md`'s numbered residuals (the live task list;
+next free number is **71**), then this file. The `.claude/orchestration/`
+section below is Track C history, not the current entry point.
 
 **Public repo:** https://github.com/follmerlab/multitorch
-**Version:** 0.1.0 (MIT license)
-**Tests:** 477/477 passing
-**Audits:** Scientific, code review, and test builder audits all passed — deployment gate PASSED
+**Version:** 0.2.0.dev0 (MIT license)
+**Tests:** 1910 passed, 2 skipped, 1 xfailed, no warnings (~30–45 min)
+**Symmetries a user can get a spectrum for:** `oh`, `d4h`, `td` for d1–d9, and
+`d3d` for **even** counts only. CT is Oh/D4h only. `calcXAS` is the fixture
+path, so `td` and `d3d` are reachable only via `calcXAS_from_scratch`.
+**Audits:** the 2026-04 scientific, code review and test builder audits passed;
+`MODEL_SUMMARY.md` is a **2026-04-18 snapshot** and is stale throughout (it
+still says 508 tests) — read the residuals instead.
 
 ### Deferred items (pick up here)
 
-- **SCA-001:** Change default `broaden_mode` from `"legacy"` to `"correct"` in `pseudo_voigt` — breaking API change across 6 function signatures, needs a deprecation cycle
+- ~~**SCA-001**~~ **done 2026-10-25.** `broaden_mode` / `mode` default to `None`,
+  which resolves to `"correct"` and raises a one-release `FutureWarning`.
+  `"legacy"` stays supported and silent — the bundled `.xy` spectra are its
+  oracle. Note `"correct"` is **Thompson-correct, not Fortran-matching**: the
+  ttmult suite's own lineshape is a numerically-convolved Voigt in
+  `ttmult/src/spectra.c` and neither mode has been compared to it
+  (**residual 70**).
 - **GPU acceleration:** Plan at `docs/GPU_ACCELERATION_PLAN.md`
 - Minor: document Eg-only autograd flow in `calcXAS` docstring
 - Minor: add assertion that shell pair is 3D for current scope
@@ -22,7 +38,7 @@ PyTorch port of the Fortran ttmult/Cowan multiplet X-ray spectroscopy suite for 
 
 - **Conda env:** `multi` (Python 3.11, PyTorch 2.5)
 - **Python:** `/opt/anaconda3/envs/multi/bin/python`
-- **Pytest:** `/opt/anaconda3/envs/multi/bin/pytest tests/ -q`
+- **Pytest:** `/opt/anaconda3/envs/multi/bin/pytest tests/ -q -p no:cacheprovider`
 - **Working dir:** `/Users/afollmer/Follmer_UCD/Follmer_Lab/Code/multiplets/multitorch/`
 
 ## Codebase layout
@@ -47,7 +63,8 @@ multitorch/
     test_integration/   # end-to-end nid8ct XAS tests
     test_spectrum/      # broadening, sticks tests
   notebooks/            # 4 tutorial notebooks
-  docs/                 # GPU_ACCELERATION_PLAN.md
+  docs/                 # HANDOFF_*.md (newest first), DEVELOPMENT_PLAN_2026-09.md,
+                        # PORT_NOTES.md, EXTERNAL_CROSS_CHECKS, GPU_ACCELERATION_PLAN.md
 ```
 
 Fortran source lives at `../ttmult/src/` (rcn31.f, rcn2.f, ttrcg.f, ttrac.c, ttban_exact.f).

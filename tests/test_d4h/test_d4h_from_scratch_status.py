@@ -454,14 +454,23 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     cf = {"tendq": 1.0, "ds": 0.0, "dt": 0.0}
     cache = preload_fixture("Ni", "ii", "d4h")
     e_av = cache.decomposition.config(3, "GROUND").e_av
-    x_ref, y_ref = calcXAS_cached(cache, cf=cf, lmct=0.0, delta=100.0, max_gs=40)
+    # Every spectrum here is compared against another spectrum, so what matters
+    # is that they share a broadening convention -- not which one. All four are
+    # pinned rather than defaulted: step 2 built one side with mode="legacy" and
+    # the other from calcXAS's default, and SCA-001 flipping that default is what
+    # turned "broadened like calcXAS" into a 0.9997 cosine.
+    BM = "correct"
+    x_ref, y_ref = calcXAS_cached(cache, cf=cf, lmct=0.0, delta=100.0, max_gs=40,
+                                  broaden_mode=BM)
 
     # 1. Oh limit. max_gs=40 with T=80 K: the degenerate ground components sit
     #    in several D4h irreps and differ by ~1e-15 eV. max_gs=1 counted those
     #    as distinct levels until residual 15 was closed on 2026-10-18; either
     #    way a deep pool is well defined, so this is left as it was.
-    x_d4h, y_d4h = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h", max_gs=40)
-    x_oh, y_oh = calcXAS_from_scratch("Ni", "ii", cf={"tendq": 1.0}, sym="oh", max_gs=40)
+    x_d4h, y_d4h = calcXAS_from_scratch("Ni", "ii", cf=cf, sym="d4h", max_gs=40,
+                                        broaden_mode=BM)
+    x_oh, y_oh = calcXAS_from_scratch("Ni", "ii", cf={"tendq": 1.0}, sym="oh",
+                                      max_gs=40, broaden_mode=BM)
     p = spectral_parity(x_d4h, y_d4h, x_oh, y_oh)
     assert p.cosine > 0.999999 and p.area_ratio == pytest.approx(1.0, abs=1e-5), p
 
@@ -482,7 +491,8 @@ def test_d4h_ni_from_scratch_runs_and_matches_oh_baseline():
     # broadened like calcXAS: on the reference grid, midpoint of the bright sticks
     x = x_ref - e_av
     _, _, med = _stick_window(E, M, None, None, None)
-    y = pseudo_voigt(x, E, M, fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.4, med_energy=med, mode="legacy")
+    y = pseudo_voigt(x, E, M, fwhm_g=0.2, fwhm_l=0.2, fwhm_l2=0.4, med_energy=med,
+                     mode=BM)
     p = spectral_parity(x, y, x_ref, y_ref, shift_a=e_av)
     assert p.cosine > 0.99999, p
     assert min(p.fraction_inside_a, p.fraction_inside_b) > 0.9999, p

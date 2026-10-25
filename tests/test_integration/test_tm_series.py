@@ -68,8 +68,14 @@ def test_tm_series_getXAS_runs(case_id):
     xy = np.loadtxt(str(xy_path))
     # on pyctm's own grid, so Lorentzian tails beyond our auto window count
     grid = dict(xmin=float(xy[0, 0]), xmax=float(xy[-1, 0]), nbins=len(xy))
+    # broaden_mode is pinned, not defaulted: the .xy files were written by
+    # pyctm, whose eta mixing parameter carries the transcription error that
+    # 'legacy' reproduces. SCA-001 made 'correct' the package default, which
+    # lowers these peaks by 2.5-4.6% and drops the cosine below the 0.9999
+    # floor for all eight ions (measured 2026-10-25). The oracle is pyctm, so
+    # the mode that reproduces pyctm is the one to compare under.
     kw = dict(T=80.0, beam_fwhm=0.2, gamma1=0.2, gamma2=0.4,
-              med_energy=PYCTM_MED_ENERGY, **grid)
+              med_energy=PYCTM_MED_ENERGY, broaden_mode="legacy", **grid)
     x, y = getXAS(str(ban_path), level_window=0.0, **kw)
 
     assert x.shape == y.shape

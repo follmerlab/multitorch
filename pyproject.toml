@@ -51,6 +51,14 @@ include = ["multitorch*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "--tb=short -v"
+filterwarnings = [
+    # SCA-001's one-release notice that the broadening default flipped. Tests
+    # whose oracle depends on the lineshape pin `broaden_mode` explicitly and
+    # are unaffected by this; the rest are mode-insensitive (shapes, windows,
+    # autograd, sum rules) and riding the default is correct for them. Remove
+    # this line when the notice goes in 0.3.0.
+    "ignore:The default broadening mode changed:FutureWarning",
+]
 markers = [
     "slow: marks tests as slow (deselect with '-m not slow')",
     "phase0: I/O scaffolding tests",
