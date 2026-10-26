@@ -70,6 +70,8 @@ CODE_REVIEW_*.md
 UBIQUITOUS_LANGUAGE.md
 SCIENTIFIC_AUDIT.md
 SCIENTIFIC_AUDIT_*.md
+# the scientific-code-auditor skill's fixed output name (downstream skills read it)
+audit_report.md
 ARCHITECTURE_REVIEW_*.html
 _build_notebooks.py
 

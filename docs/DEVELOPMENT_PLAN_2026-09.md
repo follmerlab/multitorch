@@ -223,6 +223,16 @@ The 2026-09 scientific audit (§6) superseded the May-era understanding of these
 
 **Eight injections, each failing a test that claims it:** the assembler ignoring the carried dims, a zero dimension not being recorded, the pure-ligand-hole dims recorded reversed, one-sided triads refused again, the channel count dividing by every configuration, a working case recording a dimension off by one (which the residual-45 gate catches, not the d^1 tests), and the parser inventing carried dims (which the by-construction claim rests on). The channel-count one was caught at first only as a **fixture error** rather than a named assertion, so a test for the triad multiset was added to say which thing broke; it now fails in 1.2 s. The assembler one leaves the *ground*-side oracle passing, which independently corroborates the three-entry finding: `3/2+` and `^1/2+` are inferred correctly and only `1/2+` and the two final irreps move.
 
+73. **`sym='td'` is a silent no-op: it returns the octahedral spectrum bit-for-bit, and the sign the user must supply is documented but unguarded (2026-10-26, scientific audit).** Measured, not inferred: `calcXAS_from_scratch('Ni','ii',{'tendq':t},sym='td')` and the same call with `sym='oh'` agree at **max|Δy| = 0.000e+00** over 400 bins for `t = +1.0` and again for `t = -4/9`, which is the exact-equality construction td was landed on (residual 65) seen from the user's side rather than the generator's. The consequence is the part that was not stated: `cos(td(+1.0), td(-4/9)) = 0.688`, so a user who enters the positive 10Dq they would naturally write down for a tetrahedral complex does not get a slightly wrong spectrum, they get **a different symmetry's spectrum**, and nothing in the call tells them. `calcXAS_from_scratch`'s docstring (`calc.py:1489-1492`) says a physical tetrahedron needs a negative value "around -4/9 of the octahedral"; `symmetry_plan.py:104-106` records the same thing as a deliberate non-decision ("positive means physically tetrahedral, would have been a per-group ..."). **Scope:** warn or raise when `sym == 'td'` and `tendq > 0`. This is a guard on a documented convention, not a feature beyond Fortran — the Fortran has no `sym` argument to guard. **The injection that makes it an oracle:** set the guard to fire on `tendq < 0` instead and watch the td tests that pass a negative value fail.
+
+74. **The returned energy axis has three different zeros for one ion, and `calcXAS`'s own `Returns` section says only "Energy axis (eV)" (2026-10-26, scientific audit).** Measured today for Ni(II), bright sticks (|M| > 1e-10 max): `calcXAS(...,'oh','l')` **14.5 to 36.9 eV**, `calcXAS(...,'d4h','l')` **855.2 to 879.4 eV**, `calcXAS_from_scratch(..., sym='oh')` **-4.8 to +15.2 eV** (intensity-weighted centroid 0.27). The 840 eV gap between the two fixture calls is not physics: `('Ni','ii','d4h')` resolves to `nid8ct`, whose section-3 blocks carry the Fortran E_av, and `('Ni','ii','oh')` resolves to `ni2_d8_oh`, whose do not. From scratch there is no absolute scale at all — `ledge_reference_ev` ignores F0 on both sides (`rac_generator.py:1830`), which is self-consistent for level *differences* and carries no edge position. **This is documented in exactly one place and it is the wrong place:** `fixture_defaults.__doc__` (`calc.py:1040-1043`) spells out "sticks near 855 eV" vs "sticks near 15 eV", and a user never has to call `fixture_defaults`. Plotting `oh` and `d4h` for the same ion on one axis is the most natural thing anyone will do with this package. **Scope:** one sentence in each of the two public `Returns` sections saying when the axis is absolute photon energy and when its zero is arbitrary. Related API drift found in the same pass, all small: `calcXAS` accepts `'OH'`/`'Oh'`/`'oh'` and documents `sym` as case-insensitive while `calcXAS_from_scratch` raises `unsupported symmetry 'Oh'` for a symmetry it supports — and `calcXAS`'s docstring is what sends `td`/`d3d` users to `calcXAS_from_scratch`; `edge` is a required positional on one entry point and absent from the other; `sym` is positional #3 on one and a trailing keyword on the other; `cf` is required on `calcXAS` and optional on `calcXAS_cached`; and `u: Optional[list]` is annotated for a parameter documented as "float, tensor or dict".
+
+75. **The D4h and D3d from-scratch paths regenerate their angular structure on every call, and 77% of that goes into `np.allclose` inside self-verification (2026-10-26, code review).** Wall clock, `nbins=2000`, first call then second in the same process: oh Fe(II) **0.98 s then 0.14 s**; oh Co(II) d7 0.85 s then 0.04 s; **d4h Fe(II) 4.72 s then 4.71 s**; **d3d Fe(II) 2.28 s then 2.26 s**. So WP-0's memoization reached the Oh side (7-20x on a warm process) and not the tetragonal or trigonal side. `cProfile` on a *second* d4h call: the whole 8.8 s is `generate_ledge_template`, inside which `symmetry.oh_to_group_subduction_matrix` (`symmetry.py:440`) is called **1507 times for at most ~10 distinct `(oh_irrep, target_group)` pairs** at 8.53 s cumulative — `_target_rotations_in_oh` 4.68 s, `_verify_target_irrep` 3.39 s, together **453,170 calls to `numpy.allclose` for 6.76 s**. The function takes two strings and returns a dict of arrays; `point_group.py` already carries eleven `@lru_cache` decorations on exactly this kind of function. **Scope:** memoize it, gated at exact equality against the current output (residual 45), with care that a cached dict of arrays is not handed to a caller that mutates it. **Why it matters beyond speed:** a trigonal or tetragonal parameter sweep or fit currently pays 4.7 s per evaluation of pure angular algebra that cannot change between evaluations, which is the difference between a feasible and an infeasible D3d study — and D3d-even is a shipped capability.
+
+76. **Three validation-surface gaps, each small and each the kind that passes by being green (2026-10-26, both reviews).** (a) **`tests/test_integration/test_deployment_checks.py:120` skips instead of failing.** `if Etrans.numel() == 0: pytest.skip("No sticks produced")` runs against a deterministic bundled fixture (`nid8ct.ban_out`), so a regression that empties the stick list turns the dipole sum-rule test **green** rather than red. This was recommendation 8 of the 2026-09 audit and is **the only one of its eight not implemented** — the other seven landed, several with Fortran oracles that did not exist then. One line. (b) **`NUMBER_AUDIT.md` has one entry, and SCA-001 just promoted nine external numbers onto the default path without one.** The Thompson et al. (1987) coefficients — `2.69269/2.42843/4.47163/0.07842` in the FWHM combination and `1.36603/0.47719/0.11116` in the eta mixing — are cited in `broaden.py`'s module docstring and nowhere in the ledger, and as of `48f4685` they shape **every default spectrum**. `K_B_FLOAT` and `RY_TO_EV_FLOAT` (CODATA 2018) are likewise cited only in `_constants.py` comments. The ledger's value is being the index of load-bearing external numbers; the number that now sets every lineshape is not in it. (c) **`tests/reference_data/fortran_ops/ni2_oh_sc_hamiltonian.npz` has no regeneration script.** Its provenance *is* self-contained — the `meta` key carries the exxa path, the date and all nine parameter values, which is better than most — but `oh8` has `tests/tools/build_oh8_oracle.py` and this one does not, so it cannot be rebuilt from the record without redoing the run by hand. **Also noted, not scoped:** `plan_for_sym('td')` and `plan_for_sym('d3d')` return hybridisation channel names (`('e','t2')`, `('a1','e1','e2')`) that no caller can reach, because `ct_generator.py:290` refuses any group but Oh/D4h and no td/d3d fixture exists — by this project's own rule about generalizations whose consumer turns out to be unreachable, they are either dead or a commitment nobody has had to keep.
+
+77. **The duplication in `api/calc.py` is still there, is now measured, and has already cost three real defects rather than hypothetical ones (2026-10-26, architecture review).** `CODE_REVIEW_2026-09.md` §D named "duplicated pipelines" and nothing was extracted; today it is **4 copies of the stick -> window -> broaden -> return tail** (`calc.py:359`, `:930`, `:1136`, and the batch variant at `:567`) and **3 copies of the fixture build preamble** (`:1108`, `:1737`, `:1999`), with a fourth, partial copy in `preload_fixture:235` and a **fifth copy of the cache route outside the file** in `analysis/ground_state.py:155-163`, which imports `_cache_ban` and `_check_atomic` — two of `calc.py`'s private helpers — so a lower layer depends on the API layer's privates and `_cache_ban` is load-bearing public API with a private name. `diff` says the first three tails differ **only in the error string and two comments**; the thirteen executable lines are byte-identical. `diff` also says **`_calcXAS_phase5` *is* `_run_phase5_pipeline` + the tail, verbatim**, the only functional difference being one `fixture_suffix` branch — which is exactly what the 2026-09 review recommended collapsing. **The three defects the missing funnel has already produced, each verified today rather than reasoned about:** (a) **`atomic` overrides cannot reach `calcXAS`** — `build_cowan_store_in_memory` accepts them and `calcXAS_cached` and `calcXAS_from_scratch` expose them, but `_calcXAS_phase5` never passes one and `calcXAS` has no such parameter; (b) **`device='auto'` works on `calcXAS_cached` and raises a raw PyTorch `RuntimeError` listing device backends on `calcXAS`**, because the sentinel is resolved per entry point in four mutually inconsistent ways; (c) **one of the four tails is chained to no equivalence test** — `test_fixture_cache.py` pins cached == uncached and `test_batch_api.py` pins batch == cached, so three tails are tied together and the `_calcXAS_from_ban` tail at `:930` is not, meaning a change to one tail and not the other is caught for three copies and missed for that one. Also found: **`calcXES` and `getXES` have zero test references** (`calcXES` raises `NotImplementedError` without `ban_output_path`, and nothing pins that contract), and `_stick_window`/`_STICK_INTENSITY_FLOOR` are stick-spectrum concepts living in the API layer that two test files already reach in for. **Scope, and it is one change not two:** one `_spectrum_from_sticks` and one `_xas_pipeline` fed by exactly two providers (`_inputs_from_cache`, `_inputs_from_fixture`), after which every public entry point is a signature plus a provider choice. `calcXAS_from_scratch:1524-1535` is already the worked example in eleven lines. **The testability win is the real argument:** the cache route is testable without touching the filesystem per iteration because `CachedFixture` is a genuine data seam (13 test files use it), while the three fixture-route copies each re-do path discovery inside the function, so the physics of `_calcXAS_phase5`, `_run_phase5_pipeline` and `_calcDOC_phase5` cannot be tested without a fixture directory on disk. **Against all of which stands this project's own rule — do not refactor working, passing code.** Recorded as measured, not scheduled. The full candidate list, with before/after diagrams, is `ARCHITECTURE_REVIEW_2026-10-26.html` (gitignored, local): six candidates, of which the other four are retiring `rac_generator`'s dual `emission='plan'|'legacy'` path (~1,060 of its 2,882 lines are dead in production, and the legacy path supplies 6 of the impl's 15 `sym ==` branches), collapsing `symmetry.py`'s three live subduction generations and two live layout generations into one each (**half-migrations, not oracles** — the superseded forms are still called, so no equality gate protects them, and `symmetry.py` is the only module in the angular stack with no test file of its own), finishing the lift of the *structural* group decision into `SymmetryPlan` (it absorbed the downstream guessing completely and the generator's `SUBDUCED_SYMS`/whitelist/half-integer predicate not at all — `:1890` says "written out rather than inferred from the plan"), and deleting the shallow modules: `hamiltonian/crystal_field.py` (92 lines, zero production consumers, and it keys its table on `'c4h'`, a group vocabulary `symmetry_plan` does not know, so two crystal-field modules disagree on group names), `rac_generator.generate_ground_state_rac:386` (265 lines, no production caller), and `symmetry.get_oh_irreps_from_o3:962` and `symmetry.d4h_butler_label:158` (**zero references anywhere, including tests**).
+
 ### Deferred decisions (revisit)
 
 Choices taken deliberately against a known defect, to be reopened. Each names what was kept, the cost, what would trigger a revisit, and what the change involves.
@@ -831,6 +841,73 @@ Trust level per the audit: **LOW** for `slater≠1`/`soc≠1` on the fixture pat
 | S6 | Hidden LMCT defaults; `delta`/`lmct`/`u` semantics wrong | fixture API | partially (docstrings) |
 
 Three "red flags" that must be corrected before publication: the 0.978-after-830-eV-shift parity metric; the tracker entry calling the unrebuilt excited manifold "architectural, not a bug"; and the "HFS floor" narrative repeated in four documents without checking the rcn31 values sitting in the same fixture directory. All absorbed into WP-S.
+
+---
+
+## 6b. Review findings (2026-10-26)
+
+Three reviews were run on `develop` @ `f6ae22e`, a paused-development checkpoint.
+Full text (all gitignored, local only — this is a public repo): `audit_report.md`,
+`CODE_REVIEW_2026-10-26.md`, `ARCHITECTURE_REVIEW_2026-10-26.html`. Handoff cards
+under `.research_workspace/cards/`. Recorded as **residuals 73-77**.
+
+**The headline is about §6 above, not about the code.** Of the 2026-09 audit's six
+blocking findings S1-S6, **all six are implemented**, and of its eight
+recommendations, **seven**. The S1 fix did not widen a tolerance: it added a new
+Fortran oracle (`tests/reference_data/fortran_ops/oh8_*`, ttrcg reruns of the eight
+Oh fixtures at Slater reduction **0.8 and 1.0**, with every fitted F^k/G^k/zeta
+identified against the input deck at 2e-5 and eigenvalue parity inside a Weyl
+bound), which is also why the uniqueness of the Slater/SOC least-squares split is
+demonstrated rather than assumed. The one recommendation not taken is a one-line
+`pytest.skip` -> fail (residual 76a). **The 2026-09 audit documents at the repo
+root are therefore not merely stale but wrong in the dangerous direction** — both
+still read "Trust level: LOW" for regimes that are now Fortran-validated. `CLAUDE.md`
+now tiers them explicitly.
+
+### Scientific audit — trust level
+
+**Moderate** overall; **High** for the Oh/D4h Hamiltonian and intensity path. Zero
+critical red flags, and no evidence of data manipulation or engineered agreement.
+The remaining risk is not in the Hamiltonian or the angular algebra: it is the
+broadening layer, which has no Fortran oracle in either mode and whose **default is
+now the mode with no reference spectrum behind it** (residual 70), plus three
+documented-but-unenforced user conventions.
+
+| # | Finding | Residual |
+|---|---|---|
+| A-1 | `sym='td'` returns the octahedral spectrum bit-for-bit; the required negative `tendq` is documented and unguarded (cos 0.688 vs the correct tetrahedral spectrum) | 73 |
+| A-2 | Three energy zeros for one ion (14.5-36.9 / 855.2-879.4 / -4.8-15.2 eV), axis documented only as "Energy axis (eV)" | 74 |
+| A-3 | Broadening has no Fortran oracle either way; sigma-vs-FWHM unit question still unmeasured | 70 |
+| A-4 | d1 CT reachable, unvalidated at V != 0, caveat not surfaced at the API | 72 |
+| A-5 | `NUMBER_AUDIT.md` has one entry; SCA-001 put nine Thompson coefficients on the default path without one | 76b |
+| A-6 | `pytest.skip("No sticks produced")` on a deterministic fixture turns the sum-rule test green | 76a |
+
+### Senior code review — the 2026-09 headline findings, revisited
+
+| 2026-09 finding | now |
+|---|---|
+| from-scratch `slater`/`soc` sever autograd | **closed** |
+| 95% of from-scratch time regenerating angular constants | **closed for Oh, open for D4h/D3d** — second call 0.14 s vs **4.71 s** and **2.26 s** (residual 75) |
+| point group sniffed from `len(xham)`; `if sym ==` in four places | **closed downstream** via `symmetry_plan.py`; **open in the generator** (residual 77) |
+| ~2,000 lines dead or superseded | **partly** — ~1,060 of `rac_generator.py`'s 2,882 are dead in production; residual 38 still open |
+| from-scratch validated by loose cosine only; no autograd test | **closed** — element-wise Fortran parity, and `fraction_inside_*` now asserted |
+
+### Architecture deepening report — six candidates
+
+| # | Candidate | Strength |
+|---|---|---|
+| 1 | One spectrum tail, not four (`_spectrum_from_sticks`) | Strong |
+| 2 | One funnel, two providers (`_xas_pipeline`) | Strong |
+| 3 | Retire `rac_generator`'s dual `emission='plan'|'legacy'` path | Strong, but answer the retained-oracle question first |
+| 4 | Collapse `symmetry.py`'s three subductions and two layouts into one each | Worth exploring |
+| 5 | Finish lifting the *structural* group decision into `SymmetryPlan` | Worth exploring; waits on a fifth group, which is not recommended |
+| 6 | Delete the shallow modules (`hamiltonian/crystal_field.py`, `generate_ground_state_rac`, two zero-reference functions) | Strong |
+
+Top recommendation: **1 + 2 together**, as one change — they are the file with the
+most churn and the source of the three verified defects in residual 77. Then 6
+(deletion, not redesign), then 3. **All of this stands against this project's own
+rule not to refactor working, passing code; it is recorded as measured, not
+scheduled.**
 
 ---
 

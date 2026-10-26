@@ -1,21 +1,33 @@
 # multitorch — Project Instructions
 
-## Current status (updated 2026-10-25)
+## Current status (updated 2026-10-26)
 
 **Start here:** the newest `docs/HANDOFF_*.md`, then
-`docs/DEVELOPMENT_PLAN_2026-09.md`'s numbered residuals (the live task list;
-next free number is **71**), then this file. The `.claude/orchestration/`
-section below is Track C history, not the current entry point.
+`docs/DEVELOPMENT_PLAN_2026-09.md`'s numbered residuals (the live task list —
+it states its own next free number; do not duplicate the count here, because a
+count written in this file has gone stale three times, twice on the day it was
+written), then this file. The `.claude/orchestration/` section below is Track C
+history, not the current entry point.
 
 **Public repo:** https://github.com/follmerlab/multitorch
 **Version:** 0.2.0.dev0 (MIT license)
-**Tests:** 1910 passed, 2 skipped, 1 xfailed, no warnings (~30–45 min)
+**Tests:** run them; the plan's newest residual records the count at the time it
+was written. Expect ~24 min for the full suite.
 **Symmetries a user can get a spectrum for:** `oh`, `d4h`, `td` for d1–d9, and
-`d3d` for **even** counts only. CT is Oh/D4h only. `calcXAS` is the fixture
-path, so `td` and `d3d` are reachable only via `calcXAS_from_scratch`.
-**Audits:** the 2026-04 scientific, code review and test builder audits passed;
-`MODEL_SUMMARY.md` is a **2026-04-18 snapshot** and is stale throughout (it
-still says 508 tests) — read the residuals instead.
+`d3d` for **even** counts only. CT is Oh/D4h for d1–d8 (d9 CT is not
+expressible). `calcXAS` is the fixture path, so `td` and `d3d` are reachable
+only via `calcXAS_from_scratch`.
+
+**Audits — read the newest, and treat the rest as history.** Current:
+`audit_report.md` and `CODE_REVIEW_2026-10-26.md` (both 2026-10-26, against
+`f6ae22e`), with handoff cards under `.research_workspace/cards/`. **Superseded,
+and actively misleading if read as current:** `SCIENTIFIC_AUDIT.md` and
+`SCIENTIFIC_AUDIT_2026-09.md` (both say "Trust level: LOW" for regimes that have
+since been fixed and Fortran-validated), `CODE_REVIEW.md`,
+`CODE_REVIEW_2026-09.md`, `CODE_REVIEW_D4H_WIRING.md`,
+`ARCHITECTURE_REVIEW_2026-09.html`, and `MODEL_SUMMARY.md` (a 2026-04-18
+snapshot, stale throughout). `UBIQUITOUS_LANGUAGE.md` is scoped to the 2026-05
+D4h dispatcher work and predates `symmetry_plan.py` and `config_dims`.
 
 ### Deferred items (pick up here)
 
