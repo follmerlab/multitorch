@@ -26,10 +26,19 @@ configurations -- above all ``block_index``, which is the other place store
 positions are recorded. Bit-exact rather than a tolerance throughout: a
 refactor that only moves code has no licence to change a float.
 
-**No golden files**, deliberately: the 18 full fingerprints run to 1.35 MiB,
-and a stored copy of the generator's output is a second thing to keep in step.
-The retained legacy function is the reference instead, exactly as WP-B3 kept
-``_d4h_operator_vector_butler`` as the Butler-route oracle.
+**No golden files here**, deliberately: the 18 full fingerprints run to 1.35
+MiB, and a stored copy of the generator's output is a second thing to keep in
+step. The retained legacy function is the reference instead, exactly as WP-B3
+kept ``_d4h_operator_vector_butler`` as the Butler-route oracle.
+
+**But that decision does not cover everything, and since 2026-10-25 four cases
+do have golden files** -- ``tests/test_angular/test_rac_golden_coefficients.py``
+and ``tests/golden/rac/``. The gate in *this* file compares two code paths
+*agreeing*; it cannot see a change both paths consume, because both move
+together. ``_pin_d4h_routes`` is such a thing: flipping the sign of the phase
+it pins moves 488 of d4h d7's 1303 ADD entries, and the whole suite -- this
+file included -- stays green. The golden snapshot covers that class for
+``oh7``, ``oh8``, ``d4h7`` and ``d4h8``, at 192 KiB. See residual 71.
 
 All 18 (sym, n) cases run by default. The plan sized B5-3's gate at a 6-case
 subset (oh/d4h x n = 2, 5, 8) on the assumption that 18 would be too slow;
