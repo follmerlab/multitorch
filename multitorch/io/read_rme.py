@@ -438,6 +438,20 @@ class RACFileFull:
     #: restating them per group (WP-B5-4); a ``.rme_rac`` parsed from a file
     #: has no such field, so :func:`read_rme_rac_full` leaves it None.
     symmetry: Optional[str] = None
+    #: Per-irrep, per-configuration state counts of the ground and final
+    #: manifolds, as ``({gs_irrep: [dim_conf1, ...]}, {fs_irrep: [...]})``.
+    #: The from-scratch generators set it because they **know** these counts --
+    #: a dipole block's extents are computed from them. Without it the
+    #: assembler has to infer them from the order and extents of a triad's
+    #: TRANSI blocks (:func:`~multitorch.hamiltonian.assemble._get_config_dims_from_transi`),
+    #: and that inference cannot express a configuration contributing **no**
+    #: states: it would read the surviving block as configuration 1. That is
+    #: the whole of why d^1 + CT was refused -- its E1/2 ground irrep lives in
+    #: the ligand-hole configuration only (residual 33). Same shape as the
+    #: inference's return value, so it substitutes directly. A ``.rme_rac``
+    #: parsed from a file has no such field, so :func:`read_rme_rac_full`
+    #: leaves it None and the inference is unchanged there.
+    config_dims: Optional[Tuple[Dict[str, List[int]], Dict[str, List[int]]]] = None
 
     def get_blocks(self, kind: str, bra_sym: str, op_sym: str, ket_sym: str,
                    geometry: Optional[str] = None) -> List[RACBlockFull]:

@@ -21,11 +21,13 @@ d^n + d^(n+1)L → 2p^5 d^(n+1) + 2p^5 d^(n+2)L, generated without Fortran:
   The ADD coefficients come from the same projected emitters as the
   single-configuration template (:func:`~multitorch.angular.rac_generator.generate_ledge_template`).
 
-Both parities of the electron count, 2 <= n <= 8: for odd n the RAC coefficients
+Both parities of the electron count, 1 <= n <= 8: for odd n the RAC coefficients
 come from the gauge-fixed double-group basis of
 :mod:`multitorch.angular.double_group`, with the two configurations of each parity
 sharing one node set and one invariant-channel basis per dipole triad (WP-B2a-5).
-d^1 is the one refusal, for a structural reason (:func:`ct_configurations`).
+d^1 works only because the RAC carries its per-configuration dimensions: its E1/2
+ground irrep has no states in the metal configuration at all, which the assembler's
+inference from TRANSI block order cannot express (:func:`ct_configurations`).
 """
 from __future__ import annotations
 
@@ -135,22 +137,16 @@ class _Config:
 
 def ct_configurations(n: int) -> Tuple[_Config, _Config, _Config, _Config]:
     """(d^n, d^(n+1)L, 2p^5 d^(n+1), 2p^5 d^(n+2)L) in ttrcg's shell order."""
-    if n == 1:
-        # d^1 has J = 3/2, 5/2 only, which branch to G3/2 and E5/2 + G3/2: no E1/2
-        # (Gamma6) at all. Its ligand-hole partner d^2 L has J = 1/2 and does carry
-        # E1/2, so that ground irrep exists in the SECOND configuration only. The
-        # assembler reads a triad's per-configuration dimensions from the order of its
-        # TRANSI blocks and would take the single block for configuration 1, so a
-        # one-sided triad cannot be expressed (see `_emit_transi_group`). Supporting
-        # it needs a dimension-carrying placeholder for the absent configuration;
-        # plan residual 33.
-        raise NotImplementedError(
-            "charge transfer from scratch does not support 1 metal d electron: the E1/2 "
-            "(Gamma6) ground irrep of d^1 + d^2 L exists only in the ligand-hole "
-            "configuration, which the assembler's (configuration, copy) block indexing "
-            "cannot express. Supported: 2 <= n <= 8 (plan residual 33)")
-    if not 2 <= n <= 8:
-        raise ValueError(f"charge transfer needs 2 <= n <= 8 metal d electrons, got {n}")
+    # d^1 is the one count with a ground irrep absent from a configuration: it has
+    # J = 3/2, 5/2 only, branching to G3/2 and E5/2 + G3/2, so no E1/2 (Gamma6) at
+    # all, while its ligand-hole partner d^2 L does carry E1/2. That irrep is
+    # therefore pure ligand hole -- the two dipole triads out of it, `1/2+ 1- 1/2-`
+    # and `1/2+ 1- 3/2-`, have blocks in configuration 2 only. It was refused until
+    # 2026-10-25 because the assembler inferred per-configuration dimensions from
+    # TRANSI block order and would have read the surviving block as configuration 1;
+    # the RAC now carries the dimensions instead, so a 0 is expressible. Residual 33.
+    if not 1 <= n <= 8:
+        raise ValueError(f"charge transfer needs 1 <= n <= 8 metal d electrons, got {n}")
     ex_lh = ((1, 5), (2, 9)) if n == 8 else ((1, 5), (2, n + 2), (2, 9))
     return (
         _Config('gs', 2, 'GROUND', ((2, n),), 0),
@@ -274,9 +270,15 @@ def _oh_j_order(dims: Dict[float, int], irrep: str) -> List[Tuple[float, int, in
 def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     """Parameter-free (RAC, store, decomposition) for d^n + d^(n+1)L L-edge XAS.
 
-    ``n`` metal d electrons in the ground configuration (2..8; d^1 is refused,
-    see :func:`ct_configurations`); ``sym``
-    'oh' or 'd4h'. The decomposition holds the four configurations, labelled
+    ``n`` metal d electrons in the ground configuration, 1..8. The upper bound
+    is forced by the ligand-hole final configuration 2p^5 d^(n+2)L: at n = 8 the
+    d^10 shell is closed and drops out, and n = 9 would need d^11 -- so d^9
+    (Cu2+) charge transfer is not expressible in this four-configuration scheme
+    rather than merely unimplemented. ``sym``
+    'oh' or 'd4h'. At ``n = 1`` the returned RAC carries
+    :attr:`~multitorch.io.read_rme.RACFileFull.config_dims`, without which its
+    pure-ligand-hole `1/2+` ground irrep is inexpressible (residual 72); note
+    that the n = 1 hopping blocks have no Fortran oracle. The decomposition holds the four configurations, labelled
     ``gs`` (d^n), ``gs_lh`` (d^(n+1)L), ``ex`` (2p^5 d^(n+1)) and ``ex_lh``
     (2p^5 d^(n+2)L), with zero anchors; fill ``reference`` (eV, operator names of
     :func:`~multitorch.angular.cowan_operators.configuration_operators`) and
@@ -417,13 +419,22 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                             blocks.append(RACBlockFull(kind='TRANSI', bra_sym=label, op_sym='0+', ket_sym=label, geometry=ch,
                                                        n_bra=sum(e[4] for e in e1), n_ket=sum(e[4] for e in e2), add_entries=adds))
 
-    # Dipole TRANSI actors: configuration 1 then 2 for every triad (the assembler reads
-    # per-configuration dimensions in that order).
+    # Dipole TRANSI actors. The blocks still go out configuration 1 then 2 for
+    # every triad, but the per-configuration dimensions are no longer left to be
+    # inferred from that order: they are recorded here, where they are computed,
+    # and carried on the RAC. The inference cannot express a configuration that
+    # contributes no states, which is what refused d^1 (residual 33).
+    gs_config_dims: Dict[str, List[int]] = {}
+    fs_config_dims: Dict[str, List[int]] = {}
     pairs = ((gs, ex, dip[0]), (gs_lh, ex_lh, dip[1]))
     if sym == 'oh':
         for ig in oh_irreps:
             for ie in oh_irreps:
                 orders = [(_oh_j_order(dims[g.label], ig), _oh_j_order(dims[e.label], ie), idx) for g, e, idx in pairs]
+                _note_config_dims(gs_config_dims, butler_label(ig, '+'),
+                                  [sum(x[2] for x in og) for og, _, _ in orders])
+                _note_config_dims(fs_config_dims, butler_label(ie, '-'),
+                                  [sum(x[2] for x in oe) for _, oe, _ in orders])
                 if half:
                     # One invariant-channel basis over the pooled pairs of both
                     # configurations; they feed the same triad and mix coherently.
@@ -452,6 +463,10 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
                 for target, op_sym, geometry, factor in factors:
                     entries = [([e for e in lg.get(dg, []) if e[3] == 0],
                                 [e for e in lu.get(du, []) if e[3] == 0], idx) for lg, lu, idx in lay]
+                    _note_config_dims(gs_config_dims, d4h_butler[dg],
+                                      [sum(e[4] for e in eg) for eg, _, _ in entries])
+                    _note_config_dims(fs_config_dims, d4h_butler[du],
+                                      [sum(e[4] for e in eu) for _, eu, _ in entries])
                     if half:
                         per_config = _d4h_dipole_channels_half(dg, du, target, entries, basis, ('g', 'u'))
                     else:
@@ -467,7 +482,8 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
 
     manifold(gs, gs_lh, 'g', 'GROUND', hop_g)
     manifold(ex, ex_lh, 'u', 'EXCITE', hop_f)
-    rac = RACFileFull(irreps=irreps, blocks=blocks, symmetry=sym)
+    rac = RACFileFull(irreps=irreps, blocks=blocks, symmetry=sym,
+                      config_dims=(gs_config_dims, fs_config_dims))
     rac.index_maps = {'dipole': dip, 'hopping_ground': hop_g, 'hopping_final': hop_f, 'configs': maps}
 
     decomposition = HamiltonianDecomposition([
@@ -482,29 +498,61 @@ def generate_ct_ledge_template(n: int, sym: str = 'oh'):
     return rac, store, decomposition
 
 
+def _note_config_dims(store: Dict[str, List[int]], irrep: str, dims: List[int]) -> None:
+    """Record one irrep's per-configuration state counts, asserting consistency.
+
+    An irrep appears in several triads and every one of them computes the same
+    per-configuration extents, so a disagreement is a generator bug and not
+    something to resolve by taking the first. Nothing is recorded for an irrep
+    absent from every configuration -- the assembler asks only about irreps a
+    triad actually names.
+    """
+    if not any(dims):
+        return
+    previous = store.get(irrep)
+    if previous is None:
+        store[irrep] = list(dims)
+    elif previous != list(dims):
+        raise RuntimeError(
+            f"irrep {irrep} has per-configuration dimensions {previous} in one triad "
+            f"and {list(dims)} in another; the generator disagrees with itself")
+
+
 def _emit_transi_group(blocks: List[RACBlockFull], emitted: List[List[RACBlockFull]]) -> None:
     """Append a triad's dipole blocks, grouped by configuration.
 
     ``emitted`` holds one list of blocks per configuration: one block per
     invariant channel of the triad (a single block for integer J, where every
-    triad carries one invariant). The assembler reads the per-configuration
-    dimensions of a triad from the order of its TRANSI blocks and then indexes
-    the PRMULT copies inside a configuration, so the blocks go out grouped
-    ``conf 1 copy 1, conf 1 copy 2, conf 2 copy 1, ...``.
+    triad carries one invariant). The blocks go out grouped
+    ``conf 1 copy 1, conf 1 copy 2, conf 2 copy 1, ...``, which is the order
+    :func:`~multitorch.hamiltonian.assemble._find_transi_block` indexes the
+    PRMULT copies in.
 
-    A triad is emitted only when every configuration has it, with the same
-    number of channels; a one-sided triad would be mistaken for configuration 1
-    and is not supported.
+    **A configuration contributing no blocks is allowed**, because the RAC now
+    carries the per-configuration dimensions
+    (:attr:`~multitorch.io.read_rme.RACFileFull.config_dims`) rather than
+    leaving them to be inferred from this order. That is what makes d^1
+    reachable: its `1/2+` ground irrep is pure ligand hole, so its two dipole
+    triads have blocks in configuration 2 only, and the inference would have
+    read the surviving block as configuration 1 (residual 33). The assembler
+    looks a block up by its ``(n_bra, n_ket)`` extents, and the absent
+    configuration's extent is 0, so the lone block is matched to the
+    configuration it belongs to and the empty one contributes an empty slice.
+
+    What is still refused is **unequal non-zero** channel counts: those index
+    the PRMULT copies, so a triad carrying two invariants in one configuration
+    and one in another cannot be laid out.
     """
-    counts = {len(group) for group in emitted}
-    if counts == {0}:
+    counts = [len(group) for group in emitted]
+    present = {c for c in counts if c}
+    if not present:
         return
-    if len(counts) != 1:
+    if len(present) != 1:
         first = next(b for group in emitted if group for b in group)
         raise NotImplementedError(
             f"dipole triad {first.bra_sym} {first.op_sym} {first.ket_sym} has "
-            f"{sorted(len(g) for g in emitted)} blocks across the configurations; "
-            f"the assembler needs the same number in each")
+            f"{counts} blocks across the configurations; a configuration may "
+            f"contribute none, but those that do must agree on the channel count")
     for group in emitted:
         blocks.extend(group)
 
@@ -552,12 +600,29 @@ def build_ct_ban(rac: RACFileFull, sym: str, *, cf: Optional[dict] = None, delta
             if key not in counts:
                 order.append(key)
             counts[key] = counts.get(key, 0) + 1
+    # How many configurations actually contribute to a triad. Normally every
+    # one does and the divisor is `nconf`, but a triad whose bra or ket irrep is
+    # absent from a configuration has blocks in the others only -- d^1's pure
+    # ligand-hole `1/2+` (residual 33). The carried dimensions say which, so the
+    # channel count divides by the contributing configurations rather than by
+    # all of them. A file-parsed RAC carries nothing and keeps the old divisor,
+    # so the Fortran path is unchanged by construction.
+    def contributing(key: Tuple[str, str, str]) -> int:
+        if getattr(rac, "config_dims", None) is None:
+            return nconf
+        gs_cd, fs_cd = rac.config_dims
+        gs, fs = gs_cd.get(key[0]), fs_cd.get(key[2])
+        if not gs or not fs:
+            return nconf
+        return sum(1 for dg, df in zip(gs, fs) if dg and df) or nconf
+
     triads = []
     for key in order:
-        n_channels, remainder = divmod(counts[key], nconf)
+        divisor = contributing(key)
+        n_channels, remainder = divmod(counts[key], divisor)
         if remainder or n_channels < 1:
             raise RuntimeError(f"triad {key} has {counts[key]} TRANSI blocks, not a whole number "
-                               f"of channels for {nconf} configurations")
+                               f"of channels for its {divisor} contributing configurations")
         triads.extend([key] * n_channels)
     return BanData(
         nconf_gs=nconf, nconf_fs=nconf,

@@ -267,9 +267,13 @@ def hopping_blocks(n_metal: int, rank: int, l: int = 2) -> Dict[Tuple[float, flo
     # A single metal electron has no parent term: l^0 is not in the CFP tables, so
     # the no-parent branch has to start at n_metal == 1, not 0. (The threshold read
     # `> 0` until 2026-09-25 and raised "No CFP data for l=2, n=0" for n_metal == 1.)
-    # n_metal == 1 has no bundled two-configuration fixture, so these blocks have no
-    # Fortran oracle; d^1 charge transfer is refused anyway, for the structural
-    # reason in `ct_generator.ct_configurations`.
+    # n_metal == 1 has no bundled two-configuration fixture, so these blocks have
+    # **no Fortran oracle** -- and since 2026-10-25 they are reachable: d^1 charge
+    # transfer works (residual 72). The V -> 0 decoupling limit validates the metal
+    # block, the structure and the per-configuration dimensions against the
+    # analytically-validated single-configuration d^1 build, but it says nothing
+    # about V != 0, so these hopping coefficients remain unvalidated. That is the
+    # first thing to say to anyone running Ti3+/V4+ LMCT.
     parents = _lsterms_and_cfp(l, n_metal - 1)[0] if n_metal > 1 else []
     raw = compute_multipole_blocks(l, n_metal, l, 4 * l + 2, terms_n, parents,
                                    get_cfp_block(l, n_metal).cfp if n_metal > 1 else np.array([]), rank=rank)

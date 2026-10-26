@@ -370,10 +370,19 @@ def _assembly_context(rac: RACFileFull, ban: BanData) -> dict:
     gs_cowan_sec = 2 if nconf >= 2 else 0
     fs_cowan_sec = 3 if nconf >= 2 else 0
 
-    # Determine per-config dimensions from the TRANSI blocks in .rme_rac.
-    # TRANSI blocks appear in order: conf 1 then conf 2. The bra dimension
-    # gives the ground state size, the ket dimension gives the final state size.
-    gs_dims, fs_dims = _get_config_dims_from_transi(rac, nconf)
+    # Per-config dimensions. A from-scratch RAC carries them, because the
+    # generator computed them to size its own blocks; otherwise they are
+    # inferred from the order and extents of the TRANSI blocks. The inference
+    # is kept as the reference and is gated against the carried values at exact
+    # equality on every case where both exist (residual 45), because it cannot
+    # express a configuration contributing no states -- it would read the
+    # surviving block as configuration 1, which is what refused d^1 + CT
+    # (residual 33). A `.rme_rac` parsed from a file carries nothing, so the
+    # Fortran path is unchanged by construction rather than by a tolerance.
+    if getattr(rac, "config_dims", None) is not None:
+        gs_dims, fs_dims = rac.config_dims
+    else:
+        gs_dims, fs_dims = _get_config_dims_from_transi(rac, nconf)
 
     return dict(
         nconf=nconf, xham=xham, xmix=xmix, eg_offsets=eg_offsets, ef_offsets=ef_offsets,
@@ -416,6 +425,13 @@ def _get_config_dims_from_transi(
     TRANSI blocks appear in config order in the .rme_rac file. For a 2-config
     CT calculation, the first set of TRANSI blocks has conf 1 dimensions
     and the second set has conf 2 dimensions.
+
+    **This cannot express a configuration that contributes no states**, since a
+    lone block is read as configuration 1 -- the reason d^1 + CT was refused
+    (residual 33). A from-scratch RAC therefore carries
+    :attr:`~multitorch.io.read_rme.RACFileFull.config_dims` and the caller
+    prefers it; this function stays as that value's reference and is what a
+    file-parsed RAC still uses.
 
     Returns
     -------
